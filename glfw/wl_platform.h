@@ -406,17 +406,19 @@ typedef struct _GLFWlibraryWayland
     bool has_preferred_buffer_scale;
     char *compositor_name;
 
-    // Drag operation state
+    // Drag source state
     struct {
         struct wl_data_source* source;
-        char** mimes;           // Array of MIME type strings
-        int mime_count;         // Number of MIME types
-        GLFWid window_id;    // Window that initiated the drag
-        GLFWDragSourceData** pending_requests; // Array of pending data requests
-        int pending_request_count;  // Number of pending requests
-        int pending_request_capacity; // Capacity of the pending requests array
         struct wl_surface *drag_icon;
         struct wp_viewport *drag_viewport;
+        struct {
+            const char *mime_type;
+            int fd;
+            GLFWid watch_id;
+            char *pending_data;
+            size_t sz, offset;
+        } *data_requests;
+        size_t count, capacity;
     } drag;
 } _GLFWlibraryWayland;
 

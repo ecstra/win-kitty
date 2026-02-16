@@ -403,15 +403,9 @@ typedef struct _GLFWlibraryX11
     // Drag source state
     struct {
         Window           source_window;
-        char**           mimes;         // Array of MIME type strings
-        int              mime_count;    // Number of MIME types
         Atom*            type_atoms;    // Atoms for each MIME type
+        size_t           type_count;
         Atom             action_atom;   // XdndActionCopy, XdndActionMove, or XdndActionLink
-        bool             active;
-        _GLFWwindow*     window;        // Window that initiated the drag
-        GLFWDragSourceData** pending_requests; // Array of pending data requests
-        int              pending_request_count;  // Number of pending requests
-        int              pending_request_capacity; // Capacity of the pending requests array
     } drag;
 
     struct {

@@ -4099,20 +4099,11 @@ void _glfwCocoaPostEmptyEvent(void) {
     [NSApp postEvent:event atStart:YES];
 }
 
-void _glfwPlatformCancelDrag(_GLFWwindow* window) {
-    // Clean up all pending drag source data
-    cleanup_all_ns_pending_drag_source_data(window);
-    // Notify the application that the drag source is closed
-    _glfwInputDragSourceRequest(window, NULL, NULL);
-}
-
-int _glfwPlatformStartDrag(_GLFWwindow* window,
-                           const char* const* mime_types,
-                           int mime_count,
-                           const GLFWimage* thumbnail,
-                           int operations) {
+int
+_glfwPlatformStartDrag(_GLFWwindow* window, const GLFWDragSourceItem *items, int item_count, const GLFWimage* thumbnail, int operations) {
     // cleanup stored data from previous drag
     cleanup_all_ns_pending_drag_source_data(window);
+    if (!items || !item_count) { cleanup_all_ns_pending_drag_source_data(window); return 0; }
 
     // Store the operations for the dragging source callback
     window->ns.dragOperations = operations;
@@ -4166,11 +4157,6 @@ int _glfwPlatformStartDrag(_GLFWwindow* window,
             }
 
             [dragItems addObject:dragItem];
-        }
-
-        if (dragItems.count == 0) {
-            _glfwPlatformCancelDrag(window);
-            return EINVAL;
         }
 
         // Start the drag session - try current event first, then create a synthetic one

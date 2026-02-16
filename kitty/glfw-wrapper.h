@@ -1131,7 +1131,9 @@ typedef enum {
 typedef struct GLFWDropEvent {
     GLFWDropEventType type;
     const char **mimes; size_t num_mimes;
-    double xpos, ypos;  // Only valid for GLFW_DROP_ENTER and GLFW_DROP_MOVE
+    // Positions are only valid for GLFW_DROP_ENTER and GLFW_DROP_MOVE.
+    // They are in window co-ordinates same as for mouse events
+    double xpos, ypos;
     bool from_self;  // Only valid upto GLFW_DROP_DROP
     ssize_t (*read_data)(GLFWwindow *w, struct GLFWDropEvent* ev, char *buffer, size_t sz);  // Only valid for GLFW_DROP_DATA_AVAILABLE
     void (*finish_drop)(GLFWwindow *w, GLFWDragOperationType op); // Only valid for GLFW_DROP_DROP and GLFW_DROP_DATA_AVAILABLE
@@ -1537,57 +1539,30 @@ typedef void (* GLFWscrollfun)(GLFWwindow*,const GLFWScrollEvent*);
  */
 typedef void (* GLFWkeyboardfun)(GLFWwindow*, GLFWkeyevent*);
 
-/*! @brief Drag event types.
- *
- *  These constants are used to identify the type of drag event.
- *
- *  @ingroup input
- */
 typedef enum {
-    /*! The drag operation entered the window. */
-    GLFW_DRAG_ENTER = 1,
-    /*! The drag operation moved within the window. */
-    GLFW_DRAG_MOVE = 2,
-    /*! The drag operation left the window. */
-    GLFW_DRAG_LEAVE = 3,
-    /*! Async status update request (xpos/ypos are invalid). */
-    GLFW_DRAG_STATUS_UPDATE = 4
+    GLFW_DRAG_DATA_REQUEST,
+    GLFW_DRAG_CANCELLED,
+    GLFW_DRAG_FINSHED,
+    GLFW_DRAG_ACCEPTED,  // mimetype was accepted or NULL if drag was accepted but no mime type specified
+    GLFW_DRAG_ACTION_CHANGED,  // action was changed 0 or GLFWDragOperationType
+    GLFW_DRAG_DROPPED,  // drop was performed but no data transferred yet
 } GLFWDragEventType;
 
-/*! @brief Opaque drag source data handle.
- *
- *  This is an opaque handle to a heap-allocated object that represents
- *  data being requested from a drag source. The lifetime is managed by
- *  the GLFW backend - it is freed on end of data, error, drag source
- *  cancellation, or at exit.
- *
- *  @since Added in version 4.0.
- *
- *  @ingroup input
- */
-typedef struct GLFWDragSourceData GLFWDragSourceData;
+typedef struct GLFWDragSourceItem {
+    const char *mime_type;
+    // Can be on null to provide data when the drag is started should be used only when the data is relatively small
+    const char *optional_data;
+    size_t data_size;
+} GLFWDragSourceItem;
 
-/*! @brief The function pointer type for drag source data request callbacks.
- *
- *  This is the function pointer type for callbacks invoked when the OS
- *  requests data for a specific MIME type from the active drag source.
- *  The callback is called on the GUI thread.
- *
- *  @param[in] window The window that initiated the drag.
- *  @param[in] mime_type The MIME type being requested, or NULL if the OS
- *  has closed the drag source.
- *  @param[in] source_data Opaque pointer to a heap-allocated object. Use this
- *  pointer when calling @ref glfwSendDragData to send data chunks.
- *
- *  @sa @ref glfwStartDrag
- *  @sa @ref glfwSendDragData
- *  @sa @ref glfwSetDragSourceCallback
- *
- *  @since Added in version 4.0.
- *
- *  @ingroup input
- */
-typedef void (* GLFWdragsourcefun)(GLFWwindow* window, const char* mime_type, GLFWDragSourceData* source_data);
+typedef struct GLFWDragEvent {
+    GLFWDragEventType type;
+    const char *mime_type;
+    const char *data; size_t data_sz; int err_num;
+    GLFWDragOperationType action;  // can be 0 indicating no action
+} GLFWDragEvent;
+
+typedef void (* GLFWdragsourcefun)(GLFWwindow* window, GLFWDragEvent *ev);
 
 /*! @brief The function pointer type for drag event callbacks.
  *
@@ -2320,13 +2295,9 @@ typedef GLFWdragsourcefun (*glfwSetDragSourceCallback_func)(GLFWwindow*, GLFWdra
 GFW_EXTERN glfwSetDragSourceCallback_func glfwSetDragSourceCallback_impl;
 #define glfwSetDragSourceCallback glfwSetDragSourceCallback_impl
 
-typedef int (*glfwStartDrag_func)(GLFWwindow*, const char* const*, int, const GLFWimage*, int);
+typedef int (*glfwStartDrag_func)(GLFWwindow*, const GLFWDragSourceItem*, size_t, const GLFWimage*, int);
 GFW_EXTERN glfwStartDrag_func glfwStartDrag_impl;
 #define glfwStartDrag glfwStartDrag_impl
-
-typedef ssize_t (*glfwSendDragData_func)(GLFWDragSourceData*, const void*, size_t);
-GFW_EXTERN glfwSendDragData_func glfwSendDragData_impl;
-#define glfwSendDragData glfwSendDragData_impl
 
 typedef int (*glfwJoystickPresent_func)(int);
 GFW_EXTERN glfwJoystickPresent_func glfwJoystickPresent_impl;

@@ -772,48 +772,38 @@ application_close_requested_callback(int flags) {
 }
 
 #define ds (global_state.drag_source)
-static void
-try_sending_drag_source_data(id_type timer_id UNUSED, void *callback_data UNUSED) {
-    bool incomplete = false;
-    for (size_t i = 0; i < ds.num_ongoing_transfers; i++) {
-#define t ds.ongoing_transfers[i]
-        size_t sz = PyBytes_GET_SIZE(t.weakref_to_data_object);
-        ssize_t ret;
-        if (sz > t.offset) {
-            const char *data = PyBytes_AS_STRING(t.weakref_to_data_object);
-            ret = glfwSendDragData(t.platform_data, data + t.offset, sz - t.offset);
-        } else ret = glfwSendDragData(t.platform_data, NULL, 0);
-        if (ret >= 0) {
-            t.offset += ret;
-            if (t.offset < sz) incomplete = true;
-            else glfwSendDragData(t.platform_data, NULL, 0);  // tell glfw transfer is complete
-        } else {
-            log_error("Failed to send data from drag source with error: %s", strerror(-ret));
-            t.offset = sz;
-        }
-#undef t
-    }
-    if (incomplete) add_main_loop_timer(ms_double_to_monotonic_t(2), false, try_sending_drag_source_data, NULL, NULL);
+
+void
+free_drag_source(void) {
+    if (ds.accepted_mime_type) free(ds.accepted_mime_type);
+    Py_CLEAR(ds.drag_data);
+    zero_at_ptr(&ds);
 }
 
 static void
-drag_source_callback(GLFWwindow *window UNUSED, const char* mime_type, GLFWDragSourceData* source_data) {
-    PyObject *data = NULL;
-    if (mime_type == NULL) {
-        ds.is_active = false;
-        Py_CLEAR(ds.drag_data);
-        return;
+drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
+    switch (ev->type) {
+        case GLFW_DRAG_DATA_REQUEST: // we currently pre-provide all data so this should never happen
+            if (ev->data_sz) {
+                // previously returned data is consumed, free it
+            } else {
+                ev->err_num = ENOENT;
+            }
+            break;
+        case GLFW_DRAG_ACCEPTED:
+            free(ds.accepted_mime_type);
+            ds.accepted_mime_type = ev->mime_type ? strdup(ev->mime_type) : NULL;
+            break;
+        case GLFW_DRAG_ACTION_CHANGED: ds.action = ev->action; break;
+        case GLFW_DRAG_DROPPED: ds.was_dropped = true; break;
+        case GLFW_DRAG_CANCELLED:
+            ds.was_canceled = true;
+            /* fallthrough */
+        case GLFW_DRAG_FINSHED:
+            ds.is_active = false;
+            free_drag_source();
+            break;
     }
-    if (!ds.is_active || !ds.drag_data || !(data = PyDict_GetItemString(ds.drag_data, mime_type))) {
-        glfwSendDragData(source_data, NULL, EINVAL);
-        return;
-    }
-    ensure_space_for(&ds, ongoing_transfers, ds.ongoing_transfers[0], ds.num_ongoing_transfers + 1, ongoing_transfers_capacity, 8, true);
-    ds.ongoing_transfers[ds.num_ongoing_transfers].platform_data = source_data;
-    ds.ongoing_transfers[ds.num_ongoing_transfers].weakref_to_data_object = data;
-    ds.ongoing_transfers[ds.num_ongoing_transfers].offset = 0;
-    ds.num_ongoing_transfers++;
-    try_sending_drag_source_data(0, NULL);
 }
 #undef ds
 
@@ -2761,19 +2751,25 @@ start_drag_with_data(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
             &os_window_id, &PyDict_Type, &data_map, &thumbnail_data, &thumbnail_sz, &width, &height, &operations)) return NULL;
     OSWindow *w = os_window_for_id(os_window_id);
     if (!w || !w->handle) { PyErr_SetString(PyExc_KeyError, "OS Window with specified id does not exist"); return NULL; }
-    RAII_ALLOC(const char*, mime_types, calloc(PyDict_Size(data_map), sizeof(const char*)));
-    if (!mime_types) { PyErr_NoMemory(); return NULL; }
-    PyObject *key, *value; Py_ssize_t pos = 0; int num = 0;
+    RAII_ALLOC(GLFWDragSourceItem, items, calloc(PyDict_Size(data_map), sizeof(const char*)));
+    if (!items) { PyErr_NoMemory(); return NULL; }
+    PyObject *key, *value; Py_ssize_t pos = 0; size_t num = 0;
     while (PyDict_Next(data_map, &pos, &key, &value)) {
         if (!PyUnicode_Check(key)) { PyErr_SetString(PyExc_TypeError, "data_map must have string keys"); return NULL; }
         if (!PyBytes_Check(value)) { PyErr_SetString(PyExc_TypeError, "data_map must have bytes values"); return NULL; }
-        mime_types[num++] = PyUnicode_AsUTF8(key);
+        items[num].mime_type = PyUnicode_AsUTF8(key);
+        items[num].optional_data = PyBytes_AS_STRING(value); items[num].data_size = PyBytes_GET_SIZE(value);
+        num++;
     }
     GLFWimage thumbnail = {.pixels=thumbnail_data, .width=width, .height=height};
+    free_drag_source();
     global_state.drag_source.is_active = true;
-    Py_CLEAR(global_state.drag_source.drag_data); global_state.drag_source.drag_data = Py_NewRef(data_map);
-    global_state.drag_source.num_ongoing_transfers = 0;
-    glfwStartDrag(w->handle, mime_types, num, thumbnail_data ? &thumbnail : NULL, operations);
+    global_state.drag_source.drag_data = Py_NewRef(data_map);
+    errno = glfwStartDrag(w->handle, items, num, thumbnail_data ? &thumbnail : NULL, operations);
+    if (errno != 0) {
+        PyErr_SetFromErrno(PyExc_OSError);
+        return NULL;
+    }
     Py_RETURN_NONE;
 }
 
