@@ -218,8 +218,8 @@ to use a window other than the currently active window.
 --next-to
 A match expression to select the window next to which the new window is created.
 See :ref:`search_syntax` for the syntax for specifying windows. If not specified
-defaults to the active window. When used via remote control and a target tab is
-specified this option is ignored unless the matched window is in the specified tab.
+defaults to the active window. When used via remote control
+this option is ignored unless the matched window is in the target tab (default active tab).
 When using :option:`--type <launch --type>` of :code:`tab`, the tab will be created
 in the OS Window containing the matched window.
 
