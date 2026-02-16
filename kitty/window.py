@@ -2234,15 +2234,11 @@ class Window:
         self.copy_or_interrupt()
         self.screen.clear_selection()
 
-    @ac('cp', 'Copy the selected text from the active window to the clipboard, if no selection, copy the last command output')
-    def copy_last_command_output_or_clipboard(self) -> None:
-        text = self.text_for_selection()
-        if text:
+    @ac('cp', 'Copy the selected text from the active window to the clipboard,'
+        ' if no selection, copy the last command output (requires shell integration to work)')
+    def copy_selection_or_last_command_output(self) -> None:
+        if (text := self.text_for_selection() or self.cmd_output(CommandOutput.last_non_empty, as_ansi=False, add_wrap_markers=False)):
             set_clipboard_string(text)
-        else:
-            text = self.cmd_output(CommandOutput.last_non_empty, as_ansi=False, add_wrap_markers=False)
-            if text:
-                set_clipboard_string(text)
 
     @ac('cp', 'Pass the selected text from the active window to the specified program')
     def pass_selection_to_program(self, *args: str) -> None:

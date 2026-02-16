@@ -225,6 +225,8 @@ Detailed list of changes
 - Shell integration: Allow sending click events to shells using y co-ordinates
   relative to prompts (:iss:`9500`)
 
+- A new action :ac:`copy_selection_or_last_command_output` (:pull:`9512`)
+
 
 0.45.0 [2025-12-24]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
