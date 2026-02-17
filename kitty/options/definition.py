@@ -768,7 +768,7 @@ selections even if :opt:`copy_on_select` is enabled.
 opt('paste_actions', 'quote-urls-at-prompt,confirm',
     option_type='paste_actions',
     long_text='''
-A comma separated list of actions to take when pasting text into the terminal.
+A comma separated list of actions to take when pasting or dropping text into the terminal.
 The supported paste actions are:
 
 :code:`quote-urls-at-prompt`:

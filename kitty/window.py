@@ -1845,7 +1845,7 @@ class Window:
         self.clipboard_request_manager.send_paste_event(is_primary_selection)
         return True
 
-    def paste_with_actions(self, text: str) -> None:
+    def paste_with_actions(self, text: str, from_drop: bool = False, is_uri_list: bool = False) -> None:
         if self.destroyed or not text:
             return
         opts = get_options()
@@ -1854,18 +1854,24 @@ class Window:
             if not text:
                 return
         if 'quote-urls-at-prompt' in opts.paste_actions and self.at_prompt:
-            prefixes = '|'.join(opts.url_prefixes)
-            m = re.match(f'({prefixes}):(.+)', text)
-            if m is not None:
-                scheme, rest = m.group(1), m.group(2)
-                if rest.startswith('//') or scheme in ('mailto', 'irc'):
-                    import shlex
-                    text = shlex.quote(text)
+            if is_uri_list:
+                import shlex
+                urls = text.splitlines(keepends=False)
+                text = ' '.join(map(shlex.quote, urls))
+            else:
+                prefixes = '|'.join(opts.url_prefixes)
+                m = re.match(f'({prefixes}):(.+)', text)
+                if m is not None:
+                    scheme, rest = m.group(1), m.group(2)
+                    if rest.startswith('//') or scheme in ('mailto', 'irc'):
+                        import shlex
+                        text = shlex.quote(text)
         if 'replace-dangerous-control-codes' in opts.paste_actions:
             text = replace_c0_codes_except_nl_space_tab(text)
         if 'replace-newline' in opts.paste_actions and 'confirm' not in opts.paste_actions:
             text = text.replace('\n', '\x1bE')
         btext = text.encode('utf-8')
+        which = 'drop' if from_drop else 'paste'
         if 'confirm' in opts.paste_actions:
             sanitized = replace_c0_codes_except_nl_space_tab(btext)
             replaced_c0_control_codes = sanitized != btext
@@ -1882,20 +1888,24 @@ class Window:
                 replaced_newlines = t != sanitized
                 sanitized = t
             if replaced_c0_control_codes or replaced_newlines:
-                msg = _('The text to be pasted contains terminal control codes.\n\nIf the terminal program you are pasting into does not properly'
-                        ' sanitize pasted text, this can lead to \x1b[31mcode execution vulnerabilities\x1b[39m.\n\nHow would you like to proceed?')
+                msg = _(
+                    'The text to be {0} contains terminal control codes.\n\nIf the terminal program you are {1}'
+                    ' into does not properly sanitize text, this can lead to'
+                    ' \x1b[31mcode execution vulnerabilities\x1b[39m.\n\nHow would you like to proceed?'
+                ).format('dropped' if from_drop else 'pasted', 'dropping' if from_drop else 'pasting')
                 get_boss().choose(
                     msg, partial(self.handle_dangerous_paste_confirmation, btext, sanitized),
-                    's;green:Sanitize and paste', 'p;red:Paste anyway', 'c;yellow:Cancel',
-                    window=self, default='s', title=_('Allow paste?'),
+                    's;green:Sanitize and ' + which, f'a;red:{which.capitalize()} anyway', 'c;yellow:Cancel',
+                    window=self, default='s', title=_('Allow {}?').format(which),
                 )
                 return
         if 'confirm-if-large' in opts.paste_actions:
             msg = ''
             if len(btext) > 16 * 1024:
-                msg = _('Pasting very large amounts of text ({} bytes) can be slow.').format(len(btext))
-                get_boss().confirm(msg + _(' Are you sure?'), partial(self.handle_large_paste_confirmation, btext), window=self, title=_(
-                'Allow large paste?'))
+                msg = _('{1} very large amounts of text ({0} bytes) can be slow.').format(
+                    len(btext), 'Dropping' if from_drop else 'Pasting')
+                get_boss().confirm(msg + _(' Are you sure?'), partial(self.handle_large_paste_confirmation, btext),
+                                   window=self, title=_('Allow large {}?').format('drop' if from_drop else 'paste'))
                 return
         self.paste_text(btext)
 
@@ -1941,19 +1951,17 @@ class Window:
 
     def on_drop(self, drop: dict[str, bytes]) -> None:
         text = ''
+        is_uri_list = False
         if uri_list := drop.pop('text/uri-list', b''):
             urls = parse_uri_list(uri_list.decode('utf-8', 'replace'))
-            if self.at_prompt:
-                import shlex
-                text = ' '.join(map(shlex.quote, urls))
-            else:
-                text = '\n'.join(urls)
+            text = '\n'.join(urls)
+            is_uri_list = True
         elif tp := drop.pop('text/plain', b''):
             text = tp.decode('utf-8', 'replace')
         elif tp := drop.pop('text/plain;charset=utf-8', b''):
             text = tp.decode('utf-8', 'replace')
         if text:
-            self.paste_text(text)
+            self.paste_with_actions(text, from_drop=True, is_uri_list=is_uri_list)
 
 
     # Serialization {{{
