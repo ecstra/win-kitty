@@ -171,16 +171,14 @@ update_scrollbar_hover_state(Window *w, bool hovering) {
     }
 }
 
-
 static void
-send_mouse_leave_event_if_needed(id_type currently_over_window, int modifiers) {
-    if (global_state.mouse_hover_in_window != currently_over_window && global_state.mouse_hover_in_window) {
+set_currently_hovered_window(id_type window_id, int modifiers) {
+    if (global_state.mouse_hover_in_window != window_id) {
         Window *left_window = window_for_id(global_state.mouse_hover_in_window);
-        global_state.mouse_hover_in_window = currently_over_window;
+        global_state.mouse_hover_in_window = window_id;
         if (left_window) {
-            if (left_window->scrollbar.is_hovering) {
-                update_scrollbar_hover_state(left_window, false);
-            }
+            if (left_window->scrollbar.is_hovering) update_scrollbar_hover_state(left_window, false);
+            if (left_window->render_data.screen) screen_mark_url(left_window->render_data.screen, 0, 0, 0, 0);
             int sz = encode_mouse_event(left_window, 0, LEAVE, modifiers);
             if (sz > 0) {
                 mouse_event_buf[sz] = 0;
@@ -856,8 +854,7 @@ currently_pressed_button(void) {
 HANDLER(handle_event) {
     modifiers &= ~GLFW_LOCK_MASK;
     set_mouse_cursor_for_screen(w->render_data.screen);
-    send_mouse_leave_event_if_needed(w->id, modifiers);
-    global_state.mouse_hover_in_window = w->id;
+    set_currently_hovered_window(w->id, modifiers);
     if (button == -1) {
         button = currently_pressed_button();
         handle_move_event(w, button, modifiers, window_idx);
@@ -868,7 +865,7 @@ HANDLER(handle_event) {
 
 static void
 handle_tab_bar_mouse(int button, int modifiers, int action) {
-    send_mouse_leave_event_if_needed(0, modifiers);
+    set_currently_hovered_window(0, modifiers);
     if (button > -1) {  // dont report motion events, as they are expensive and useless
         call_boss(handle_click_on_tab, "Kdiii", global_state.callback_os_window->id, global_state.callback_os_window->mouse_x, button, modifiers, action);
     }
@@ -959,8 +956,8 @@ update_mouse_pointer_shape(void) {
 
 void
 leave_event(int modifiers) {
-    if (global_state.redirect_mouse_handling || global_state.active_drag_in_window || global_state.tracked_drag_in_window || !global_state.mouse_hover_in_window) return;
-    send_mouse_leave_event_if_needed(0, modifiers);
+    if (global_state.redirect_mouse_handling || global_state.active_drag_in_window || global_state.tracked_drag_in_window) return;
+    set_currently_hovered_window(0, modifiers);
 }
 
 void
@@ -982,9 +979,8 @@ enter_event(int modifiers) {
     if (global_state.redirect_mouse_handling || global_state.active_drag_in_window || global_state.tracked_drag_in_window) return;
     unsigned window_idx; bool in_tab_bar;
     Window *w = window_for_event(&window_idx, &in_tab_bar);
-    send_mouse_leave_event_if_needed(w ? w->id : 0, modifiers);
+    set_currently_hovered_window(w ? w->id : 0, modifiers);
     if (!w || in_tab_bar) return;
-    global_state.mouse_hover_in_window = w->id;
 
     if (handle_scrollbar_mouse(w, -1, MOVE, modifiers)) return;
 
@@ -1132,16 +1128,7 @@ mouse_event(const int button, int modifiers, int action) {
         }
     }
     w = window_for_event(&window_idx, &in_tab_bar);
-    if (global_state.mouse_hover_in_window) {
-        Window *old_window = window_for_id(global_state.mouse_hover_in_window);
-        if (old_window && old_window != w) {
-            if (old_window->scrollbar.is_hovering) {
-                update_scrollbar_hover_state(old_window, false);
-            }
-            global_state.mouse_hover_in_window = 0;
-            screen_mark_url(old_window->render_data.screen, 0, 0, 0, 0);
-        }
-    }
+    set_currently_hovered_window(w ? w->id : 0, modifiers);
 
     if (in_tab_bar) {
         mouse_cursor_shape = POINTER_POINTER;
