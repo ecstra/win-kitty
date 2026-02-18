@@ -1523,8 +1523,7 @@ take_screenshot_of_rectangular_region(OSWindow *os_window, Region region, unsign
 // Must be called only after rendering the OS Window but before the buffer is swapped.
 void
 take_screenshot_of_oswindow(OSWindow *os_window, unsigned char *dst_buf, unsigned *thumb_w, unsigned *thumb_h, bool include_tab_bar) {
-    Region region;
-
+    Region region = {0};
     // Calculate the region to capture (excluding tab bar if requested)
     if (!include_tab_bar) {
         Region central = {0}, tab_bar = {0};
@@ -1534,19 +1533,14 @@ take_screenshot_of_oswindow(OSWindow *os_window, unsigned char *dst_buf, unsigne
             region = central;
         } else {
             // No tab bar, capture the entire viewport
-            region.left = 0;
             region.right = os_window->viewport_width;
-            region.top = 0;
             region.bottom = os_window->viewport_height;
         }
     } else {
         // Capture the entire viewport including tab bar
-        region.left = 0;
         region.right = os_window->viewport_width;
-        region.top = 0;
         region.bottom = os_window->viewport_height;
     }
-
     take_screenshot_of_rectangular_region(os_window, region, dst_buf, thumb_w, thumb_h);
 }
 
