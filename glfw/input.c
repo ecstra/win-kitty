@@ -1155,7 +1155,9 @@ _glfwFreeDragSourceData(void) {
         }
         free(_glfw.drag.items);
     }
+    GLFWid iid = _glfw.drag.instance_id;
     memset(&_glfw.drag, 0, sizeof(_glfw.drag));
+    _glfw.drag.instance_id = iid;
 }
 
 GLFWAPI int
@@ -1165,6 +1167,7 @@ glfwStartDrag(GLFWwindow* handle, const GLFWDragSourceItem *items, size_t item_c
     _GLFW_REQUIRE_INIT_OR_RETURN(EINVAL);
     if (operations == -1) return _glfwPlatformDragDataReady(items[0].mime_type);
     _glfwFreeDragSourceData();
+    _glfw.drag.instance_id++;
     if (!items || !item_count) return 0;
     _glfw.drag.items = calloc(item_count, sizeof(_glfw.drag.items[0]));
     if (!_glfw.drag.items) return ENOMEM;
@@ -1183,7 +1186,8 @@ glfwStartDrag(GLFWwindow* handle, const GLFWDragSourceItem *items, size_t item_c
         _glfw.drag.items[i].data_size = items[i].data_size;
     }
     _glfw.drag.window_id = window->id;
-    int ans = _glfwPlatformStartDrag(window, thumbnail, operations);
+    _glfw.drag.operations = operations;
+    int ans = _glfwPlatformStartDrag(window, thumbnail);
     if (ans != 0) _glfwFreeDragSourceData();
     return ans;
 }

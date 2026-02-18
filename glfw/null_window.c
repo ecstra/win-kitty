@@ -535,27 +535,13 @@ void _glfwPlatformCancelDrag(_GLFWwindow* window UNUSED)
 {
     // No-op for null platform
 }
-
-int _glfwPlatformStartDrag(_GLFWwindow* window UNUSED,
-                           const char* const* mime_types UNUSED,
-                           int mime_count UNUSED,
-                           const GLFWimage* thumbnail UNUSED,
-                           int operations UNUSED)
-{
+int
+_glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
+    (void)window; (void)thumbnail;
     return ENOTSUP;
 }
-
-ssize_t _glfwPlatformSendDragData(GLFWDragSourceData* source_data UNUSED,
-                              const void* data UNUSED,
-                              size_t size UNUSED)
-{
-    return -ENOTSUP;
-}
-
-void _glfwPlatformUpdateDragState(_GLFWwindow* window UNUSED)
-{
-    // No-op for null platform
-}
+void _glfwPlatformFreeDragSourceData(void) {}
+int _glfwPlatformDragDataReady(const char *mime_type) { (void) mime_type; return 0; }
 
 const char** _glfwPlatformGetDropMimeTypes(GLFWDropData* drop UNUSED, int* count)
 {

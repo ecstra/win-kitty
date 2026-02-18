@@ -178,12 +178,6 @@ typedef struct _GLFWwindowNS
     // Cached MIME types from drag enter (for move events)
     _GLFWDropData drop_data;
 
-    // Pending drag source data requests (for cleanup on cancellation)
-    // Current drag operation type for NSDraggingSource
-    int dragOperations;  // Bitfield of GLFWDragOperationType
-    GLFWDragSourceData** pendingDragSourceData;
-    int pendingDragSourceDataCount;
-    int pendingDragSourceDataCapacity;
 } _GLFWwindowNS;
 
 // Cocoa-specific global data
@@ -221,7 +215,6 @@ typedef struct _GLFWlibraryNS
 
     // the callback to handle url open events
     GLFWhandleurlopen url_open_callback;
-
 } _GLFWlibraryNS;
 
 // Cocoa-specific per-monitor data

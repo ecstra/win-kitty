@@ -2751,15 +2751,15 @@ start_drag_with_data(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
             &os_window_id, &PyDict_Type, &data_map, &thumbnail_data, &thumbnail_sz, &width, &height, &operations)) return NULL;
     OSWindow *w = os_window_for_id(os_window_id);
     if (!w || !w->handle) { PyErr_SetString(PyExc_KeyError, "OS Window with specified id does not exist"); return NULL; }
-    RAII_ALLOC(GLFWDragSourceItem, items, calloc(PyDict_Size(data_map), sizeof(const char*)));
+    RAII_ALLOC(GLFWDragSourceItem, items, calloc(PyDict_Size(data_map), sizeof(GLFWDragSourceItem)));
     if (!items) { PyErr_NoMemory(); return NULL; }
     PyObject *key, *value; Py_ssize_t pos = 0; size_t num = 0;
     while (PyDict_Next(data_map, &pos, &key, &value)) {
         if (!PyUnicode_Check(key)) { PyErr_SetString(PyExc_TypeError, "data_map must have string keys"); return NULL; }
         if (!PyBytes_Check(value)) { PyErr_SetString(PyExc_TypeError, "data_map must have bytes values"); return NULL; }
-        items[num].mime_type = PyUnicode_AsUTF8(key);
-        items[num].optional_data = PyBytes_AS_STRING(value); items[num].data_size = PyBytes_GET_SIZE(value);
-        num++;
+        GLFWDragSourceItem *item = items + num++;
+        item->mime_type = PyUnicode_AsUTF8(key);
+        item->optional_data = PyBytes_AS_STRING(value); item->data_size = PyBytes_GET_SIZE(value);
     }
     GLFWimage thumbnail = {.pixels=thumbnail_data, .width=width, .height=height};
     free_drag_source();

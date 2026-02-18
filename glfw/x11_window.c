@@ -3815,8 +3815,8 @@ GLFWAPI int glfwSetX11LaunchCommand(GLFWwindow *handle, char **argv, int argc)
 
 // Drag source {{{
 int
-_glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail, int operations) {
-    (void)window; (void)thumbnail; (void)operations;
+_glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
+    (void)window; (void)thumbnail;
     return ENOTSUP;
 }
 void _glfwPlatformFreeDragSourceData(void) {}

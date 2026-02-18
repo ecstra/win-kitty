@@ -667,7 +667,7 @@ struct _GLFWlibrary
 
     struct {
         GLFWDragSourceItem *items; size_t item_count;
-        GLFWid window_id;
+        GLFWid window_id, instance_id; int operations;
     } drag;
 };
 
@@ -832,7 +832,7 @@ ssize_t _glfwPlatformReadAvailableDropData(GLFWwindow *w, GLFWDropEvent *ev, cha
 void _glfwPlatformEndDrop(GLFWwindow *w, GLFWDragOperationType op);
 int _glfwPlatformRequestDropData(_GLFWwindow *window, const char *mime);
 // Platform functions for drag source
-int _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail, int operations);
+int _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail);
 void _glfwFreeDragSourceData(void);
 void _glfwPlatformFreeDragSourceData(void);
 void _glfwInputDragSourceRequest(_GLFWwindow* window, GLFWDragEvent *ev);

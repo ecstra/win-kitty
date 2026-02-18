@@ -3217,6 +3217,7 @@ drag_source_action(void *data UNUSED, struct wl_data_source *source UNUSED, uint
             case WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY: op = GLFW_DRAG_OPERATION_COPY; break;
             case WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE: op = GLFW_DRAG_OPERATION_MOVE; break;
         }
+        _glfw.wl.drag.action = op;
         GLFWDragEvent ev = {.type=GLFW_DRAG_ACTION_CHANGED, .action=op};
         _glfwInputDragSourceRequest(window, &ev);
     } else drag_source_cancelled(data, source);
@@ -3235,7 +3236,7 @@ static void
 drag_source_dnd_finished(void *data UNUSED, struct wl_data_source *source UNUSED) {
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (window) {
-        GLFWDragEvent ev = {.type=GLFW_DRAG_FINSHED};
+        GLFWDragEvent ev = {.type=GLFW_DRAG_FINSHED, .action=_glfw.wl.drag.action};
         _glfwInputDragSourceRequest(window, &ev);
     }
     _glfwFreeDragSourceData();
@@ -3268,7 +3269,7 @@ _glfwPlatformFreeDragSourceData(void) {
 }
 
 int
-_glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail, int operations) {
+_glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
     if (!_glfw.wl.dataDeviceManager) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: Data device manager not available");
         return ENOTSUP;
@@ -3287,7 +3288,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail, int oper
     }
 
     // Set the DND action based on operation type (bitfield)
-    uint32_t wl_actions = 0;
+    uint32_t wl_actions = 0; int operations = _glfw.drag.operations;
     if (operations & GLFW_DRAG_OPERATION_COPY)
         wl_actions |= WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY;
     if (operations & GLFW_DRAG_OPERATION_MOVE)

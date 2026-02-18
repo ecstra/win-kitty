@@ -419,6 +419,7 @@ typedef struct _GLFWlibraryWayland
             size_t sz, offset;
         } *data_requests;
         size_t count, capacity;
+        GLFWDragOperationType action;
     } drag;
 } _GLFWlibraryWayland;
 
