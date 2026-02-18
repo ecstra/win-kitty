@@ -1432,6 +1432,40 @@ setup_os_window_for_rendering(OSWindow *os_window, Tab *tab, Window *active_wind
     if (start) start_os_window_rendering(os_window, tab);
     else stop_os_window_rendering(os_window, tab, active_window);
 }
+
+void
+take_screenshot_of_oswindow(OSWindow *os_window, unsigned char *dst_buf, unsigned *thumb_w, unsigned *thumb_h) {
+    unsigned vw = os_window->viewport_width;
+    unsigned vh = os_window->viewport_height;
+    *thumb_w = MIN(vw, *thumb_w);
+    *thumb_h = MIN(vw, *thumb_h);
+
+    size_t src_stride = (size_t)vw * 4, dst_stride = *thumb_w * 4;
+    RAII_ALLOC(uint8_t, buf, malloc(src_stride * (size_t)vh));
+    if (!buf) return;
+
+    // Read the current framebuffer (before swap)
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, vw, vh, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+
+    // Downsample with vertical flip (OpenGL origin is bottom-left)
+    float x_ratio = (float)vw / (float)*thumb_w;
+    float y_ratio = (float)vh / (float)*thumb_h;
+    for (unsigned dy = 0; dy < *thumb_h; dy++) {
+        // Vertical flip: dst row 0 = top of image = src row (vh-1)
+        unsigned src_y = (unsigned)((float)(*thumb_h - 1 - dy) * y_ratio);
+        if (src_y >= vh) src_y = vh - 1;
+        const uint8_t *src_row = buf + (size_t)src_y * src_stride;
+        uint8_t *dst_row = dst_buf + (size_t)dy * dst_stride;
+        for (unsigned dx = 0; dx < *thumb_w; dx++) {
+            unsigned src_x = (unsigned)((float)dx * x_ratio);
+            if (src_x >= vw) src_x = vw - 1;
+            memcpy(dst_row + dx * 4, src_row + src_x * 4, 4);
+        }
+    }
+}
+
 // }}}
 
 // Python API {{{
