@@ -1812,7 +1812,7 @@ typedef void (* GLFWscrollfun)(GLFWwindow*,const GLFWScrollEvent*);
 typedef void (* GLFWkeyboardfun)(GLFWwindow*, GLFWkeyevent*);
 
 typedef enum {
-    GLFW_DRAG_DATA_REQUEST,
+    GLFW_DRAG_DATA_REQUEST,  // request data for specified mime type
     GLFW_DRAG_CANCELLED,
     GLFW_DRAG_FINSHED,
     GLFW_DRAG_ACCEPTED,  // mimetype was accepted or NULL if drag was accepted but no mime type specified
@@ -1829,8 +1829,14 @@ typedef struct GLFWDragSourceItem {
 
 typedef struct GLFWDragEvent {
     GLFWDragEventType type;
+    // When the drag event callback is called with a mimetype and no data, the
+    // application should set the data ans data_sz and err_num fields.
+    // Once glfw is done reading the data the drag event callback will be
+    // called with the data pointer unchanged. The application is now free
+    // to delete the data, as needed.
     const char *mime_type;
-    const char *data; size_t data_sz; int err_num;
+    const char *data; size_t data_sz;
+    int err_num;  // POSIX error code indicating failure fetching data
     GLFWDragOperationType action;  // can be 0 indicating no action
 } GLFWDragEvent;
 
@@ -4973,6 +4979,9 @@ GLFWAPI void glfwRequestDropUpdate(GLFWwindow *window);  // ask for update befor
 GLFWAPI int glfwRequestDropData(GLFWwindow *window, const char *mime);
 GLFWAPI void glfwEndDrop(GLFWwindow *window, GLFWDragOperationType op);
 GLFWAPI GLFWdragsourcefun glfwSetDragSourceCallback(GLFWwindow* window, GLFWdragsourcefun callback);
+
+// Start a drag. If called with operations == -1 indicates that previously
+// requested data via GLFW_DRAG_DATA_REQUEST is ready.
 GLFWAPI int glfwStartDrag(GLFWwindow* window, const GLFWDragSourceItem *items, size_t mime_count, const GLFWimage* thumbnail, int operations);
 
 /*! @brief Returns whether the specified joystick is present.
