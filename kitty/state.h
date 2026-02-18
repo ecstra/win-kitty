@@ -491,3 +491,5 @@ void dispatch_buffered_keys(Window *w);
 bool screen_needs_rendering_in_layers(OSWindow *os_window, Window *w, Screen *screen);
 void setup_os_window_for_rendering(OSWindow*, Tab*, Window*, bool);
 void swap_window_buffers(OSWindow *w);
+void take_screenshot_of_oswindow(OSWindow *os_window, unsigned char *dst_buf, unsigned *thumb_w, unsigned *thumb_h, bool include_tab_bar);
+bool take_screenshot_of_window(id_type window_id, unsigned char *dst_buf, unsigned *thumb_w, unsigned *thumb_h);
