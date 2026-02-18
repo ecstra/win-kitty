@@ -1433,10 +1433,15 @@ setup_os_window_for_rendering(OSWindow *os_window, Tab *tab, Window *active_wind
     else stop_os_window_rendering(os_window, tab, active_window);
 }
 
+// Take a screenshot of the OS Window, must be called immediately after
+// the OSWindow is rendered into the back buffer and before the buffers
+// are swapped. If thumb_w or thumb_h are zero the are set to the corresponding
+// dimension of the OS Window.
 void
 take_screenshot_of_oswindow(OSWindow *os_window, unsigned char *dst_buf, unsigned *thumb_w, unsigned *thumb_h) {
     unsigned vw = os_window->viewport_width;
     unsigned vh = os_window->viewport_height;
+    if (!*thumb_w) *thumb_w = vw; if (!*thumb_h) *thumb_h = vh;
     *thumb_w = MIN(vw, *thumb_w);
     *thumb_h = MIN(vw, *thumb_h);
 
