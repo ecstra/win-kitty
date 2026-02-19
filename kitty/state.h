@@ -98,6 +98,7 @@ typedef struct Options {
     bool sync_to_monitor;
     bool close_on_child_death;
     bool window_alert_on_bell;
+    bool macos_dock_badge_on_bell;
     bool debug_keyboard;
     bool allow_hyperlinks;
     struct { monotonic_t on_end, on_pause; } resize_debounce_time;

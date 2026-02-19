@@ -2201,6 +2201,9 @@ request_window_attention(id_type kitty_window_id, bool audio_bell) {
     if (w) {
         if (audio_bell) ring_audio_bell(w);
         if (OPT(window_alert_on_bell)) glfwRequestWindowAttention(w->handle);
+#ifdef __APPLE__
+        if (OPT(macos_dock_badge_on_bell)) cocoa_set_dock_badge("!");
+#endif
         glfwPostEmptyEvent();
     }
 }

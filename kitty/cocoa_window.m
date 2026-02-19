@@ -1339,6 +1339,28 @@ cocoa_show_progress_bar_on_dock_icon(PyObject *self UNUSED, PyObject *args) {
 }
 // }}}
 
+// Dock badge {{{
+
+void
+cocoa_set_dock_badge(const char *label) {
+    @autoreleasepool {
+        NSDockTile *dockTile = [NSApp dockTile];
+        [dockTile setBadgeLabel:@(label)];
+        [dockTile display];
+    }
+}
+
+void
+cocoa_clear_dock_badge(void) {
+    @autoreleasepool {
+        NSDockTile *dockTile = [NSApp dockTile];
+        [dockTile setBadgeLabel:nil];
+        [dockTile display];
+    }
+}
+
+// }}}
+
 static PyMethodDef module_methods[] = {
     {"cocoa_play_system_sound_by_id_async", play_system_sound_by_id_async, METH_O, ""},
     {"cocoa_get_lang", (PyCFunction)cocoa_get_lang, METH_NOARGS, ""},
@@ -1360,5 +1382,12 @@ init_cocoa(PyObject *module) {
     cocoa_clear_global_shortcuts();
     if (PyModule_AddFunctions(module, module_methods) != 0) return false;
     register_at_exit_cleanup_func(COCOA_CLEANUP_FUNC, cleanup);
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSApplicationDidBecomeActiveNotification
+        object:nil
+        queue:[NSOperationQueue mainQueue]
+        usingBlock:^(NSNotification *note __attribute__((unused))) {
+            cocoa_clear_dock_badge();
+        }];
     return true;
 }

@@ -1129,6 +1129,15 @@ window in which the bell occurred.
 '''
     )
 
+opt('macos_dock_badge_on_bell', 'yes',
+    option_type='to_bool', ctype='bool',
+    long_text='''
+Show a badge on kitty's dock icon when a bell occurs and kitty is not the
+active application (macOS only). The badge is automatically cleared when kitty
+regains focus.
+'''
+    )
+
 opt('bell_path', 'none',
     option_type='config_or_absolute_path', ctype='!bell_path',
     long_text='''
