@@ -1491,6 +1491,11 @@ set_tab_being_dragged(PyObject *self UNUSED, PyObject *args) {
 }
 
 static PyObject*
+get_tab_being_dragged(PyObject *self UNUSED, PyObject *args UNUSED) {
+    return PyLong_FromUnsignedLongLong(global_state.tab_being_dragged);
+}
+
+static PyObject*
 request_callback_with_thumbnail(PyObject *self UNUSED, PyObject *args) {
     unsigned long long os_window_id, window_id = 0;
     const char *callback; int include_tab_bar = 0;
@@ -1517,6 +1522,7 @@ static PyMethodDef module_methods[] = {
     M(get_mouse_data_for_window, METH_VARARGS),
     M(request_callback_with_thumbnail, METH_VARARGS),
     M(set_tab_being_dragged, METH_O),
+    M(get_tab_being_dragged, METH_NOARGS),
     MW(update_pointer_shape, METH_VARARGS),
     MW(current_os_window, METH_NOARGS),
     MW(next_window_id, METH_NOARGS),

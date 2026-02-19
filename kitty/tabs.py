@@ -38,19 +38,21 @@ from .fast_data_types import (
     next_window_id,
     remove_tab,
     remove_window,
+    replace_c0_codes_except_nl_space_tab,
     request_callback_with_thumbnail,
     ring_bell,
     set_active_tab,
     set_active_window,
     set_redirect_keys_to_overlay,
     set_tab_being_dragged,
+    start_drag_with_data,
     swap_tabs,
     sync_os_window_title,
 )
 from .layout.base import Layout
 from .layout.interface import create_layout_object_for, evict_cached_layouts
 from .progress import ProgressState
-from .tab_bar import TabBar, TabBarData
+from .tab_bar import TabBar, TabBarData, apply_title_template
 from .types import ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
 from .utils import cmdline_for_hold, log_error, platform_window_id, resolved_shell, shlex_split, which
@@ -89,6 +91,7 @@ class TabDragState(NamedTuple):
     start_y: float
     original_index: int
     drag_started: bool = False  # True if drag threshold exceeded
+    tab_being_dragged: TabBarData | None = None  # This is not None once the tab is handed off to the OS
 
 
 class TabDict(TypedDict):
@@ -381,6 +384,25 @@ class Tab:  # {{{
                 ''
             ] + launch_cmds
         return []
+
+    def data_for_tab_bar(self, is_active: bool) -> TabBarData:
+        t = self
+        title = t.name or t.title or appname
+        needs_attention = False
+        has_activity_since_last_focus = False
+        for w in t:
+            if w.needs_attention:
+                needs_attention = True
+            if w.has_activity_since_last_focus:
+                has_activity_since_last_focus = True
+        return TabBarData(
+            title, is_active, needs_attention, t.id,
+            len(t), t.num_window_groups, t.current_layout.name or '',
+            has_activity_since_last_focus, t.active_fg, t.active_bg,
+            t.inactive_fg, t.inactive_bg, t.num_of_windows_with_progress,
+            t.total_progress, t.last_focused_window_with_progress_id,
+            t.created_in_session_name, t.active_session_name,
+        )
 
     def active_window_changed(self) -> None:
         w = self.active_window
@@ -1510,35 +1532,25 @@ class TabManager:  # {{{
         removed_tab.destroy()
 
     @property
-    def tab_bar_data(self) -> list[TabBarData]:
+    def tab_bar_data(self) -> tuple[TabBarData, ...]:
         at = self.active_tab
-        ans = []
-        for t in self.tabs_to_be_shown_in_tab_bar:
-            title = t.name or t.title or appname
-            needs_attention = False
-            has_activity_since_last_focus = False
-            for w in t:
-                if w.needs_attention:
-                    needs_attention = True
-                if w.has_activity_since_last_focus:
-                    has_activity_since_last_focus = True
-            ans.append(TabBarData(
-                title, t is at, needs_attention, t.id,
-                len(t), t.num_window_groups, t.current_layout.name or '',
-                has_activity_since_last_focus, t.active_fg, t.active_bg,
-                t.inactive_fg, t.inactive_bg, t.num_of_windows_with_progress,
-                t.total_progress, t.last_focused_window_with_progress_id,
-                t.created_in_session_name, t.active_session_name,
-            ))
-        return ans
+        return tuple(t.data_for_tab_bar(t is at) for t in self.tabs_to_be_shown_in_tab_bar)
 
     def start_tab_drag(self, pixels: bytes, width: int, height: int) -> None:
         if (state := self.tab_drag_state) is None:
             return
-        from .fast_data_types import png_from_32bit_rgba_data
-        with open('/t/screenshot.png', 'wb') as f:
-            f.write(png_from_32bit_rgba_data(pixels, width, height))
-        print(11111111, state, width, height)
+        for i, tab in enumerate(self.tabs_to_be_shown_in_tab_bar):
+            if tab.id == state.tab_id:
+                td = tab.data_for_tab_bar(tab is self.active_tab)
+                title = apply_title_template(self.tab_bar.draw_data, td, i+1)
+                title = re.sub(r'\x1b\[.+?[a-zA-Z]', '', title).strip()  # strip CSI codes
+                drag_data = {
+                    'text/plain': replace_c0_codes_except_nl_space_tab(title.encode()),
+                    f'application/net.kovidgoyal.kitty-tab-{os.getpid()}': str(tab.id).encode(),
+                }
+                start_drag_with_data(self.os_window_id, drag_data, pixels, width, height)
+                self.tab_drag_state = state._replace(tab_being_dragged=td)
+                break
 
     def handle_tab_bar_mouse(self, x: float, y: float, button: int, modifiers: int, action: int) -> None:
         if button == -1:  # motion

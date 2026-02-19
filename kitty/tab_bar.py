@@ -262,7 +262,7 @@ safe_builtins = {
 }
 
 
-def draw_title(draw_data: DrawData, screen: Screen, tab: TabBarData, index: int, max_title_length: int = 0) -> None:
+def apply_title_template(draw_data: DrawData, tab: TabBarData, index: int, max_title_length: int = 0) -> str:
     ta = TabAccessor(tab.tab_id)
     data = {
         'index': index,
@@ -306,10 +306,15 @@ def draw_title(draw_data: DrawData, screen: Screen, tab: TabBarData, index: int,
         template = '{fmt.fg.red}' + prefix + '{fmt.fg.tab}' + template
     eval_locals['custom'] = load_custom_draw_title(eval_locals)
     try:
-        title = eval(compile_template(template), {'__builtins__': safe_builtins}, eval_locals)
+        title: str = eval(compile_template(template), {'__builtins__': safe_builtins}, eval_locals)
     except Exception as e:
         report_template_failure(template, str(e))
         title = tab.title
+    return title
+
+
+def draw_title(draw_data: DrawData, screen: Screen, tab: TabBarData, index: int, max_title_length: int = 0) -> None:
+    title = apply_title_template(draw_data, tab, index, max_title_length)
     before_draw = screen.cursor.x
     draw_attributed_string(title, screen)
     if draw_data.max_tab_title_length > 0:
