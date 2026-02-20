@@ -647,6 +647,9 @@ window_focus_callback(GLFWwindow *w, int focused) {
 
 static int
 is_droppable_mime(const char *mime) {
+    static char tab_mime[64] = {0};
+    if (!tab_mime[0]) snprintf(tab_mime, sizeof(tab_mime), "application/net.kovidgoyal.kitty-tab-%d", getpid());
+    if (strcmp(mime, tab_mime) == 0) return 4;
     if (strcmp(mime, "text/uri-list") == 0) return 3;
     if (strcmp(mime, "text/plain;charset=utf-8") == 0) return 2;
     if (strcmp(mime, "text/plain") == 0) return 1;
@@ -721,12 +724,18 @@ read_drop_data(GLFWwindow *window, GLFWDropEvent *ev) {
 static void
 on_drop(GLFWwindow *window, GLFWDropEvent *ev) {
     if (!set_callback_window(window)) return;
+    OSWindow *os_window = global_state.callback_os_window;
     switch (ev->type) {
         case GLFW_DROP_ENTER:
         case GLFW_DROP_MOVE:
-            global_state.callback_os_window->last_drag_event.x = (int)(ev->xpos * global_state.callback_os_window->viewport_x_ratio);
-            global_state.callback_os_window->last_drag_event.y = (int)(ev->ypos * global_state.callback_os_window->viewport_y_ratio);
+            os_window->last_drag_event.x = (int)(ev->xpos * os_window->viewport_x_ratio);
+            os_window->last_drag_event.y = (int)(ev->ypos * os_window->viewport_y_ratio);
             on_mouse_position_update(ev->xpos, ev->ypos);
+            if (global_state.drag_source.is_active) {
+                call_boss(on_drop_move, "KiiO",
+                    os_window->id, os_window->last_drag_event.x, os_window->last_drag_event.y,
+                    ev->from_self ? Py_True : Py_False);
+            }
             /* fallthrough */
         case GLFW_DROP_STATUS_UPDATE:
             update_allowed_mimes_for_drop(ev);

@@ -40,6 +40,7 @@ class TabBarData(NamedTuple):
     is_active: bool
     needs_attention: bool
     tab_id: int
+    os_window_id: int
     num_windows: int
     num_window_groups: int
     layout_name: str
@@ -53,6 +54,10 @@ class TabBarData(NamedTuple):
     last_focused_window_with_progress_id: int
     session_name: str
     active_session_name: str
+
+    is_being_moved: bool = False
+    drop_idx: int = 0
+    pending_drop_idx: int = -1
 
 
 class DrawData(NamedTuple):
@@ -568,6 +573,7 @@ class TabBar:
 
     def __init__(self, os_window_id: int):
         self.os_window_id = os_window_id
+        self.last_laid_out_tabs: Sequence[TabBarData] = ()
         self.num_tabs = 1
         self.data_buffer_size = 0
         self.blank_rects: tuple[Border, ...] = ()
@@ -727,6 +733,7 @@ class TabBar:
         s = self.screen
         last_tab = data[-1] if data else None
         ed = ExtraData()
+        self.last_laid_out_tabs = data
 
         def draw_tab(i: int, tab: TabBarData, cell_ranges: list[TabExtent], max_tab_length: int) -> None:
             ed.prev_tab = data[i - 1] if i > 0 else None

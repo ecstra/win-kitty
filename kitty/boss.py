@@ -86,6 +86,7 @@ from .fast_data_types import (
     get_boss,
     get_options,
     get_os_window_size,
+    get_tab_being_dragged,
     glfw_get_monitor_workarea,
     global_font_size,
     grab_keyboard,
@@ -1889,6 +1890,14 @@ class Boss:
         tm = self.os_window_map.get(os_window_id)
         if tm is not None:
             tm.update_tab_bar_data()
+
+    def on_drop_move(self, os_window_id: int, x: int, y: int, from_self: bool) -> None:
+        if (tm := self.os_window_map.get(os_window_id)) is None:
+            return
+        if from_self and (tab_id := get_tab_being_dragged()) and (tab := self.tab_for_id(tab_id)):
+            if (source_tm := tab.tab_manager_ref()) and (state := source_tm.tab_drag_state) and state.tab_being_dragged:
+                for tm in self.all_tab_managers:
+                    tm.on_tab_drop_move(state.tab_being_dragged, x, y)
 
     def on_drop(self, os_window_id: int, drop: dict[str, bytes] | int, from_self: bool, x: int, y: int) -> None:
         if isinstance(drop, int):
