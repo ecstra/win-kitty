@@ -1566,7 +1566,7 @@ class TabManager:  # {{{
             self.tabs[pos] = id_map[tab_id]
         reorder_tabs(self.os_window_id, *(t.id for t in self.tabs))
 
-    def on_tab_drop_move(self, tab_id: int, is_dest: bool, x: int, y: int) -> None:
+    def on_tab_drop_move(self, tab_id: int = 0, is_dest: bool = False, x: int = 0, y: int = 0) -> None:
         if not is_dest:
             if self.tab_being_dropped:
                 self.tab_being_dropped = None

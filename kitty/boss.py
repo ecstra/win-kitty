@@ -1916,7 +1916,7 @@ class Boss:
             tm.on_tab_drop(x, y)
             set_tab_being_dragged()
             for tm in self.all_tab_managers:
-                tm.on_tab_drop_move(0, False, 0, 0)
+                tm.on_tab_drop_move()
                 tm.layout_tab_bar()  # ensure tab bar is fully updated
             return
         central, tab_bar = viewport_for_window(os_window_id)[:2]
@@ -1939,7 +1939,7 @@ class Boss:
         if data and (tidb := data.get(f'application/net.kovidgoyal.kitty-tab-{os.getpid()}')):
             set_tab_being_dragged()
             for tm in self.all_tab_managers:
-                tm.on_tab_drop_move(0, False, 0, 0)
+                tm.on_tab_drop_move()
             if not was_dropped:  # detach tab into new OS Window
                 tab_id = int(tidb.decode())
                 if (tab := self.tab_for_id(tab_id)):
