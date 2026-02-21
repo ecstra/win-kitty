@@ -388,13 +388,16 @@ typedef struct GlobalState {
         int action;
         PyObject *drag_data;
     } drag_source;
-    id_type tab_being_dragged;
     struct {
         id_type os_window, window;
         char callback[32];
         bool include_tab_bar;
         double scale; unsigned max_width;
     } thumbnail_callback;
+    struct {
+        id_type id; bool drag_started;
+        double x, y;
+    } tab_being_dragged;
 } GlobalState;
 
 extern GlobalState global_state;

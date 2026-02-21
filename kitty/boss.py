@@ -111,6 +111,7 @@ from .fast_data_types import (
     set_os_window_chrome,
     set_os_window_size,
     set_os_window_title,
+    set_tab_being_dragged,
     start_drag_with_data,
     thread_write,
     toggle_fullscreen,
@@ -1894,10 +1895,11 @@ class Boss:
     def on_drop_move(self, os_window_id: int, x: int, y: int, from_self: bool) -> None:
         if (tm := self.os_window_map.get(os_window_id)) is None:
             return
-        if from_self and (tab_id := get_tab_being_dragged()) and (tab := self.tab_for_id(tab_id)):
-            if (source_tm := tab.tab_manager_ref()) and (state := source_tm.tab_drag_state) and state.tab_being_dragged:
-                for tm in self.all_tab_managers:
-                    tm.on_tab_drop_move(state.tab_being_dragged, x, y)
+        if from_self:
+            tab_id, drag_started = get_tab_being_dragged()[:2]
+            if drag_started:
+                for q in self.all_tab_managers:
+                    q.on_tab_drop_move(tab_id, q is tm, x, y)
 
     def on_drop(self, os_window_id: int, drop: dict[str, bytes] | int, from_self: bool, x: int, y: int) -> None:
         if isinstance(drop, int):
@@ -1909,6 +1911,12 @@ class Boss:
             self.show_error(_('Drop failed'), f'[{code}] {msg}')
             return
         if (tm := self.os_window_map.get(os_window_id)) is None:
+            return
+        if f'application/net.kovidgoyal.kitty-tab-{os.getpid()}' in drop:
+            tm.on_tab_drop(x, y)
+            set_tab_being_dragged()
+            for tm in self.all_tab_managers:
+                tm.on_tab_drop_move(0, False, 0, 0)
             return
         central, tab_bar = viewport_for_window(os_window_id)[:2]
         if central.left <= x < central.right and central.top <= y < central.bottom:

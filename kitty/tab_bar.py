@@ -55,10 +55,6 @@ class TabBarData(NamedTuple):
     session_name: str
     active_session_name: str
 
-    is_being_moved: bool = False
-    drop_idx: int = 0
-    pending_drop_idx: int = -1
-
 
 class DrawData(NamedTuple):
     leading_spaces: int
@@ -291,6 +287,7 @@ def apply_title_template(draw_data: DrawData, tab: TabBarData, index: int, max_t
         'num_window_groups': tab.num_window_groups,
         'title': tab.title,
         'tab': ta,
+        'tab_id': tab.tab_id,
         'fmt': Formatter,
         'sup': SupSub(data),
         'sub': SupSub(data, True),

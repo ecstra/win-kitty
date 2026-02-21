@@ -31,6 +31,7 @@ from .fast_data_types import (
     get_boss,
     get_click_interval,
     get_options,
+    get_tab_being_dragged,
     is_tab_bar_visible,
     last_focused_os_window_id,
     mark_tab_bar_dirty,
@@ -38,6 +39,7 @@ from .fast_data_types import (
     next_window_id,
     remove_tab,
     remove_window,
+    reorder_tabs,
     replace_c0_codes_except_nl_space_tab,
     request_callback_with_thumbnail,
     ring_bell,
@@ -83,15 +85,6 @@ class TabMouseEvent(NamedTuple):
     action: int
     at: float
     tab_id: int = 0
-
-
-class TabDragState(NamedTuple):
-    tab_id: int
-    start_x: float
-    start_y: float
-    original_index: int
-    drag_started: bool = False  # True if drag threshold exceeded
-    tab_being_dragged: TabBarData | None = None  # This is not None once the tab is handed off to the OS
 
 
 class TabDict(TypedDict):
@@ -1096,15 +1089,22 @@ class Tab:  # {{{
 # }}}
 
 
+ignore_left_button_release: bool = False
+
+
+class TabBeingDropped(NamedTuple):
+    data: TabBarData
+    tab_ids: Sequence[int] = ()
+    last_drop_move_x: int = -1
+
+
 class TabManager:  # {{{
 
     confirm_close_window_id: int = 0
     num_of_windows_with_progress: int = 0
     total_progress: int = 0
     has_indeterminate_progress: bool = False
-    tab_drag_state: TabDragState | None = None
-    tab_being_dropped: TabBarData | None = None
-    last_drop_move_x: int = -1
+    tab_being_dropped: TabBeingDropped | None = None
 
     def __init__(self, os_window_id: int, args: CLIOptions, wm_class: str, wm_name: str, startup_session: SessionType | None = None):
         self.os_window_id = os_window_id
@@ -1201,7 +1201,8 @@ class TabManager:  # {{{
         count = get_options().tab_bar_min_tabs
         if count < 1:
             return True
-        if self.tab_drag_state is not None and self.tab_drag_state.drag_started:
+        tab_id, drag_started = get_tab_being_dragged()[:2]
+        if drag_started and self.tab_for_id(tab_id) is not None:
             count += 1
         for t in self.tabs_to_be_shown_in_tab_bar:
             count -= 1
@@ -1420,8 +1421,7 @@ class TabManager:  # {{{
             nidx = self.tabs.index(new_active_tab)
             step = 1 if idx < nidx else -1
             for i in range(idx, nidx, step):
-                self.tabs[i], self.tabs[i + step] = self.tabs[i + step], self.tabs[i]
-                swap_tabs(self.os_window_id, i, i + step)
+                self.swap_tabs(i, i + step)
             self._set_active_tab(nidx)
             self.mark_tab_bar_dirty()
 
@@ -1463,8 +1463,7 @@ class TabManager:  # {{{
             desired_idx = self.tabs.index(tabs[desired_idx])
             if idx != desired_idx:
                 for i in range(idx, desired_idx, -1):
-                    self.tabs[i], self.tabs[i-1] = self.tabs[i-1], self.tabs[i]
-                    swap_tabs(self.os_window_id, i, i-1)
+                    self.swap_tabs(i, i-1)
                 idx = desired_idx
         self._set_active_tab(idx)
         self.mark_tab_bar_dirty()
@@ -1540,100 +1539,117 @@ class TabManager:  # {{{
     @property
     def tab_bar_data(self) -> Sequence[TabBarData]:
         at = self.active_tab
-        state = self.tab_drag_state
-        dropped_tab_idx = dragged_tab_id = -1
         tab_being_dragged_from_here = False
-        if state is not None and state.drag_started:
-            dragged_tab_id = state.tab_id
-            tab_being_dragged_from_here = True
-        if self.tab_being_dropped is None and not tab_being_dragged_from_here:
+        dragged_tab_id, drag_started = get_tab_being_dragged()[:2]
+        if drag_started:
+            tab_being_dragged_from_here = self.tab_for_id(dragged_tab_id) is not None
+        if self.tab_being_dropped is None:
+            if tab_being_dragged_from_here:
+                return tuple(t.data_for_tab_bar(t is at) for t in self.tabs_to_be_shown_in_tab_bar if t.id != dragged_tab_id)
             return tuple(t.data_for_tab_bar(t is at) for t in self.tabs_to_be_shown_in_tab_bar)
-        if self.tab_being_dropped is not None and self.tab_being_dropped.os_window_id == self.os_window_id:
-            dropped_tab_idx = self.tab_being_dropped.drop_idx
-        if dropped_tab_idx < 0:
-            return tuple(t.data_for_tab_bar(t is at) for t in self.tabs_to_be_shown_in_tab_bar if t.id != dragged_tab_id)
-        assert self.tab_being_dropped is not None
-        ans: list[TabBarData] = []
-        drop_idx = -1
-        for i, tab in enumerate(self.tabs_to_be_shown_in_tab_bar):
-            if i == dropped_tab_idx:
-                drop_idx = len(ans)
-                ans.append(self.tab_being_dropped)
-            if tab.id != dragged_tab_id:
-                ans.append(tab.data_for_tab_bar(at is tab))
-        if drop_idx < 0:
-            drop_idx = len(ans)
-            ans.append(self.tab_being_dropped)
-        if (tgt := self.tab_being_dropped.pending_drop_idx) > -1:
-            self.tab_being_dropped = self.tab_being_dropped._replace(pending_drop_idx=-1)
-            tgt = max(0, min(tgt, len(ans)-1))
-            if tgt != drop_idx:
-                ans[drop_idx], ans[tgt] = ans[tgt], ans[drop_idx]
+        tmap = {t.id:t for t in self.tabs}
+        at = self.active_tab
+        ans = []
+        for tid in self.tab_being_dropped.tab_ids:
+            if tid == dragged_tab_id:
+                ans.append(self.tab_being_dropped.data)
+            else:
+                tab = tmap[tid]
+                ans.append(tab.data_for_tab_bar(tab is at))
         return ans
 
-    def on_tab_drop_move(self, tab_data: TabBarData, x: int, y: int) -> None:
-        if tab_data.os_window_id == self.os_window_id:
-            tid = self.tab_bar.tab_id_at(x)
-            all_tabs = tuple(t.tab_id for t in self.tab_bar.last_laid_out_tabs)
-            try:
-                idx = all_tabs.index(tid)
-            except ValueError:
-                idx = -1
-            if idx < 0:
-                idx = len(all_tabs) if x > 20 else 0
-            if self.tab_being_dropped is None:
-                tab_data = tab_data._replace(drop_idx=idx)
-                self.last_drop_move_x = x
-            else:
-                if x == self.last_drop_move_x:
-                    return
-                mouse_moved_left = x < self.last_drop_move_x
-                self.last_drop_move_x = x
-                tab_data = tab_data._replace(pending_drop_idx=idx)
-                cur_tab_data, self.tab_being_dropped = self.tab_being_dropped, tab_data
-                new_tabs = tuple(t.tab_id for t in self.tab_bar_data)
-                self.tab_being_dropped = cur_tab_data
-                if new_tabs == all_tabs:
-                    return
-                try:
-                    old_idx = all_tabs.index(tab_data.tab_id)
-                except Exception:
-                    pass
-                else:
-                    new_idx = new_tabs.index(tab_data.tab_id)
-                    tab_moved_left = new_idx < old_idx
-                    if mouse_moved_left != tab_moved_left or new_idx == old_idx:
-                        return
-                tab_data = tab_data._replace(pending_drop_idx=idx)
-            self.tab_being_dropped = tab_data
-            self.layout_tab_bar()
-        elif self.tab_being_dropped is not None:
-            self.tab_being_dropped = None
+    def apply_tab_ordering(self, tab_ids: Sequence[int]) -> None:
+        id_map = {t.id:t for t in self.tabs}
+        ordered_ids = frozenset(tab_ids)
+        positions = (i for i, t in enumerate(self.tabs) if t.id in ordered_ids)
+        for pos, tab_id in zip(positions, tab_ids):
+            self.tabs[pos] = id_map[tab_id]
+        reorder_tabs(self.os_window_id, *(t.id for t in self.tabs))
+
+    def on_tab_drop_move(self, tab_id: int, is_dest: bool, x: int, y: int) -> None:
+        if not is_dest:
+            if self.tab_being_dropped:
+                self.tab_being_dropped = None
+                self.layout_tab_bar()
+            return
+        all_tabs = [t.tab_id for t in self.tab_bar.last_laid_out_tabs]
+        if self.tab_being_dropped is None:
+            tab = get_boss().tab_for_id(tab_id)
+            if tab is None:
+                return
+            tab_data = tab.data_for_tab_bar(tab is get_boss().active_tab)
+            if tab_id not in all_tabs:
+                all_tabs.append(tab_id)
+            _, _, start_x, _ = get_tab_being_dragged()
+            self.tab_being_dropped = TabBeingDropped(data=tab_data, tab_ids=all_tabs, last_drop_move_x=int(start_x))
+            mouse_moved_left = False
+        if x == self.tab_being_dropped.last_drop_move_x:
+            return
+        mouse_moved_left = x < self.tab_being_dropped.last_drop_move_x
+        old_tab_ids = self.tab_being_dropped.tab_ids
+        idx_under_mouse = -1
+        if (tab_id_under_mouse := self.tab_bar.tab_id_at(x)):
+            with suppress(Exception):
+                idx_under_mouse = old_tab_ids.index(tab_id_under_mouse)
+        if idx_under_mouse < 0:
+            idx_under_mouse = 0 if x < 20 else len(old_tab_ids) - 1
+        old_idx_under_mouse = old_tab_ids.index(tab_id)
+        idx_moved_left = old_idx_under_mouse > idx_under_mouse
+        new_tab_ids = old_tab_ids
+        if mouse_moved_left == idx_moved_left:
+            new_tab_ids = list(old_tab_ids)
+            new_tab_ids[idx_under_mouse], new_tab_ids[old_idx_under_mouse] = new_tab_ids[old_idx_under_mouse], new_tab_ids[idx_under_mouse]
+        self.tab_being_dropped = self.tab_being_dropped._replace(last_drop_move_x=x, tab_ids=new_tab_ids)
+        if self.tab_being_dropped.tab_ids != old_tab_ids:
             self.layout_tab_bar()
 
-    def start_tab_drag(self, pixels: bytes, width: int, height: int) -> None:
-        if (state := self.tab_drag_state) is None:
+    def on_tab_drop(self, x: int, y: int) -> None:
+        if (td := self.tab_being_dropped) is None:
             return
+        if (tab := get_boss().tab_for_id(td.data.tab_id)) is None:
+            return
+        self.on_tab_drop_move(td.data.tab_id, True, x, y)
+        if (td := self.tab_being_dropped) is None:
+            return
+        self.tab_being_dropped = None
+        atid = self.active_tab.id if self.active_tab else 0
+        if tab.os_window_id != self.os_window_id:
+            get_boss()._move_tab_to(tab, self.os_window_id)
+        self.apply_tab_ordering(td.tab_ids)
+        if atid and tab.os_window_id == self.os_window_id and (tab := self.tab_for_id(atid)):
+            idx = self.tabs.index(tab)
+            self._set_active_tab(idx, store_in_history=False)
+        self.layout_tab_bar()
+
+    def swap_tabs(self, idx: int, nidx: int) -> None:
+        if idx != nidx:
+            self.tabs[idx], self.tabs[nidx] = self.tabs[nidx], self.tabs[idx]
+            swap_tabs(self.os_window_id, idx, nidx)
+
+    def start_tab_drag(self, pixels: bytes, width: int, height: int) -> None:
+        dragged_tab_id = get_tab_being_dragged()[0]
         for i, tab in enumerate(self.tabs_to_be_shown_in_tab_bar):
-            if tab.id == state.tab_id:
-                td = tab.data_for_tab_bar(tab is self.active_tab)._replace(
-                    is_being_moved=True, drop_idx=i
-                )
+            if tab.id == dragged_tab_id:
+                td = tab.data_for_tab_bar(tab is self.active_tab)
                 title = apply_title_template(self.tab_bar.draw_data, td, i+1)
-                title = re.sub(r'\x1b\[.+?[a-zA-Z]', '', title).strip()  # strip CSI codes
+                title = re.sub(r'\x1b\[.+?[a-zA-Z]', '', title).strip()  # strip CSI codes ]
                 title = replace_c0_codes_except_nl_space_tab(title.encode()).decode()
+                title = re.sub(r'\n', ' ', title)
+                # TODO: Add the title to the drag icon
                 drag_data = {
                     f'application/net.kovidgoyal.kitty-tab-{os.getpid()}': str(tab.id).encode(),
                 }
                 start_drag_with_data(self.os_window_id, drag_data, pixels, width, height)
-                self.tab_drag_state = state._replace(tab_being_dragged=td)
                 break
+        else:
+            set_tab_being_dragged()
 
     def handle_tab_bar_mouse(self, x: float, y: float, button: int, modifiers: int, action: int) -> None:
         if button == -1:  # motion
-            if (state := self.tab_drag_state) is not None and not state.drag_started:
-                if math.sqrt((x-state.start_x)**2 + (y-state.start_y)**2) > 5:
-                    self.tab_drag_state = state._replace(drag_started=True)
+            dragged_tab_id, drag_started, start_x, start_y = get_tab_being_dragged()
+            if dragged_tab_id and self.tab_for_id(dragged_tab_id) is not None and not drag_started:
+                if math.sqrt((x-start_x)**2 + (y-start_y)**2) > 5:
+                    set_tab_being_dragged(dragged_tab_id, True, start_x, start_y)
                     request_callback_with_thumbnail("start_tab_drag", self.os_window_id)
             return
 
@@ -1654,14 +1670,15 @@ class TabManager:  # {{{
                     return
         else:
             if button == GLFW_MOUSE_BUTTON_LEFT:
+                global ignore_left_button_release
                 if action == GLFW_PRESS:
-                    if (idx := self.tabs.index(tab) if tab in self.tabs else -1) > -1:
-                        set_tab_being_dragged(tab.id)
-                        self.tab_drag_state = TabDragState(
-                            tab_id=tab.id, start_x=x, start_y=y, original_index=idx)
+                    set_tab_being_dragged(tab.id, False, x, y)
+                    ignore_left_button_release = True
                 else:
-                    if self.tab_drag_state is None or not self.tab_drag_state.drag_started:
+                    ignore, ignore_left_button_release = ignore_left_button_release, False
+                    if not ignore:
                         self.set_active_tab(tab)
+                    set_tab_being_dragged()
             elif button == GLFW_MOUSE_BUTTON_MIDDLE:
                 if action == GLFW_RELEASE and self.recent_mouse_events:
                     p = self.recent_mouse_events[-1]
