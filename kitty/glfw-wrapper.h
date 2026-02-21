@@ -1540,7 +1540,7 @@ typedef void (* GLFWscrollfun)(GLFWwindow*,const GLFWScrollEvent*);
 typedef void (* GLFWkeyboardfun)(GLFWwindow*, GLFWkeyevent*);
 
 typedef enum {
-    GLFW_DRAG_DATA_REQUEST,
+    GLFW_DRAG_DATA_REQUEST,  // request data for specified mime type
     GLFW_DRAG_CANCELLED,
     GLFW_DRAG_FINSHED,
     GLFW_DRAG_ACCEPTED,  // mimetype was accepted or NULL if drag was accepted but no mime type specified
@@ -1557,8 +1557,14 @@ typedef struct GLFWDragSourceItem {
 
 typedef struct GLFWDragEvent {
     GLFWDragEventType type;
+    // When the drag event callback is called with a mimetype and no data, the
+    // application should set the data ans data_sz and err_num fields.
+    // Once glfw is done reading the data the drag event callback will be
+    // called with the data pointer unchanged. The application is now free
+    // to delete the data, as needed.
     const char *mime_type;
-    const char *data; size_t data_sz; int err_num;
+    const char *data; size_t data_sz;
+    int err_num;  // POSIX error code indicating failure fetching data
     GLFWDragOperationType action;  // can be 0 indicating no action
 } GLFWDragEvent;
 
@@ -2458,6 +2464,10 @@ GFW_EXTERN glfwCocoaCycleThroughOSWindows_func glfwCocoaCycleThroughOSWindows_im
 typedef void (*glfwCocoaSetWindowChrome_func)(GLFWwindow*, unsigned int, bool, unsigned int, int, unsigned int, bool, int, float, bool);
 GFW_EXTERN glfwCocoaSetWindowChrome_func glfwCocoaSetWindowChrome_impl;
 #define glfwCocoaSetWindowChrome glfwCocoaSetWindowChrome_impl
+
+typedef void (*glfwCocoaRegisterMIMETypes_func)(GLFWwindow*, const char**, size_t);
+GFW_EXTERN glfwCocoaRegisterMIMETypes_func glfwCocoaRegisterMIMETypes_impl;
+#define glfwCocoaRegisterMIMETypes glfwCocoaRegisterMIMETypes_impl
 
 typedef const char* (*glfwGetPrimarySelectionString_func)(GLFWwindow*);
 GFW_EXTERN glfwGetPrimarySelectionString_func glfwGetPrimarySelectionString_impl;

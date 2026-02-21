@@ -3876,6 +3876,17 @@ glfwCocoaCycleThroughOSWindows(bool backwards) {
 }
 
 
+GLFWAPI void
+glfwCocoaRegisterMIMETypes(GLFWwindow *window, const char **mimes, size_t count) {
+    _GLFWwindow *w = (_GLFWwindow*)window;
+    NSArray *currentTypes = [w->ns.view registeredDraggedTypes];
+    NSMutableArray *updatedTypes = [NSMutableArray arrayWithArray:currentTypes];
+    for (size_t i = 0; i < count; i++) {
+        NSString *uti = mime_to_uti(mimes[i]);
+        if (![updatedTypes containsObject:uti]) [updatedTypes addObject:uti];
+    }
+    [w->ns.view registerForDraggedTypes:updatedTypes];
+}
 
 //////////////////////////////////////////////////////////////////////////
 //////                       GLFW internal API                      //////

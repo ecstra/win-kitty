@@ -491,6 +491,9 @@ load_glfw(const char* path) {
     *(void **) (&glfwCocoaSetWindowChrome_impl) = dlsym(handle, "glfwCocoaSetWindowChrome");
     if (glfwCocoaSetWindowChrome_impl == NULL) dlerror(); // clear error indicator
 
+    *(void **) (&glfwCocoaRegisterMIMETypes_impl) = dlsym(handle, "glfwCocoaRegisterMIMETypes");
+    if (glfwCocoaRegisterMIMETypes_impl == NULL) dlerror(); // clear error indicator
+
     *(void **) (&glfwGetPrimarySelectionString_impl) = dlsym(handle, "glfwGetPrimarySelectionString");
     if (glfwGetPrimarySelectionString_impl == NULL) dlerror(); // clear error indicator
 
