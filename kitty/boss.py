@@ -1917,6 +1917,7 @@ class Boss:
             set_tab_being_dragged()
             for tm in self.all_tab_managers:
                 tm.on_tab_drop_move(0, False, 0, 0)
+                tm.layout_tab_bar()  # ensure tab bar is fully updated
             return
         central, tab_bar = viewport_for_window(os_window_id)[:2]
         if central.left <= x < central.right and central.top <= y < central.bottom:
@@ -1931,6 +1932,18 @@ class Boss:
         elif tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < central.bottom:
             if (tab_id := tm.tab_bar.tab_id_at(x)) and (tab := self.tab_for_id(tab_id)) and (w := tab.active_window):
                 w.on_drop(drop)
+
+    def on_drag_source_finished(
+        self, was_dropped: bool, was_canceled: bool, accepted_mime_type: str, action: int, data: dict[str, bytes] | None
+    ) -> None:
+        if data and (tidb := data.get(f'application/net.kovidgoyal.kitty-tab-{os.getpid()}')):
+            set_tab_being_dragged()
+            for tm in self.all_tab_managers:
+                tm.on_tab_drop_move(0, False, 0, 0)
+            if not was_dropped:  # detach tab into new OS Window
+                tab_id = int(tidb.decode())
+                if (tab := self.tab_for_id(tab_id)):
+                    self._move_tab_to(tab)
 
     @ac('win', '''
         Focus the nth OS window if positive or the previously active OS windows if negative. When the number is larger

@@ -746,6 +746,7 @@ on_drop(GLFWwindow *window, GLFWDropEvent *ev) {
             Py_CLEAR(global_state.drop_dest.data);
             if (ev->from_self) {
                 if (global_state.drag_source.drag_data) {
+                    global_state.drag_source.was_dropped = true;
                     WINDOW_CALLBACK(on_drop, "OOii", global_state.drag_source.drag_data, Py_True,
                         global_state.callback_os_window->last_drag_event.x, global_state.callback_os_window->last_drag_event.y);
                 } else log_error("Got a drop from self but drag_source.drag_data is NULL");
@@ -804,12 +805,17 @@ drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
             ds.accepted_mime_type = ev->mime_type ? strdup(ev->mime_type) : NULL;
             break;
         case GLFW_DRAG_ACTION_CHANGED: ds.action = ev->action; break;
-        case GLFW_DRAG_DROPPED: ds.was_dropped = true; break;
+        case GLFW_DRAG_DROPPED:
+            ds.was_dropped = true;
+            break;
         case GLFW_DRAG_CANCELLED:
             ds.was_canceled = true;
             /* fallthrough */
         case GLFW_DRAG_FINSHED:
-            ds.is_active = false;
+            call_boss(on_drag_source_finished, "OOsiO",
+                    ds.was_dropped ? Py_True : Py_False, ds.was_canceled ? Py_True: Py_False,
+                    ds.accepted_mime_type ? ds.accepted_mime_type : "",
+                    ds.action, ds.drag_data ? ds.drag_data : Py_None);
             free_drag_source();
             break;
     }

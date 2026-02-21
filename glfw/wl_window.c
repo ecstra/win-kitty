@@ -3227,7 +3227,7 @@ static void
 drag_source_dnd_drop_performed(void *data UNUSED, struct wl_data_source *source UNUSED) {
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (window) {
-        GLFWDragEvent ev = {.type=GLFW_DRAG_ACTION_CHANGED};
+        GLFWDragEvent ev = {.type=GLFW_DRAG_DROPPED};
         _glfwInputDragSourceRequest(window, &ev);
     } else drag_source_cancelled(data, source);
 }
