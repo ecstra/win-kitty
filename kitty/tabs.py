@@ -1678,7 +1678,6 @@ class TabManager:  # {{{
                     ignore, ignore_left_button_release = ignore_left_button_release, False
                     if not ignore:
                         self.set_active_tab(tab)
-                    set_tab_being_dragged()
             elif button == GLFW_MOUSE_BUTTON_MIDDLE:
                 if action == GLFW_RELEASE and self.recent_mouse_events:
                     p = self.recent_mouse_events[-1]
