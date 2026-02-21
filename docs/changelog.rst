@@ -229,6 +229,9 @@ Detailed list of changes
 
 - Wayland: Add support for the background blur extension (:iss:`9534`)
 
+- macOS: A new option :opt:`macos_dock_badge_on_bell` to show a badge on the
+  kitty dock icon when a bell occurs (:pull:`9529`)
+
 
 0.45.0 [2025-12-24]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

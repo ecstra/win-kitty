@@ -1345,16 +1345,7 @@ void
 cocoa_set_dock_badge(const char *label) {
     @autoreleasepool {
         NSDockTile *dockTile = [NSApp dockTile];
-        [dockTile setBadgeLabel:@(label)];
-        [dockTile display];
-    }
-}
-
-void
-cocoa_clear_dock_badge(void) {
-    @autoreleasepool {
-        NSDockTile *dockTile = [NSApp dockTile];
-        [dockTile setBadgeLabel:nil];
+        [dockTile setBadgeLabel:label ? @(label) : nil];
         [dockTile display];
     }
 }
@@ -1386,8 +1377,8 @@ init_cocoa(PyObject *module) {
         addObserverForName:NSApplicationDidBecomeActiveNotification
         object:nil
         queue:[NSOperationQueue mainQueue]
-        usingBlock:^(NSNotification *note __attribute__((unused))) {
-            cocoa_clear_dock_badge();
+        usingBlock:^(NSNotification *note UNUSED) {
+            cocoa_set_dock_badge(NULL);
         }];
     return true;
 }
