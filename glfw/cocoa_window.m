@@ -40,7 +40,6 @@
 
 #define debug debug_rendering
 
-// Macro and forward declaration needed before draggingEntered: (uti_to_mime is defined in Clipboard section)
 #define UTI_ROUNDTRIP_PREFIX @"uti-is-typical-apple-nih."
 
 static NSString*
@@ -867,18 +866,17 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
         self.identifier = @"kitty-content-view";
 
         [self updateTrackingAreas];
-        // Register for file promises in addition to regular files (macOS 10.12+)
-        if (@available(macOS 10.12, *)) {
-            NSMutableArray *types = [NSMutableArray arrayWithObjects:
-                NSPasteboardTypeFileURL,
-                NSPasteboardTypeString,
-                nil];
-            // Add file promise types
-            [types addObjectsFromArray:[NSFilePromiseReceiver readableDraggedTypes]];
-            [self registerForDraggedTypes:types];
-        } else {
-            [self registerForDraggedTypes:@[NSPasteboardTypeFileURL, NSPasteboardTypeString]];
-        }
+        char tab_mime[64];
+        snprintf(tab_mime, sizeof(tab_mime), "application/net.kovidgoyal.kitty-tab-%d", getpid());
+        NSMutableArray *types = [NSMutableArray arrayWithObjects:
+            NSPasteboardTypeFileURL, NSPasteboardTypeString, NSPasteboardTypeURL, NSPasteboardTypeColor,
+            NSPasteboardTypeFont, NSPasteboardTypeHTML, NSPasteboardTypePDF, NSPasteboardTypePNG,
+            NSPasteboardTypeRTF, NSPasteboardTypeSound, NSPasteboardTypeTIFF,
+            mime_to_uti(tab_mime),
+        nil];
+        // Add file promise types
+        [types addObjectsFromArray:[NSFilePromiseReceiver readableDraggedTypes]];
+        [self registerForDraggedTypes:types];
     }
 
     return self;
