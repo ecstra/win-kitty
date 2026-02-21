@@ -1613,8 +1613,13 @@ class TabManager:  # {{{
             return
         self.tab_being_dropped = None
         atid = self.active_tab.id if self.active_tab else 0
+        set_tab_being_dragged()
         if tab.os_window_id != self.os_window_id:
-            get_boss()._move_tab_to(tab, self.os_window_id)
+            if (t := get_boss()._move_tab_to(tab, self.os_window_id)) is not None:
+                n = list(td.tab_ids)
+                idx = n.index(td.data.tab_id)
+                n[idx] = t.id
+                td = td._replace(tab_ids=n)
         self.apply_tab_ordering(td.tab_ids)
         if atid and tab.os_window_id == self.os_window_id and (tab := self.tab_for_id(atid)):
             idx = self.tabs.index(tab)

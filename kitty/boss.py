@@ -3131,10 +3131,10 @@ class Boss:
             self._cleanup_tab_after_window_removal(src_tab)
             target_tab.make_active()
 
-    def _move_tab_to(self, tab: Tab | None = None, target_os_window_id: int | None = None) -> None:
+    def _move_tab_to(self, tab: Tab | None = None, target_os_window_id: int | None = None) -> Tab | None:
         tab = tab or self.active_tab
         if tab is None:
-            return
+            return None
         if target_os_window_id is None:
             target_os_window_id = self.add_os_window()
         tm = self.os_window_map[target_os_window_id]
@@ -3142,6 +3142,7 @@ class Boss:
         target_tab.take_over_from(tab)
         self._cleanup_tab_after_window_removal(tab)
         target_tab.make_active()
+        return target_tab
 
     def choose_entry(
         self, title: str, entries: Iterable[tuple[_T | str | None, str]],
@@ -3265,7 +3266,8 @@ class Boss:
         ''')
     def detach_tab(self, *args: str) -> None:
         if not args or args[0] == 'new':
-            return self._move_tab_to()
+            self._move_tab_to()
+            return
 
         items: list[tuple[str | int, str]] = []
         ct = self.active_tab_manager_with_dispatch
