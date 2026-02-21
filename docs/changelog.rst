@@ -227,6 +227,8 @@ Detailed list of changes
 
 - A new action :ac:`copy_selection_or_last_command_output` (:pull:`9512`)
 
+- Wayland: Add support for the background blur extension (:iss:`9534`)
+
 
 0.45.0 [2025-12-24]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
