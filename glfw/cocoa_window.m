@@ -42,20 +42,46 @@
 
 // Macro and forward declaration needed before draggingEntered: (uti_to_mime is defined in Clipboard section)
 #define UTI_ROUNDTRIP_PREFIX @"uti-is-typical-apple-nih."
+
 static NSString*
 mime_to_uti(const char *mime) {
     if (strcmp(mime, "text/plain") == 0) return NSPasteboardTypeString;
-    if (@available(macOS 11.0, *)) {
-        UTType *t = [UTType typeWithMIMEType:@(mime)];  // auto-released
-        if (t != nil && !t.dynamic) return t.identifier;
-    }
-    return [NSString stringWithFormat:@"%@%s", UTI_ROUNDTRIP_PREFIX, mime];  // auto-released
+    UTType *t = [UTType typeWithMIMEType:@(mime)];  // auto-released
+    if (t != nil && !t.dynamic) return t.identifier;
+    size_t sz = strlen(mime);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:sz * 2];
+    for (NSUInteger i = 0; i < sz; i++) [hex appendFormat:@"%02x", (unsigned char)mime[i]];
+    return [NSString stringWithFormat:@"%@%@", UTI_ROUNDTRIP_PREFIX, hex];  // auto-released
+}
+
+static char
+hexval(char c, bool *ok) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    *ok = false;
+    return 0;
 }
 
 static const char*
 uti_to_mime(NSString *uti) {
     if ([uti isEqualToString:NSPasteboardTypeString]) return "text/plain";
-    if ([uti hasPrefix:UTI_ROUNDTRIP_PREFIX]) return [[uti substringFromIndex:[UTI_ROUNDTRIP_PREFIX length]] UTF8String];
+    if ([uti hasPrefix:UTI_ROUNDTRIP_PREFIX]) {
+        NSString *hexPart = [uti substringFromIndex:UTI_ROUNDTRIP_PREFIX.length];
+        NSUInteger hexLen = hexPart.length;
+        if (hexLen == 0 || hexLen % 2 != 0) { return ""; }
+        const char *hex = [hexPart UTF8String];
+        static char buf[4096];
+        size_t i, j;
+        for (i = 0, j = 0; i < hexLen && j < sizeof(buf)-1; i += 2, j++) {
+            char hi = hex[i], lo = hex[i + 1];
+            bool ok = true;
+            buf[j] = (hexval(hi, &ok) << 4) | hexval(lo, &ok);
+            if (!ok) return "";
+        }
+        buf[j] = 0;
+        return buf;
+    }
     if (@available(macOS 11.0, *)) {
         UTType *t = [UTType typeWithIdentifier:uti];  // auto-released
         if (t.preferredMIMEType != nil) return [t.preferredMIMEType UTF8String];
@@ -1448,18 +1474,18 @@ update_drop_state(_GLFWwindow *window, size_t mime_count) {
     if ([pasteboard canReadObjectForClasses:@[[NSString class]] options:nil]) {
         mime_array[mime_count++] = _glfw_strdup("text/plain");
     }
-#define add_mime(uti) { \
-            const char* mime = uti_to_mime(uti); \
-            if (mime && mime[0]) { \
-                bool duplicate = false; \
-                for (size_t i = 0; i < mime_count; i++) { \
-                    if (strcmp(mime_array[i], mime) == 0) { \
-                        duplicate = true; \
-                        break; \
-                    } \
-                } \
-                if (!duplicate) mime_array[mime_count++] = _glfw_strdup(mime); \
+#define add_mime(uti) {  \
+    const char* mime = uti_to_mime(uti); \
+    if (mime && mime[0]) { \
+        bool duplicate = false; \
+        for (size_t i = 0; i < mime_count; i++) { \
+            if (strcmp(mime_array[i], mime) == 0) { \
+                duplicate = true; \
+                break; \
             } \
+        } \
+        if (!duplicate) mime_array[mime_count++] = _glfw_strdup(mime); \
+    } \
 }
     // Get file promise based types
     for (NSFilePromiseReceiver *receiver in receivers) {
