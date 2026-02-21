@@ -872,6 +872,7 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
             NSPasteboardTypeFileURL, NSPasteboardTypeString, NSPasteboardTypeURL, NSPasteboardTypeColor,
             NSPasteboardTypeFont, NSPasteboardTypeHTML, NSPasteboardTypePDF, NSPasteboardTypePNG,
             NSPasteboardTypeRTF, NSPasteboardTypeSound, NSPasteboardTypeTIFF,
+            UTTypeData.identifier, UTTypeItem.identifier, UTTypeContent.identifier,
             mime_to_uti(tab_mime),
         nil];
         // Add file promise types
