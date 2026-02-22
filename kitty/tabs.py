@@ -1195,13 +1195,13 @@ class TabManager:  # {{{
     @property
     def tab_bar_should_be_visible(self) -> bool:
         if self.tab_being_dropped is not None:
-            return True
+            return True  # keep tab bar visible in the dest
         count = get_options().tab_bar_min_tabs
         if count < 1:
             return True
         tab_id, drag_started = get_tab_being_dragged()[:2]
         if drag_started and self.tab_for_id(tab_id) is not None:
-            return True  # keep tab bar visible in the source tab
+            return True  # keep tab bar visible in the source
         for t in self.tabs_to_be_shown_in_tab_bar:
             count -= 1
             if count < 1:
