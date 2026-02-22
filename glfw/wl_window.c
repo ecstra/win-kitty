@@ -3190,7 +3190,8 @@ add_drag_watch(int fd) {
 }
 
 int
-_glfwPlatformChangeDragImage(const GLFWimage *thumbnail) {
+_glfwPlatformChangeDragImage(const GLFWimage *thumbnail, int make_toplevel) {
+    (void)make_toplevel;  // TODO: Implement me
     if (!_glfw.wl.drag.drag_icon || !thumbnail || !thumbnail->pixels) return 0;
     struct wl_buffer* icon_buffer = createShmBuffer(thumbnail, false, true);
     if (!icon_buffer) return ENOMEM;
@@ -3353,9 +3354,9 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
     wl_data_source_add_listener(_glfw.wl.drag.source, &drag_source_listener, NULL);
 
     // Set up the drag icon surface if thumbnail is provided
+    _glfw.wl.drag.drag_icon = wl_compositor_create_surface(_glfw.wl.compositor);
     if (thumbnail && thumbnail->pixels) {
         struct wl_buffer* icon_buffer = NULL;
-        _glfw.wl.drag.drag_icon = wl_compositor_create_surface(_glfw.wl.compositor);
         if (_glfw.wl.drag.drag_icon) {
             icon_buffer = createShmBuffer(thumbnail, false, true);
             if (icon_buffer) {

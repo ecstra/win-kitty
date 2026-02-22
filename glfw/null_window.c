@@ -542,7 +542,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
 }
 void _glfwPlatformFreeDragSourceData(void) {}
 int _glfwPlatformDragDataReady(const char *mime_type) { (void) mime_type; return 0; }
-int _glfwPlatformChangeDragImage(const GLFWimage *thumbnail) { (void)thumbnail; return 0; }
+int _glfwPlatformChangeDragImage(const GLFWimage *thumbnail, int make_toplevel) { (void)thumbnail; (void)make_toplevel; return 0; }
 
 const char** _glfwPlatformGetDropMimeTypes(GLFWDropData* drop UNUSED, int* count)
 {

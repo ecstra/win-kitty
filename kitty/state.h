@@ -386,8 +386,8 @@ typedef struct GlobalState {
     struct {
         bool is_active, was_dropped, was_canceled;
         char *accepted_mime_type;
-        int action;
-        PyObject *drag_data;
+        int action, thumbnail_idx;
+        PyObject *drag_data, *thumbnails;
     } drag_source;
     struct {
         id_type os_window, window;

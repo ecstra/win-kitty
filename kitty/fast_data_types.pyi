@@ -1,5 +1,5 @@
 import termios
-from typing import Any, Callable, Dict, Iterator, List, Literal, NewType, Optional, Tuple, TypedDict, Union, overload
+from typing import Any, Callable, Dict, Iterator, List, Literal, NewType, Optional, Sequence, Tuple, TypedDict, Union, overload
 
 from kitty.borders import Border
 from kitty.boss import Boss
@@ -1814,10 +1814,10 @@ class StreamingBase64Encodeer:
 
 
 def start_drag_with_data(
-    os_window_id: int, data_map: dict[str, bytes], thumbnail: bytes = b'', width: int = 0, height: int = 0,
+    os_window_id: int, data_map: dict[str, bytes], thumbnails: Sequence[tuple[bytes, int, int]],
     operations: int = GLFW_DRAG_OPERATION_MOVE
 ) -> None: ...
-
+def change_drag_thumbnail(os_window_id: int, idx: int = -1, make_toplevel: bool = False) -> None: ...
 def draw_single_line_of_text(os_window_id: int, text: str, fg: int, bg: int, width: int, padding_y: int = 2) -> bytes: ...
 def set_tab_being_dragged(tab_id: int = 0, drag_started: bool = False, x: float = 0, y: float = 0) -> None: ...
 def get_tab_being_dragged() -> tuple[int, bool, float, float]: ...

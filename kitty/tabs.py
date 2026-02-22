@@ -1654,10 +1654,11 @@ class TabManager:  # {{{
                     bg = color_as_int(opts.inactive_tab_background)
                 title_pixels = draw_single_line_of_text(self.os_window_id, title, 0xff000000 | fg, 0xff000000 | bg, width)
                 title_height = len(title_pixels) // (width * 4)
+                thumbnails = ((title_pixels, width, title_height), (title_pixels + pixels, width, title_height + height))
                 drag_data = {
                     f'application/net.kovidgoyal.kitty-tab-{os.getpid()}': str(tab.id).encode(),
                 }
-                start_drag_with_data(self.os_window_id, drag_data, title_pixels + pixels, width, title_height + height)
+                start_drag_with_data(self.os_window_id, drag_data, thumbnails)
                 break
         else:
             set_tab_being_dragged()

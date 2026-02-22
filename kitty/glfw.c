@@ -784,7 +784,7 @@ application_close_requested_callback(int flags) {
 void
 free_drag_source(void) {
     if (ds.accepted_mime_type) free(ds.accepted_mime_type);
-    Py_CLEAR(ds.drag_data);
+    Py_CLEAR(ds.drag_data); Py_CLEAR(ds.thumbnails);
     zero_at_ptr(&ds);
 }
 
@@ -2787,16 +2787,49 @@ draw_single_line_of_text(PyObject *self UNUSED, PyObject *args) {
     return Py_NewRef(ans);
 }
 
+static bool
+get_thumbnail(PyObject *thumbnails, GLFWimage *thumbnail, int idx) {
+    RAII_PyObject(t, PySequence_GetItem(thumbnails, idx));
+    if (!PyTuple_Check(t) || PyTuple_GET_SIZE(t) != 3) { PyErr_SetString(PyExc_TypeError, "thumbnail must be a 3-tuple"); return false; }
+    thumbnail->pixels = (uint8_t*)PyBytes_AS_STRING(PyTuple_GET_ITEM(t, 0));
+    thumbnail->width = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(t, 1));
+    thumbnail->height = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(t, 2));
+    return true;
+}
+
 static PyObject*
-start_drag_with_data(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
-    static const char* kwlist[] = {"os_window_id", "data_map", "thumbnail", "width", "height", "operations", NULL};
-    unsigned long long os_window_id; PyObject *data_map;
-    const unsigned char *thumbnail_data = NULL; Py_ssize_t thumbnail_sz = 0; int height = 0, width = 0;
-    int operations = GLFW_DRAG_OPERATION_MOVE;
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "KO!|y#iii", (char**)kwlist,
-            &os_window_id, &PyDict_Type, &data_map, &thumbnail_data, &thumbnail_sz, &width, &height, &operations)) return NULL;
+change_drag_thumbnail(PyObject *self UNUSED, PyObject *args) {
+    unsigned long long os_window_id; int idx = -1; int make_toplevel = 0;
+    if (!PyArg_ParseTuple(args, "K|ip", &os_window_id, &idx, &make_toplevel)) return NULL;
+    if (global_state.drag_source.thumbnail_idx == idx) Py_RETURN_NONE;
     OSWindow *w = os_window_for_id(os_window_id);
     if (!w || !w->handle) { PyErr_SetString(PyExc_KeyError, "OS Window with specified id does not exist"); return NULL; }
+    GLFWimage thumbnail = {0};
+    if (idx >=0 && global_state.drag_source.thumbnails && idx < PySequence_Size(global_state.drag_source.thumbnails)) {
+        if (!get_thumbnail(global_state.drag_source.thumbnails, &thumbnail, idx)) return NULL;
+        global_state.drag_source.thumbnail_idx = idx;
+    } else global_state.drag_source.thumbnail_idx = -1;
+    errno = glfwStartDrag(w->handle, NULL, make_toplevel, thumbnail.pixels ? &thumbnail : NULL, -2);
+    if (errno != 0) {
+        PyErr_SetFromErrno(PyExc_OSError);
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject*
+start_drag_with_data(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
+    static const char* kwlist[] = {"os_window_id", "data_map", "thumbnails", "operations", NULL};
+    unsigned long long os_window_id; PyObject *data_map;
+    int operations = GLFW_DRAG_OPERATION_MOVE;
+    PyObject *thumbnails = NULL;
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "KO!|Oi", (char**)kwlist,
+            &os_window_id, &PyDict_Type, &data_map, &thumbnails, &operations)) return NULL;
+    OSWindow *w = os_window_for_id(os_window_id);
+    if (!w || !w->handle) { PyErr_SetString(PyExc_KeyError, "OS Window with specified id does not exist"); return NULL; }
+    GLFWimage thumbnail = {0};
+    if (!PySequence_Check(thumbnails)) { PyErr_SetString(PyExc_TypeError, "thumbnails must be a sequence"); return NULL; }
+    if (thumbnails && PySequence_Size(thumbnails) && !get_thumbnail(thumbnails, &thumbnail, 0)) return NULL;
     RAII_ALLOC(GLFWDragSourceItem, items, calloc(PyDict_Size(data_map), sizeof(GLFWDragSourceItem)));
     if (!items) { PyErr_NoMemory(); return NULL; }
     PyObject *key, *value; Py_ssize_t pos = 0; size_t num = 0;
@@ -2807,11 +2840,12 @@ start_drag_with_data(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
         item->mime_type = PyUnicode_AsUTF8(key);
         item->optional_data = PyBytes_AS_STRING(value); item->data_size = PyBytes_GET_SIZE(value);
     }
-    GLFWimage thumbnail = {.pixels=thumbnail_data, .width=width, .height=height};
     free_drag_source();
     global_state.drag_source.is_active = true;
     global_state.drag_source.drag_data = Py_NewRef(data_map);
-    errno = glfwStartDrag(w->handle, items, num, thumbnail_data ? &thumbnail : NULL, operations);
+    if (thumbnails) global_state.drag_source.thumbnails = Py_NewRef(thumbnails);
+    global_state.drag_source.thumbnail_idx = thumbnail.pixels ? 0 : -1;
+    errno = glfwStartDrag(w->handle, items, num, thumbnail.pixels ? &thumbnail : NULL, operations);
     if (errno != 0) {
         PyErr_SetFromErrno(PyExc_OSError);
         return NULL;
@@ -2831,6 +2865,7 @@ static PyMethodDef module_methods[] = {
     METHODB(pointer_name_to_css_name, METH_O),
     {"create_os_window", (PyCFunction)(void (*) (void))(create_os_window), METH_VARARGS | METH_KEYWORDS, NULL},
     {"start_drag_with_data", (PyCFunction)(void (*) (void))(start_drag_with_data), METH_VARARGS | METH_KEYWORDS, NULL},
+    METHODB(change_drag_thumbnail, METH_VARARGS),
     METHODB(draw_single_line_of_text, METH_VARARGS),
     METHODB(set_default_window_icon, METH_VARARGS),
     METHODB(set_os_window_icon, METH_VARARGS),

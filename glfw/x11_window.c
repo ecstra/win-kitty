@@ -4471,7 +4471,8 @@ _glfwPlatformFreeDragSourceData(void) {
 }
 
 int
-_glfwPlatformChangeDragImage(const GLFWimage *thumbnail) {
+_glfwPlatformChangeDragImage(const GLFWimage *thumbnail, int make_toplevel) {
+    (void)make_toplevel;
     if (!_glfw.x11.drag.active) return 0;
     if (!thumbnail || !thumbnail->pixels || thumbnail->width <= 0 || thumbnail->height <= 0) return 0;
 

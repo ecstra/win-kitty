@@ -4215,7 +4215,8 @@ _glfwPlatformFreeDragSourceData(void) {
 }
 
 int
-_glfwPlatformChangeDragImage(const GLFWimage *thumbnail) {@autoreleasepool{
+_glfwPlatformChangeDragImage(const GLFWimage *thumbnail, int make_toplevel) {@autoreleasepool{
+    (void)make_toplevel;
     if (!_glfw.ns.drag_session || !_glfw.ns.drag_view) return 0;
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     NSArray *classes = @[[NSPasteboardItem class], [NSFilePromiseProvider class]];

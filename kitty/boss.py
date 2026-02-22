@@ -73,6 +73,7 @@ from .fast_data_types import (
     apply_options_update,
     background_opacity_of,
     change_background_opacity,
+    change_drag_thumbnail,
     cocoa_hide_app,
     cocoa_hide_other_apps,
     cocoa_minimize_os_window,
@@ -1900,6 +1901,8 @@ class Boss:
             if tab_id and drag_started and (tab := self.tab_for_id(tab_id)):
                 central, tab_bar = viewport_for_window(os_window_id)[:2]
                 in_tab_bar = tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom
+                detach = not in_tab_bar or tab.os_window_id != tm.os_window_id
+                change_drag_thumbnail(tab.os_window_id, 1 if detach else 0, detach)
                 for q in self.all_tab_managers:
                     is_dest = q is tm and (in_tab_bar or os_window_id != tab.os_window_id)
                     q.on_tab_drop_move(tab_id, is_dest, x, y)
@@ -3358,7 +3361,7 @@ class Boss:
             with open(logo_png_file, 'rb') as f:
                 rgba, width, height = load_png_data(f.read())
             drag_data = {'text/plain': b'This is a test drag of some basic text with the kitty logo as the drag icon.'}
-            start_drag_with_data(wid, drag_data, rgba, width, height)
+            start_drag_with_data(wid, drag_data, ((rgba, width, height),))
 
     def launch_urls(self, *urls: str, no_replace_window: bool = False) -> None:
         from .launch import force_window_launch

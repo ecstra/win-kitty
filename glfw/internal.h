@@ -837,7 +837,7 @@ void _glfwFreeDragSourceData(void);
 void _glfwPlatformFreeDragSourceData(void);
 void _glfwInputDragSourceRequest(_GLFWwindow* window, GLFWDragEvent *ev);
 int _glfwPlatformDragDataReady(const char *mime_type);
-int _glfwPlatformChangeDragImage(const GLFWimage *thumbnail);
+int _glfwPlatformChangeDragImage(const GLFWimage *thumbnail, int make_toplevel);
 
 
 void _glfwInputColorScheme(GLFWColorScheme, bool);
