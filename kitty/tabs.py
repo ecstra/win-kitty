@@ -1090,9 +1090,6 @@ class Tab:  # {{{
 # }}}
 
 
-ignore_left_button_release: bool = False
-
-
 class TabBeingDropped(NamedTuple):
     data: TabBarData
     tab_ids: Sequence[int] = ()
@@ -1685,14 +1682,13 @@ class TabManager:  # {{{
                     return
         else:
             if button == GLFW_MOUSE_BUTTON_LEFT:
-                global ignore_left_button_release
                 if action == GLFW_PRESS:
                     set_tab_being_dragged(tab.id, False, x, y)
-                    ignore_left_button_release = True
                 else:
-                    ignore, ignore_left_button_release = ignore_left_button_release, False
-                    if not ignore:
+                    drag_started = get_tab_being_dragged()[1]
+                    if not drag_started:
                         self.set_active_tab(tab)
+                        set_tab_being_dragged()
             elif button == GLFW_MOUSE_BUTTON_MIDDLE:
                 if action == GLFW_RELEASE and self.recent_mouse_events:
                     p = self.recent_mouse_events[-1]
