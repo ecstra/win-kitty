@@ -1897,9 +1897,12 @@ class Boss:
             return
         if from_self:
             tab_id, drag_started = get_tab_being_dragged()[:2]
-            if drag_started:
+            if tab_id and drag_started and (tab := self.tab_for_id(tab_id)):
+                central, tab_bar = viewport_for_window(os_window_id)[:2]
+                in_tab_bar = tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom
                 for q in self.all_tab_managers:
-                    q.on_tab_drop_move(tab_id, q is tm, x, y)
+                    is_dest = q is tm and (in_tab_bar or os_window_id != tab.os_window_id)
+                    q.on_tab_drop_move(tab_id, is_dest, x, y)
 
     def on_drop(self, os_window_id: int, drop: dict[str, bytes] | int, from_self: bool, x: int, y: int) -> None:
         if isinstance(drop, int):
@@ -1912,8 +1915,13 @@ class Boss:
             return
         if (tm := self.os_window_map.get(os_window_id)) is None:
             return
-        if f'application/net.kovidgoyal.kitty-tab-{os.getpid()}' in drop:
-            tm.on_tab_drop(x, y)
+        if (tidb := drop.get(f'application/net.kovidgoyal.kitty-tab-{os.getpid()}')) and (tab := self.tab_for_id(int(tidb))):
+            central, tab_bar = viewport_for_window(os_window_id)[:2]
+            in_tab_bar = tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom
+            if in_tab_bar or tab.os_window_id != tm.os_window_id:
+                tm.on_tab_drop(x, y)
+            else:
+                self._move_tab_to(tab)
             set_tab_being_dragged()
             for tm in self.all_tab_managers:
                 tm.on_tab_drop_move()
@@ -1929,21 +1937,20 @@ class Boss:
                     if g.left <= x < g.right and g.top <= y < g.bottom:
                         window.on_drop(drop)
                         break
-        elif tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < central.bottom:
+        elif tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom:
             if (tab_id := tm.tab_bar.tab_id_at(x)) and (tab := self.tab_for_id(tab_id)) and (w := tab.active_window):
                 w.on_drop(drop)
 
     def on_drag_source_finished(
         self, was_dropped: bool, was_canceled: bool, accepted_mime_type: str, action: int, data: dict[str, bytes] | None
     ) -> None:
-        if data and (tidb := data.get(f'application/net.kovidgoyal.kitty-tab-{os.getpid()}')):
+        if (tab_id := int((data or {}).get(f'application/net.kovidgoyal.kitty-tab-{os.getpid()}', b'0').decode())
+        ) and get_tab_being_dragged()[0] == tab_id:
             set_tab_being_dragged()
             for tm in self.all_tab_managers:
                 tm.on_tab_drop_move()
-            if was_dropped:  # detach tab into new OS Window
-                tab_id = int(tidb.decode())
-                if (tab := self.tab_for_id(tab_id)):
-                    self._move_tab_to(tab)
+            if was_dropped and (tab := self.tab_for_id(tab_id)):  # detach tab into new OS Window
+                self._move_tab_to(tab)
 
     @ac('win', '''
         Focus the nth OS window if positive or the previously active OS windows if negative. When the number is larger
