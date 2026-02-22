@@ -1902,7 +1902,7 @@ class Boss:
                 central, tab_bar = viewport_for_window(os_window_id)[:2]
                 in_tab_bar = tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom
                 detach = not in_tab_bar or tab.os_window_id != tm.os_window_id or is_leave
-                change_drag_thumbnail(tab.os_window_id, 1 if detach else 0, detach)
+                change_drag_thumbnail(tab.os_window_id, 1 if detach else 0)
                 for q in self.all_tab_managers:
                     is_dest = q is tm and (in_tab_bar or os_window_id != tab.os_window_id) and not is_leave
                     q.on_tab_drop_move(tab_id, is_dest, x, y)

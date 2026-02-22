@@ -2802,8 +2802,8 @@ get_thumbnail(PyObject *thumbnails, GLFWimage *thumbnail, int idx) {
 
 static PyObject*
 change_drag_thumbnail(PyObject *self UNUSED, PyObject *args) {
-    unsigned long long os_window_id; int idx = -1; int make_toplevel = 0;
-    if (!PyArg_ParseTuple(args, "K|ip", &os_window_id, &idx, &make_toplevel)) return NULL;
+    unsigned long long os_window_id; int idx = -1;
+    if (!PyArg_ParseTuple(args, "K|i", &os_window_id, &idx)) return NULL;
     if (global_state.drag_source.thumbnail_idx == idx) Py_RETURN_NONE;
     OSWindow *w = os_window_for_id(os_window_id);
     if (!w || !w->handle) { PyErr_SetString(PyExc_KeyError, "OS Window with specified id does not exist"); return NULL; }
@@ -2812,7 +2812,7 @@ change_drag_thumbnail(PyObject *self UNUSED, PyObject *args) {
         if (!get_thumbnail(global_state.drag_source.thumbnails, &thumbnail, idx)) return NULL;
         global_state.drag_source.thumbnail_idx = idx;
     } else global_state.drag_source.thumbnail_idx = -1;
-    errno = glfwStartDrag(w->handle, NULL, make_toplevel, thumbnail.pixels ? &thumbnail : NULL, -2);
+    errno = glfwStartDrag(w->handle, NULL, 0, thumbnail.pixels ? &thumbnail : NULL, -2);
     if (errno != 0) {
         PyErr_SetFromErrno(PyExc_OSError);
         return NULL;
