@@ -3190,6 +3190,9 @@ add_drag_watch(int fd) {
 }
 
 int
+_glfwPlatformChangeDragImage(const GLFWimage *thumbnail) { (void)thumbnail; return 0; /* TODO: Implement me */ }
+
+int
 _glfwPlatformDragDataReady(const char *mime_type) {
     for (size_t i = 0; i < _glfw.wl.drag.count; i++) {
         if (strcmp(dr.mime_type, mime_type) == 0) {

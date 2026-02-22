@@ -4982,7 +4982,8 @@ GLFWAPI void glfwEndDrop(GLFWwindow *window, GLFWDragOperationType op);
 GLFWAPI GLFWdragsourcefun glfwSetDragSourceCallback(GLFWwindow* window, GLFWdragsourcefun callback);
 
 // Start a drag. If called with operations == -1 indicates that previously
-// requested data via GLFW_DRAG_DATA_REQUEST is ready.
+// requested data via GLFW_DRAG_DATA_REQUEST is ready. operations == -2 means
+// that the drag image is changed.
 GLFWAPI int glfwStartDrag(GLFWwindow* window, const GLFWDragSourceItem *items, size_t mime_count, const GLFWimage* thumbnail, int operations);
 
 /*! @brief Returns whether the specified joystick is present.

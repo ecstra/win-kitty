@@ -4475,6 +4475,9 @@ _glfwPlatformFreeDragSourceData(void) {
 }
 
 int
+_glfwPlatformChangeDragImage(const GLFWimage *thumbnail) { (void)thumbnail; return 0; /* TODO: Implement me */ }
+
+int
 _glfwPlatformDragDataReady(const char *mime_type) {
     // Find the pending request for this MIME type
     for (size_t i = 0; i < _glfw.x11.drag.pending_count; i++) {

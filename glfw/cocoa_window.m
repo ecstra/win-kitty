@@ -4195,6 +4195,9 @@ void
 _glfwPlatformFreeDragSourceData(void) { }
 
 int
+_glfwPlatformChangeDragImage(const GLFWimage *thumbnail) { (void)thumbnail; return 0; /* TODO: Implement me */ }
+
+int
 _glfwPlatformDragDataReady(const char *mime_type) {
     if (!file_promise_providers) return 0;
     for (GLFWFilePromiseProviderDelegate *d in file_promise_providers) {
