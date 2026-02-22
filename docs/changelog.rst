@@ -161,6 +161,9 @@ Detailed list of changes
 
 - macOS: Implement support for Apple dictation to input text in kitty (:iss:`3732`)
 
+- Allow dragging tabs in the tab bar to re-order, move to another OS Window or
+  detach (:pull:`9296`)
+
 - choose-files kitten: Fix JXL image preview not working (:iss:`9323`)
 
 - Fix tab bar rendering glitches when using :opt:`tab_bar_filter` in some
