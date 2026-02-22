@@ -1662,7 +1662,8 @@ class TabManager:  # {{{
         if button == -1:  # motion
             dragged_tab_id, drag_started, start_x, start_y = get_tab_being_dragged()
             if dragged_tab_id and self.tab_for_id(dragged_tab_id) is not None and not drag_started:
-                if math.sqrt((x-start_x)**2 + (y-start_y)**2) > 5:
+                threshold = get_options().tab_bar_drag_threshold
+                if threshold and math.sqrt((x-start_x)**2 + (y-start_y)**2) > threshold:
                     set_tab_being_dragged(dragged_tab_id, True, start_x, start_y)
                     request_callback_with_thumbnail("start_tab_drag", self.os_window_id)
             return

@@ -449,6 +449,7 @@ option_names = (
     'tab_activity_symbol',
     'tab_bar_align',
     'tab_bar_background',
+    'tab_bar_drag_threshold',
     'tab_bar_edge',
     'tab_bar_filter',
     'tab_bar_margin_color',
@@ -639,6 +640,7 @@ class Options:
     tab_activity_symbol: str = ''
     tab_bar_align: choices_for_tab_bar_align = 'left'
     tab_bar_background: kitty.fast_data_types.Color | None = None
+    tab_bar_drag_threshold: int = 5
     tab_bar_edge: int = 8
     tab_bar_filter: str = ''
     tab_bar_margin_color: kitty.fast_data_types.Color | None = None

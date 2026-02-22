@@ -1085,6 +1085,9 @@ class Parser:
     def macos_custom_beam_cursor(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['macos_custom_beam_cursor'] = to_bool(val)
 
+    def macos_dock_badge_on_bell(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['macos_dock_badge_on_bell'] = to_bool(val)
+
     def macos_hide_from_tasks(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['macos_hide_from_tasks'] = to_bool(val)
 
@@ -1320,6 +1323,9 @@ class Parser:
 
     def tab_bar_background(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['tab_bar_background'] = to_color_or_none(val)
+
+    def tab_bar_drag_threshold(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['tab_bar_drag_threshold'] = positive_int(val)
 
     def tab_bar_edge(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['tab_bar_edge'] = tab_bar_edge(val)

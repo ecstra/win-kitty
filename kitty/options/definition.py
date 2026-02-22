@@ -1688,8 +1688,7 @@ opt('tab_bar_background', 'none',
     long_text='''
 Background color for the tab bar. Defaults to using the terminal background
 color.
-'''
-    )
+''')
 
 opt('tab_bar_margin_color', 'none',
     option_type='to_color_or_none', ctype='color_or_none_as_int',
@@ -1697,8 +1696,16 @@ opt('tab_bar_margin_color', 'none',
 Color for the tab bar margin area. Defaults to using the terminal background
 color for margins above and below the tab bar. For side margins the default
 color is chosen to match the background color of the neighboring tab.
-'''
-    )
+''')
+
+opt('tab_bar_drag_threshold', '5', option_type='positive_int',
+    long_text='''
+Control when dragging of tabs to re-order them happens.
+The value is the drag threshold in pixels, the distance the mouse must move
+before a drag begins. A value of zero disables tab dragging entirely.
+Dragging a tab to another kitty window moves it there, while dragging
+outside any kitty window detaches it into a new OS window.
+''')
 egr()  # }}}
 
 
