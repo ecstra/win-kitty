@@ -1704,7 +1704,10 @@ Control when dragging of tabs to re-order them happens.
 The value is the drag threshold in pixels, the distance the mouse must move
 before a drag begins. A value of zero disables tab dragging entirely.
 Dragging a tab to another kitty window moves it there, while dragging
-outside any kitty window detaches it into a new OS window.
+outside any kitty window detaches it into a new OS window. Note that on
+Wayland, :link:`because of poor design
+<https://gitlab.freedesktop.org/wayland/wayland/-/issues/140>` drag and cancel
+will still detach tabs.
 ''')
 egr()  # }}}
 

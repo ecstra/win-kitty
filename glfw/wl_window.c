@@ -3079,10 +3079,10 @@ GLFWAPI bool glfwWaylandBeep(GLFWwindow *handle) {
 
 // Drag source {{{
 static void
-drag_source_cancelled(void *data UNUSED, struct wl_data_source *source UNUSED) {
+cancel_drag(GLFWDragEventType type) {
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (window) {
-        GLFWDragEvent ev = {.type=GLFW_DRAG_CANCELLED};
+        GLFWDragEvent ev = {.type=type};
         _glfwInputDragSourceRequest(window, &ev);
     }
     _glfwFreeDragSourceData();
@@ -3120,7 +3120,7 @@ send_drag_data(_GLFWwindow *window, size_t i) {
     bool has_preset_data = _glfw.drag.items[i].data_size > 0;
 #define on_fail _glfwInputError(\
         GLFW_PLATFORM_ERROR, "Wayland: failed to write drag source data to pipe with error: %s", strerror(errno)); \
-        drag_source_cancelled(NULL, NULL)
+        cancel_drag(GLFW_DRAG_CANCELLED);
 
     if (dr.sz > dr.offset) {
         ret = write_as_much_as_possible(dr.fd, dr.pending_data + dr.offset, dr.sz - dr.offset);
@@ -3150,7 +3150,7 @@ send_drag_data(_GLFWwindow *window, size_t i) {
         _glfwInputDragSourceRequest(window, &ev);
         if (ev.err_num) {
             if (ev.err_num == EAGAIN) { removeWatch(&_glfw.wl.eventLoopData, dr.watch_id); dr.watch_id = 0; }
-            else drag_source_cancelled(NULL, NULL);
+            else cancel_drag(GLFW_DRAG_CANCELLED);
         } else {
             if (ev.data_sz) {
                 ret = write_as_much_as_possible(dr.fd, ev.data, ev.data_sz);
@@ -3200,9 +3200,9 @@ _glfwPlatformDragDataReady(const char *mime_type) {
 }
 
 static void
-drag_source_send(void *data, struct wl_data_source *source, const char *mime_type, int fd) {
+drag_source_send(void *data UNUSED, struct wl_data_source *source UNUSED, const char *mime_type, int fd) {
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
-#define abort() safe_close(fd); drag_source_cancelled(data, source);  return
+#define abort() safe_close(fd); cancel_drag(GLFW_DRAG_CANCELLED);  return
     if (!window) { abort(); }
     mime_type = _glfw_strdup(mime_type);
     if (!mime_type) { abort(); }
@@ -3224,7 +3224,7 @@ drag_source_target(void *data UNUSED, struct wl_data_source *source UNUSED, cons
     if (window) {
         GLFWDragEvent ev = {.type=GLFW_DRAG_ACCEPTED, .mime_type=mime_type};
         _glfwInputDragSourceRequest(window, &ev);
-    } else drag_source_cancelled(data, source);
+    } else cancel_drag(GLFW_DRAG_CANCELLED);
 }
 
 static void
@@ -3240,7 +3240,7 @@ drag_source_action(void *data UNUSED, struct wl_data_source *source UNUSED, uint
         _glfw.wl.drag.action = op;
         GLFWDragEvent ev = {.type=GLFW_DRAG_ACTION_CHANGED, .action=op};
         _glfwInputDragSourceRequest(window, &ev);
-    } else drag_source_cancelled(data, source);
+    } else cancel_drag(GLFW_DRAG_CANCELLED);
 }
 
 static void
@@ -3249,7 +3249,7 @@ drag_source_dnd_drop_performed(void *data UNUSED, struct wl_data_source *source 
     if (window) {
         GLFWDragEvent ev = {.type=GLFW_DRAG_DROPPED};
         _glfwInputDragSourceRequest(window, &ev);
-    } else drag_source_cancelled(data, source);
+    } else cancel_drag(GLFW_DRAG_CANCELLED);
 }
 
 static void
@@ -3261,6 +3261,16 @@ drag_source_dnd_finished(void *data UNUSED, struct wl_data_source *source UNUSED
     }
     _glfwFreeDragSourceData();
 }
+
+static void
+drag_source_cancelled(void *data UNUSED, struct wl_data_source *source UNUSED) {
+    // Uber competent Wayland people contravene their own spec and make it
+    // impossible to distinguish between drag cancelled and dropped but not
+    // accepted. https://gitlab.freedesktop.org/wayland/wayland/-/issues/140
+    // so we assume this is a drop. Sigh.
+    cancel_drag(GLFW_DRAG_DROPPED);
+}
+
 
 static const struct wl_data_source_listener drag_source_listener = {
     .send = drag_source_send,
