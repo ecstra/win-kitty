@@ -1391,6 +1391,7 @@ typedef enum { GLFW_DROP_ENTER, GLFW_DROP_MOVE, GLFW_DROP_LEAVE, GLFW_DROP_DROP,
  *  @ingroup input
  */
 typedef enum {
+    GLFW_DRAG_OPERATION_NONE = 0,  // no operation, drop was not accepted
     /*! Move the dragged data to the destination. */
     GLFW_DRAG_OPERATION_MOVE = 1,
     /*! Copy the dragged data to the destination. */

@@ -792,6 +792,13 @@ free_drag_source(void) {
 
 static void
 drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
+#define finish \
+    call_boss(on_drag_source_finished, "OOsiO", \
+            ds.was_dropped ? Py_True : Py_False, ds.was_canceled ? Py_True: Py_False, \
+            ds.accepted_mime_type ? ds.accepted_mime_type : "", \
+            ds.action, ds.drag_data ? ds.drag_data : Py_None); \
+    free_drag_source();
+
     switch (ev->type) {
         case GLFW_DRAG_DATA_REQUEST: // we currently pre-provide all data so this should never happen
             if (ev->data_sz) {
@@ -804,21 +811,20 @@ drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
             free(ds.accepted_mime_type);
             ds.accepted_mime_type = ev->mime_type ? strdup(ev->mime_type) : NULL;
             break;
-        case GLFW_DRAG_ACTION_CHANGED: ds.action = ev->action; break;
+        case GLFW_DRAG_ACTION_CHANGED:
+            ds.action = ev->action; break;
         case GLFW_DRAG_DROPPED:
             ds.was_dropped = true;
+            if (ev->action == GLFW_DRAG_OPERATION_NONE) { finish }
             break;
         case GLFW_DRAG_CANCELLED:
             ds.was_canceled = true;
             /* fallthrough */
         case GLFW_DRAG_FINSHED:
-            call_boss(on_drag_source_finished, "OOsiO",
-                    ds.was_dropped ? Py_True : Py_False, ds.was_canceled ? Py_True: Py_False,
-                    ds.accepted_mime_type ? ds.accepted_mime_type : "",
-                    ds.action, ds.drag_data ? ds.drag_data : Py_None);
-            free_drag_source();
+            finish
             break;
     }
+#undef finish
 }
 #undef ds
 

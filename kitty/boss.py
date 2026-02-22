@@ -1940,7 +1940,7 @@ class Boss:
             set_tab_being_dragged()
             for tm in self.all_tab_managers:
                 tm.on_tab_drop_move()
-            if not was_dropped:  # detach tab into new OS Window
+            if was_dropped:  # detach tab into new OS Window
                 tab_id = int(tidb.decode())
                 if (tab := self.tab_for_id(tab_id)):
                     self._move_tab_to(tab)

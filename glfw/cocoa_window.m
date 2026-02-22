@@ -3960,7 +3960,7 @@ void _glfwCocoaPostEmptyEvent(void) {
             case NSDragOperationDelete: ev.type = GLFW_DRAG_CANCELLED; break;
             case NSDragOperationNone: {
                 NSEvent *currentEvent = [NSApp currentEvent];
-                if (currentEvent.type == NSEventTypeKeyDown && currentEvent.keyCode == 53) {
+                if (currentEvent && currentEvent.type == NSEventTypeKeyDown && currentEvent.keyCode == 53) {
                     ev.type = GLFW_DRAG_CANCELLED;
                 } else ev.type = GLFW_DRAG_DROPPED;
             } break;
