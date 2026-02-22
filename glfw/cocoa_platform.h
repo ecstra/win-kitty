@@ -217,8 +217,7 @@ typedef struct _GLFWlibraryNS
     GLFWhandleurlopen url_open_callback;
 
     // Active drag session (NSDraggingSession*) and view (NSView*)
-    id drag_session;
-    id drag_view;
+    id drag_session, drag_view, drag_image;
 } _GLFWlibraryNS;
 
 // Cocoa-specific per-monitor data
