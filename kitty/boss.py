@@ -1893,7 +1893,7 @@ class Boss:
         if tm is not None:
             tm.update_tab_bar_data()
 
-    def on_drop_move(self, os_window_id: int, x: int, y: int, from_self: bool) -> None:
+    def on_drop_move(self, os_window_id: int, x: int, y: int, from_self: bool, is_leave: bool) -> None:
         if (tm := self.os_window_map.get(os_window_id)) is None:
             return
         if from_self:
@@ -1901,10 +1901,10 @@ class Boss:
             if tab_id and drag_started and (tab := self.tab_for_id(tab_id)):
                 central, tab_bar = viewport_for_window(os_window_id)[:2]
                 in_tab_bar = tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom
-                detach = not in_tab_bar or tab.os_window_id != tm.os_window_id
+                detach = not in_tab_bar or tab.os_window_id != tm.os_window_id or is_leave
                 change_drag_thumbnail(tab.os_window_id, 1 if detach else 0, detach)
                 for q in self.all_tab_managers:
-                    is_dest = q is tm and (in_tab_bar or os_window_id != tab.os_window_id)
+                    is_dest = q is tm and (in_tab_bar or os_window_id != tab.os_window_id) and not is_leave
                     q.on_tab_drop_move(tab_id, is_dest, x, y)
 
     def on_drop(self, os_window_id: int, drop: dict[str, bytes] | int, from_self: bool, x: int, y: int) -> None:

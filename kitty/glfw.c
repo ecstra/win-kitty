@@ -731,14 +731,17 @@ on_drop(GLFWwindow *window, GLFWDropEvent *ev) {
             os_window->last_drag_event.x = (int)(ev->xpos * os_window->viewport_x_ratio);
             os_window->last_drag_event.y = (int)(ev->ypos * os_window->viewport_y_ratio);
             on_mouse_position_update(ev->xpos, ev->ypos);
-            call_boss(on_drop_move, "KiiO",
+            call_boss(on_drop_move, "KiiOO",
                 os_window->id, os_window->last_drag_event.x, os_window->last_drag_event.y,
-                ev->from_self ? Py_True : Py_False);
+                ev->from_self ? Py_True : Py_False, Py_False);
             /* fallthrough */
         case GLFW_DROP_STATUS_UPDATE:
             update_allowed_mimes_for_drop(ev);
             break;
         case GLFW_DROP_LEAVE:
+            call_boss(on_drop_move, "KiiOO",
+                os_window->id, os_window->last_drag_event.x, os_window->last_drag_event.y,
+                ev->from_self ? Py_True : Py_False, Py_True);
             break;
         case GLFW_DROP_DROP:
             Py_CLEAR(global_state.drop_dest.data);
