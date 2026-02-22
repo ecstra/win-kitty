@@ -1571,6 +1571,7 @@ class TabManager:  # {{{
                 self.layout_tab_bar()
             return
         all_tabs = [t.tab_id for t in self.tab_bar.last_laid_out_tabs]
+        force_update = False
         if self.tab_being_dropped is None:
             tab = get_boss().tab_for_id(tab_id)
             if tab is None:
@@ -1581,7 +1582,8 @@ class TabManager:  # {{{
             _, _, start_x, _ = get_tab_being_dragged()
             self.tab_being_dropped = TabBeingDropped(data=tab_data, tab_ids=all_tabs, last_drop_move_x=int(start_x))
             mouse_moved_left = False
-        if x == self.tab_being_dropped.last_drop_move_x:
+            force_update = True
+        if x == self.tab_being_dropped.last_drop_move_x and not force_update:
             return
         mouse_moved_left = x < self.tab_being_dropped.last_drop_move_x
         old_tab_ids = self.tab_being_dropped.tab_ids
@@ -1598,7 +1600,7 @@ class TabManager:  # {{{
             new_tab_ids = list(old_tab_ids)
             new_tab_ids[idx_under_mouse], new_tab_ids[old_idx_under_mouse] = new_tab_ids[old_idx_under_mouse], new_tab_ids[idx_under_mouse]
         self.tab_being_dropped = self.tab_being_dropped._replace(last_drop_move_x=x, tab_ids=new_tab_ids)
-        if self.tab_being_dropped.tab_ids != old_tab_ids:
+        if force_update or self.tab_being_dropped.tab_ids != old_tab_ids:
             self.layout_tab_bar()
 
     def on_tab_drop(self, x: int, y: int) -> None:
