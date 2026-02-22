@@ -384,7 +384,7 @@ typedef struct GlobalState {
     } drop_dest;
 
     struct {
-        bool is_active, was_dropped, was_canceled;
+        bool is_active, was_dropped, was_canceled, needs_toplevel_on_wayland;
         char *accepted_mime_type;
         int action, thumbnail_idx;
         PyObject *drag_data, *thumbnails;

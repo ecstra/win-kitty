@@ -668,6 +668,7 @@ struct _GLFWlibrary
     struct {
         GLFWDragSourceItem *items; size_t item_count;
         GLFWid window_id, instance_id; int operations;
+        bool needs_toplevel_on_wayland;
     } drag;
 };
 

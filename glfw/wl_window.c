@@ -3325,8 +3325,8 @@ drag_source_cancelled(void *data UNUSED, struct wl_data_source *source UNUSED) {
     // Uber competent Wayland people contravene their own spec and make it
     // impossible to distinguish between drag cancelled and dropped but not
     // accepted. https://gitlab.freedesktop.org/wayland/wayland/-/issues/140
-    // so we assume this is a drop. Sigh.
-    cancel_drag(GLFW_DRAG_DROPPED);
+    // so we assume this is a drop unless we are in top-level mode. Sigh.
+    cancel_drag(_glfw.wl.drag.toplevel_xdg_toplevel ? GLFW_DRAG_CANCELLED : GLFW_DRAG_DROPPED);
 }
 
 
@@ -3411,7 +3411,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
             wl_surface_set_buffer_scale(_glfw.wl.drag.drag_icon, scale);
         }
 
-        if (_glfw.wl.xdg_toplevel_drag_manager_v1) {
+        if (_glfw.drag.needs_toplevel_on_wayland && _glfw.wl.xdg_toplevel_drag_manager_v1) {
             _glfw.wl.drag.toplevel_drag = xdg_toplevel_drag_manager_v1_get_xdg_toplevel_drag(
                 _glfw.wl.xdg_toplevel_drag_manager_v1, _glfw.wl.drag.source);
             if (!_glfw.wl.drag.toplevel_drag) return ENOMEM;

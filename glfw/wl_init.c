@@ -789,7 +789,7 @@ get_compositor_missing_capabilities(void) {
     C(single_pixel_buffer, wp_single_pixel_buffer_manager_v1); C(preferred_scale, has_preferred_buffer_scale);
     C(idle_inhibit, idle_inhibit_manager); C(icon, xdg_toplevel_icon_manager_v1); C(bell, xdg_system_bell_v1);
     C(window-tag, xdg_toplevel_tag_manager_v1); C(keyboard_shortcuts_inhibit, keyboard_shortcuts_inhibit_manager);
-    C(key-repeat, has_key_repeat_events);
+    C(key-repeat, has_key_repeat_events); C(top_level_drag, xdg_toplevel_drag_manager_v1);
 #define P(x) p += snprintf(p, sizeof(buf) - (p - buf), "%s ", x);
     if (_glfw.wl.xdg_wm_base_version < 6) P("window-state-suspended");
     if (_glfw.wl.xdg_wm_base_version < 5) P("window-capabilities");

@@ -645,11 +645,13 @@ window_focus_callback(GLFWwindow *w, int focused) {
 #undef osw
 }
 
+#define TAB_DRAG_MIME_NUMBER 400
+
 static int
 is_droppable_mime(const char *mime) {
     static char tab_mime[64] = {0};
     if (!tab_mime[0]) snprintf(tab_mime, sizeof(tab_mime), "application/net.kovidgoyal.kitty-tab-%d", getpid());
-    if (strcmp(mime, tab_mime) == 0) return 4;
+    if (strcmp(mime, tab_mime) == 0) return TAB_DRAG_MIME_NUMBER;
     if (strcmp(mime, "text/uri-list") == 0) return 3;
     if (strcmp(mime, "text/plain;charset=utf-8") == 0) return 2;
     if (strcmp(mime, "text/plain") == 0) return 1;
@@ -794,10 +796,10 @@ free_drag_source(void) {
 static void
 drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
 #define finish \
-    call_boss(on_drag_source_finished, "OOsiO", \
+    call_boss(on_drag_source_finished, "OOsiOO", \
             ds.was_dropped ? Py_True : Py_False, ds.was_canceled ? Py_True: Py_False, \
             ds.accepted_mime_type ? ds.accepted_mime_type : "", \
-            ds.action, ds.drag_data ? ds.drag_data : Py_None); \
+            ds.action, ds.drag_data ? ds.drag_data : Py_None, ds.needs_toplevel_on_wayland ? Py_True : Py_False); \
     free_drag_source();
 
     switch (ev->type) {
@@ -816,7 +818,9 @@ drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
             ds.action = ev->action; break;
         case GLFW_DRAG_DROPPED:
             ds.was_dropped = true;
-            if (ev->action == GLFW_DRAG_OPERATION_NONE) { finish }
+            if (ev->action == GLFW_DRAG_OPERATION_NONE) {
+                finish
+            }
             break;
         case GLFW_DRAG_CANCELLED:
             ds.was_canceled = true;
@@ -2812,7 +2816,7 @@ change_drag_thumbnail(PyObject *self UNUSED, PyObject *args) {
         if (!get_thumbnail(global_state.drag_source.thumbnails, &thumbnail, idx)) return NULL;
         global_state.drag_source.thumbnail_idx = idx;
     } else global_state.drag_source.thumbnail_idx = -1;
-    errno = glfwStartDrag(w->handle, NULL, 0, thumbnail.pixels ? &thumbnail : NULL, -2);
+    errno = glfwStartDrag(w->handle, NULL, 0, thumbnail.pixels ? &thumbnail : NULL, -2, false);
     if (errno != 0) {
         PyErr_SetFromErrno(PyExc_OSError);
         return NULL;
@@ -2836,19 +2840,23 @@ start_drag_with_data(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
     RAII_ALLOC(GLFWDragSourceItem, items, calloc(PyDict_Size(data_map), sizeof(GLFWDragSourceItem)));
     if (!items) { PyErr_NoMemory(); return NULL; }
     PyObject *key, *value; Py_ssize_t pos = 0; size_t num = 0;
+    bool needs_toplevel_on_wayland = false;
     while (PyDict_Next(data_map, &pos, &key, &value)) {
         if (!PyUnicode_Check(key)) { PyErr_SetString(PyExc_TypeError, "data_map must have string keys"); return NULL; }
         if (!PyBytes_Check(value)) { PyErr_SetString(PyExc_TypeError, "data_map must have bytes values"); return NULL; }
         GLFWDragSourceItem *item = items + num++;
         item->mime_type = PyUnicode_AsUTF8(key);
         item->optional_data = PyBytes_AS_STRING(value); item->data_size = PyBytes_GET_SIZE(value);
+        if (global_state.is_wayland && is_droppable_mime(item->mime_type) == TAB_DRAG_MIME_NUMBER)
+            needs_toplevel_on_wayland = true;
     }
     free_drag_source();
     global_state.drag_source.is_active = true;
+    global_state.drag_source.needs_toplevel_on_wayland = needs_toplevel_on_wayland;
     global_state.drag_source.drag_data = Py_NewRef(data_map);
     if (thumbnails) global_state.drag_source.thumbnails = Py_NewRef(thumbnails);
     global_state.drag_source.thumbnail_idx = thumbnail.pixels ? 0 : -1;
-    errno = glfwStartDrag(w->handle, items, num, thumbnail.pixels ? &thumbnail : NULL, operations);
+    errno = glfwStartDrag(w->handle, items, num, thumbnail.pixels ? &thumbnail : NULL, operations, needs_toplevel_on_wayland);
     if (errno != 0) {
         PyErr_SetFromErrno(PyExc_OSError);
         return NULL;

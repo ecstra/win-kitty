@@ -2302,7 +2302,7 @@ typedef GLFWdragsourcefun (*glfwSetDragSourceCallback_func)(GLFWwindow*, GLFWdra
 GFW_EXTERN glfwSetDragSourceCallback_func glfwSetDragSourceCallback_impl;
 #define glfwSetDragSourceCallback glfwSetDragSourceCallback_impl
 
-typedef int (*glfwStartDrag_func)(GLFWwindow*, const GLFWDragSourceItem*, size_t, const GLFWimage*, int);
+typedef int (*glfwStartDrag_func)(GLFWwindow*, const GLFWDragSourceItem*, size_t, const GLFWimage*, int, bool);
 GFW_EXTERN glfwStartDrag_func glfwStartDrag_impl;
 #define glfwStartDrag glfwStartDrag_impl
 

@@ -4984,7 +4984,7 @@ GLFWAPI GLFWdragsourcefun glfwSetDragSourceCallback(GLFWwindow* window, GLFWdrag
 // Start a drag. If called with operations == -1 indicates that previously
 // requested data via GLFW_DRAG_DATA_REQUEST is ready. operations == -2 means
 // that the drag image is changed.
-GLFWAPI int glfwStartDrag(GLFWwindow* window, const GLFWDragSourceItem *items, size_t mime_count, const GLFWimage* thumbnail, int operations);
+GLFWAPI int glfwStartDrag(GLFWwindow* window, const GLFWDragSourceItem *items, size_t mime_count, const GLFWimage* thumbnail, int operations, bool needs_toplevel_on_wayland);
 
 /*! @brief Returns whether the specified joystick is present.
  *

@@ -1608,14 +1608,16 @@ class TabManager:  # {{{
             self.layout_tab_bar()
 
     @update_tab_bar_visibility
-    def on_tab_drop(self, x: int, y: int) -> None:
+    def on_tab_drop(self, x: int, y: int, bypass_move: bool = False) -> None:
         if (td := self.tab_being_dropped) is None:
             return
         if (tab := get_boss().tab_for_id(td.data.tab_id)) is None:
             return
-        self.on_tab_drop_move(td.data.tab_id, True, x, y)
+        if not bypass_move:
+            self.on_tab_drop_move(td.data.tab_id, True, x, y)
         if (td := self.tab_being_dropped) is None:
             return
+        print(3333333333)
         self.tab_being_dropped = None
         atid = self.active_tab.id if self.active_tab else 0
         set_tab_being_dragged()
