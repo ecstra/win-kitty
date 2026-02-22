@@ -4081,7 +4081,6 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
 
     NSDraggingSession *s = [v beginDraggingSessionWithItems:dragItems event:event source:[v draggingSource]];
     _glfw.ns.drag_session = [s retain];
-    s.draggingFormation = NSDraggingFormationNone;
     _glfw.ns.drag_view = [v retain];
     return 0;
 }}
@@ -4219,11 +4218,10 @@ _glfwPlatformChangeDragImage(const GLFWimage *thumbnail, int make_toplevel) {@au
     (void)make_toplevel;
     if (!_glfw.ns.drag_session || !_glfw.ns.drag_view) return 0;
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
-    NSArray *classes = @[[NSPasteboardItem class], [NSFilePromiseProvider class]];
     [((NSDraggingSession*)_glfw.ns.drag_session)
         enumerateDraggingItemsWithOptions:0
         forView:(NSView*)_glfw.ns.drag_view
-        classes:classes
+        classes:@[[NSPasteboardItem class]]
         searchOptions:@{}
         usingBlock:^(NSDraggingItem *draggingItem, NSInteger idx, BOOL *stop) {
             if (idx == 0) {
