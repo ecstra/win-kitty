@@ -1201,7 +1201,7 @@ class TabManager:  # {{{
             return True
         tab_id, drag_started = get_tab_being_dragged()[:2]
         if drag_started and self.tab_for_id(tab_id) is not None:
-            count += 1
+            return True  # keep tab bar visible in the source tab
         for t in self.tabs_to_be_shown_in_tab_bar:
             count -= 1
             if count < 1:
@@ -1564,13 +1564,17 @@ class TabManager:  # {{{
             self.tabs[pos] = id_map[tab_id]
         reorder_tabs(self.os_window_id, *(t.id for t in self.tabs))
 
+    @update_tab_bar_visibility
     def on_tab_drop_move(self, tab_id: int = 0, is_dest: bool = False, x: int = 0, y: int = 0) -> None:
         if not is_dest:
             if self.tab_being_dropped:
                 self.tab_being_dropped = None
                 self.layout_tab_bar()
             return
-        all_tabs = [t.tab_id for t in self.tab_bar.last_laid_out_tabs]
+        if self.tab_bar_should_be_visible:
+            all_tabs = [t.tab_id for t in self.tab_bar.last_laid_out_tabs]
+        else:
+            all_tabs = [t.tab_id for t in self.tab_bar_data]
         force_update = False
         if self.tab_being_dropped is None:
             tab = get_boss().tab_for_id(tab_id)
@@ -1603,6 +1607,7 @@ class TabManager:  # {{{
         if force_update or self.tab_being_dropped.tab_ids != old_tab_ids:
             self.layout_tab_bar()
 
+    @update_tab_bar_visibility
     def on_tab_drop(self, x: int, y: int) -> None:
         if (td := self.tab_being_dropped) is None:
             return
