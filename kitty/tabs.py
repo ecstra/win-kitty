@@ -1617,7 +1617,6 @@ class TabManager:  # {{{
             self.on_tab_drop_move(td.data.tab_id, True, x, y)
         if (td := self.tab_being_dropped) is None:
             return
-        print(3333333333)
         self.tab_being_dropped = None
         atid = self.active_tab.id if self.active_tab else 0
         set_tab_being_dragged()
