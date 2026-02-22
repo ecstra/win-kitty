@@ -823,6 +823,7 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
 @end
 
 @interface GLFWDraggingSource : NSObject <NSDraggingSource> {
+   NSPoint start_point;
 }
 @end
 
@@ -3930,7 +3931,8 @@ void _glfwCocoaPostEmptyEvent(void) {
 - (void)draggingSession:(NSDraggingSession *)session
            willBeginAtPoint:(NSPoint)screenPoint
 {
-    (void)session; (void)screenPoint;
+    (void)session;
+    start_point = screenPoint;
 }
 
 - (void)draggingSession:(NSDraggingSession *)session
@@ -3944,7 +3946,7 @@ void _glfwCocoaPostEmptyEvent(void) {
            endedAtPoint:(NSPoint)screenPoint
               operation:(NSDragOperation)operation
 {
-    (void)session; (void)screenPoint;
+    (void)session;
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (window) {
         GLFWDragEvent ev = {0};
@@ -3954,7 +3956,17 @@ void _glfwCocoaPostEmptyEvent(void) {
             case NSDragOperationNone: break;
             default: ev.action = GLFW_DRAG_OPERATION_GENERIC; break;
         }
-        ev.type = (operation == NSDragOperationNone) ? GLFW_DRAG_CANCELLED : GLFW_DRAG_DROPPED;
+        switch (operation) {
+            case NSDragOperationDelete: ev.type = GLFW_DRAG_CANCELLED; break;
+            case NSDragOperationNone: {
+                NSEvent *currentEvent = [NSApp currentEvent];
+                if (currentEvent.type == NSEventTypeKeyDown && currentEvent.keyCode == 53) {
+                    ev.type = GLFW_DRAG_CANCELLED;
+                } else ev.type = GLFW_DRAG_DROPPED;
+            } break;
+            default:
+                ev.type = GLFW_DRAG_DROPPED; break;
+        }
         _glfwInputDragSourceRequest(window, &ev);
         if (operation == NSDragOperationNone) _glfwFreeDragSourceData();
     }
