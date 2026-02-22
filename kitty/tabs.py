@@ -28,7 +28,7 @@ from .fast_data_types import (
     buffer_keys_in_window,
     current_focused_os_window_id,
     detach_window,
-    draw_drag_icon_title,
+    draw_single_line_of_text,
     get_boss,
     get_click_interval,
     get_options,
@@ -1642,9 +1642,13 @@ class TabManager:  # {{{
                 title = replace_c0_codes_except_nl_space_tab(title.encode()).decode()
                 title = re.sub(r'\n', ' ', title)
                 opts = get_options()
-                fg = 0xff000000 | color_as_int(opts.active_tab_foreground)
-                bg = 0xff000000 | color_as_int(opts.active_tab_background)
-                title_pixels = draw_drag_icon_title(self.os_window_id, title, fg, bg, width)
+                if td.is_active:
+                    fg = color_as_int(opts.active_tab_foreground)
+                    bg = color_as_int(opts.active_tab_background)
+                else:
+                    fg = color_as_int(opts.inactive_tab_foreground)
+                    bg = color_as_int(opts.inactive_tab_background)
+                title_pixels = draw_single_line_of_text(self.os_window_id, title, 0xff000000 | fg, 0xff000000 | bg, width)
                 title_height = len(title_pixels) // (width * 4)
                 drag_data = {
                     f'application/net.kovidgoyal.kitty-tab-{os.getpid()}': str(tab.id).encode(),
