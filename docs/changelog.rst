@@ -240,6 +240,11 @@ Detailed list of changes
 
 - URL detection: Allow trailing asterisks in URLs (:iss:`9543`)
 
+- Wayland: Add support for :code:`titlebar-only` in
+  :opt:`hide_window_decorations` to hide the titlebar while keeping shadow
+  borders for resizing. On compositors that use server-side decorations (such as
+  GNOME), this forces client-side decoration mode (:pull:`9486`)
+
 
 0.45.0 [2025-12-24]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
