@@ -2442,6 +2442,10 @@ typedef void (*glfwCocoaRequestRenderFrame_func)(GLFWwindow*, GLFWcocoarenderfra
 GFW_EXTERN glfwCocoaRequestRenderFrame_func glfwCocoaRequestRenderFrame_impl;
 #define glfwCocoaRequestRenderFrame glfwCocoaRequestRenderFrame_impl
 
+typedef bool (*glfwCocoaRecreateGLDrawable_func)(GLFWwindow*);
+GFW_EXTERN glfwCocoaRecreateGLDrawable_func glfwCocoaRecreateGLDrawable_impl;
+#define glfwCocoaRecreateGLDrawable glfwCocoaRecreateGLDrawable_impl
+
 typedef GLFWcocoarenderframefun (*glfwCocoaSetWindowResizeCallback_func)(GLFWwindow*, GLFWcocoarenderframefun);
 GFW_EXTERN glfwCocoaSetWindowResizeCallback_func glfwCocoaSetWindowResizeCallback_impl;
 #define glfwCocoaSetWindowResizeCallback glfwCocoaSetWindowResizeCallback_impl
