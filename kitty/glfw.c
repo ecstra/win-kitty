@@ -11,7 +11,6 @@
 #include "control-codes.h"
 #include <structmember.h>
 #include "glfw-wrapper.h"
-#include "gl-wrapper.h"
 #ifdef __APPLE__
 #include "cocoa_window.h"
 #else
@@ -347,20 +346,18 @@ window_iconify_callback(GLFWwindow *window, int iconified) {
 static void
 cocoa_out_of_sequence_render(OSWindow *window) {
     make_os_window_context_current(window);
+    window->needs_render = true;
 
     // On macOS Tahoe, the default framebuffer can become undefined during
-    // screen change events. Try to recover by recreating the drawable. See #9463
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        if (!glfwCocoaRecreateGLDrawable(window->handle) ||
-            glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            window->needs_render = true;
+    // screen change events. Try to recover by recreating the drawable.
+    // See https://github.com/kovidgoyal/kitty/issues/9463
+    if (!current_framebuffer_is_ok()) {
+        if (!glfwCocoaRecreateGLDrawable(window->handle) || !current_framebuffer_is_ok()) {
             request_tick_callback();
             return;
         }
     }
 
-
-    window->needs_render = true;
     bool rendered = false;
     if (window->fonts_data->sprite_map) rendered = render_os_window(window, monotonic(), true);
     if (!rendered) {

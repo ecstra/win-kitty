@@ -235,6 +235,9 @@ Detailed list of changes
 - macOS: A new option :opt:`macos_dock_badge_on_bell` to show a badge on the
   kitty dock icon when a bell occurs (:pull:`9529`)
 
+- macOS: Workaround for yet another Tahoe bug causing rendering to fail
+  (:pull:`9520`)
+
 
 0.45.0 [2025-12-24]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

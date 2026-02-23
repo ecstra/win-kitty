@@ -1086,6 +1086,11 @@ screen_needs_rendering_in_layers(OSWindow *os_window, Window *w, Screen *screen)
     return has_ui || grman_has_images(grman);
 }
 
+bool
+current_framebuffer_is_ok(void) {
+    return check_framebuffer_status() == NULL;
+}
+
 // }}}
 
 enum { DRAW_NEITHER_BG = 0, DRAW_DEFAULT_BG = 1, DRAW_NON_DEFAULT_BG = 2, DRAW_BOTH_BG = 3};

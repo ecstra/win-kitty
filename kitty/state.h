@@ -503,3 +503,4 @@ bool screen_needs_rendering_in_layers(OSWindow *os_window, Window *w, Screen *sc
 void setup_os_window_for_rendering(OSWindow*, Tab*, Window*, bool);
 void swap_window_buffers(OSWindow *w);
 void take_screenshot_of_rectangular_region(OSWindow *os_window, Region region, unsigned char *dst_buf, unsigned *thumb_w, unsigned *thumb_h);
+bool current_framebuffer_is_ok(void);
