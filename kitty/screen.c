@@ -3979,7 +3979,7 @@ static hyperlink_id_type
 hyperlink_id_for_range(Screen *self, const Selection *sel) {
     IterationData idata;
     iteration_data(sel, &idata, self->columns, -self->historybuf->count, 0);
-    for (int i = 0, y = idata.y; y < idata.y_limit && y < (int)self->lines; y++, i++) {
+    for (int y = idata.y; y < idata.y_limit && y < (int)self->lines; y++) {
         Line *line = range_line_(self, y);
         XRange xr = xrange_for_iteration(&idata, y, line);
         for (index_type x = xr.x; x < xr.x_limit; x++) {
