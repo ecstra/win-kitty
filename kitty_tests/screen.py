@@ -1711,3 +1711,4 @@ def detect_url(self, scale=1):
     t('http://[::1]:8080/x', after='[')  # ]
     t('http://[::1]:8080/x]y34', expected='http://[::1]:8080/x')
     t('https://wraps-by-one-char.com[]/x', after='[')  # ]
+    t('https://t.me/#1_*_*_*_*')

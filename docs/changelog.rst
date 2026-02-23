@@ -238,6 +238,8 @@ Detailed list of changes
 - macOS: Workaround for yet another Tahoe bug causing rendering to fail
   (:pull:`9520`)
 
+- URL detection: Allow trailing asterisks in URLs (:iss:`9543`)
+
 
 0.45.0 [2025-12-24]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
