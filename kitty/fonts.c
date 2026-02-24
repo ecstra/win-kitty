@@ -1159,6 +1159,7 @@ render_group(
 ) {
 #define sp global_glyph_render_scratch.sprite_positions
     const FontCellMetrics scaled_metrics = fg->fcm;
+    const Font *font = fg->fonts + rf.font_idx;
     bool all_rendered = true;
 
     unsigned num_scaled_cells = MAX(1u, (unsigned)ceil(num_cells / scale));
@@ -1168,10 +1169,9 @@ render_group(
         // scw might be 1 px less than scaled_metrics.cell_width because of rounding, but it is the correct value
         // to use to determine the num of scaled cells
         unsigned scw = (unsigned)(unscaled_metrics.cell_width * scale);
-        num_scaled_cells = unscaled_metrics.cell_width / scw;
+        num_scaled_cells = num_cells * unscaled_metrics.cell_width / scw;
     }
     unsigned scaled_canvas_width = num_scaled_cells * scaled_metrics.cell_width;
-    Font *font = fg->fonts + rf.font_idx;
 
 #define failed { \
     if (PyErr_Occurred()) PyErr_Print(); \
@@ -1198,30 +1198,31 @@ render_group(
     pixel *scratch = fg->canvas.buf + canvas_width * unscaled_metrics.cell_height;
     text_in_cell(cpu_cells, tc, global_glyph_render_scratch.lc);
     bool is_only_filled_boxes = false;
-    bool was_colored = has_emoji_presentation(cpu_cells, global_glyph_render_scratch.lc);
     if (global_glyph_render_scratch.lc->chars[0] == 0x2588) {
         glyph_index box_glyph_id = global_glyph_render_scratch.glyphs[0];
         is_only_filled_boxes = true;
         for (unsigned i = 1; i < num_glyphs && is_only_filled_boxes; i++) if (global_glyph_render_scratch.glyphs[i] != box_glyph_id) is_only_filled_boxes = false;
     }
+    bool was_colored = !is_only_filled_boxes && has_emoji_presentation(cpu_cells, global_glyph_render_scratch.lc);
     GlyphRenderInfo ri = {0};
-    pixel *canvas = rendering_in_smaller_area ? scratch : fg->canvas.buf;
+    pixel *canvas = rendering_in_smaller_area && canvas_width != scaled_canvas_width ? scratch : fg->canvas.buf;
     if (is_only_filled_boxes) { // special case rendering of █ for tests
         render_filled_sprite(canvas, num_glyphs, scaled_metrics, num_scaled_cells);
-        was_colored = false;
         ri.canvas_width = canvas_width; ri.rendered_width = num_glyphs * scaled_metrics.cell_width;
-        /*dump_sprite(canvas, scaled_metrics.cell_width * num_scaled_cells, scaled_metrics.cell_height);*/
+        // dump_sprite(canvas, scaled_metrics.cell_width * num_scaled_cells, scaled_metrics.cell_height);
     } else {
         render_glyphs_in_cells(font->face, font->bold, font->italic, info, positions, num_glyphs, canvas, scaled_metrics.cell_width, scaled_metrics.cell_height, num_scaled_cells, scaled_metrics.baseline, &was_colored, (FONTS_DATA_HANDLE)fg, &ri);
         ri.rendered_width = MIN(ri.rendered_width, ri.canvas_width);
     }
     // printf("num_cells: %u num_scaled_cells: %u num_glyphs: %u scale: %f unscaled: %ux%u scaled: %ux%u rendered_width: %d\n", num_cells, num_scaled_cells, num_glyphs, scale, unscaled_metrics.cell_width, unscaled_metrics.cell_height, scaled_metrics.cell_width, scaled_metrics.cell_height, ri.rendered_width);
-    if (rendering_in_smaller_area) {  // expand into actual canvas width
-        unsigned stride = MIN(canvas_width, scaled_canvas_width);
-        for (unsigned y = 0; y < scaled_metrics.cell_height; y++) memcpy(
-            fg->canvas.buf + y * canvas_width, canvas + y * scaled_canvas_width, sizeof(pixel) * stride);
-        ri.canvas_width = canvas_width;
-        scaled_canvas_width = canvas_width;
+    if (canvas == scratch) {
+        if (canvas_width != scaled_canvas_width) {
+            unsigned stride = MIN(canvas_width, scaled_canvas_width);
+            for (unsigned y = 0; y < scaled_metrics.cell_height; y++) memcpy(
+                fg->canvas.buf + y * canvas_width, canvas + y * scaled_canvas_width, sizeof(pixel) * stride);
+            ri.canvas_width = canvas_width;
+            scaled_canvas_width = canvas_width;
+        } else memcpy(fg->canvas.buf, canvas, sizeof(pixel) * canvas_width * scaled_metrics.cell_height);
         canvas = fg->canvas.buf;
     }
     apply_horizontal_alignment(
@@ -1231,7 +1232,7 @@ render_group(
 
     fg->fcm = unscaled_metrics;  // needed for current_send_sprite_to_gpu()
 
-    if (num_cells == num_scaled_cells && scale == 1.f) {
+    if (num_cells == num_scaled_cells && scale == 1.f && !rendering_in_smaller_area) {
         Region src = {.bottom=unscaled_metrics.cell_height, .right=unscaled_metrics.cell_width}, dest = src;
         DecorationMetadata dm = index_for_decorations(fg, rf, src, dest, scaled_metrics);
         for (unsigned i = 0; i < num_cells; i++) {
