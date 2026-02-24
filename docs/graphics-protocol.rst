@@ -66,6 +66,7 @@ Other terminals that have implemented the graphics protocol:
 * `wayst <https://github.com/91861/wayst>`_
 * `WezTerm <https://github.com/wez/wezterm/issues/986>`_
 * `iTerm2 <https://github.com/gnachman/iTerm2/commit/4fe5b2173193b6c3e45234b6b2ab7a144a5cfa01>`_
+* `xterm.js <https://github.com/xtermjs/xterm.js/discussions/5683>`_
 
 
 Getting the window size
