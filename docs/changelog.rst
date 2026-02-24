@@ -243,6 +243,9 @@ Detailed list of changes
 - Wayland: Add support for :code:`titlebar-only` in :opt:`hide_window_decorations`
   to hide the titlebar while keeping shadows for window resizing. (:pull:`9486`)
 
+- Text sizing protocol: Fix alignment/cropping issues when rendering text with
+  a fractional scale (:iss:`9471`)
+
 
 0.45.0 [2025-12-24]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
