@@ -92,7 +92,7 @@ def run_build(args: Any) -> None:
             time.sleep(60)
             call(cmd, echo=True, timeout=timeout)
 
-    for x, retry_cmd in {'64': '', 'arm64': 'pkill -9 qemu-aarch64-static'}.items():
+    for x, retry_cmd in {'64': '', 'arm64': 'pkill -9 -f -e qemu-aarch64-static'}.items():
         prefix = f'python ../bypy linux --arch {x} '
         run_with_retry(prefix + f'program --non-interactive --extra-program-data "{vcs_rev}"', retry_cmd=retry_cmd)
     run_with_retry(
