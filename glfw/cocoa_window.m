@@ -3711,7 +3711,6 @@ apply_titlebar_color_settings(_GLFWwindow *window) {
     if (!window->ns.titlebar_hidden && window->decorated && tc.was_set && window->ns.last_applied_titlebar_settings.transparent) {
         NSColor *titlebar_color = [NSColor colorWithSRGBRed:tc.red green:tc.green blue:tc.blue alpha:tc.alpha];
         set_title_bar_background(nsw, titlebar_color);
-        [titlebar_color release];
     } else clear_title_bar_background_views(nsw);
 #undef tc
 }
@@ -4239,4 +4238,3 @@ _glfwPlatformDragDataReady(const char *mime_type) {
     }
     return 0;
 }
-
