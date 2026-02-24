@@ -1060,6 +1060,9 @@ class Parser:
     def kitty_mod(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['kitty_mod'] = to_modifiers(val)
 
+    def map_timeout(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['map_timeout'] = positive_float(val)
+
     def linux_bell_theme(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['linux_bell_theme'] = str(val)
 
