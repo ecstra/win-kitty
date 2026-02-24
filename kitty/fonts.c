@@ -1153,7 +1153,7 @@ apply_horizontal_alignment(pixel *canvas, RunFont rf, bool center_glyph, GlyphRe
 
 static void
 render_group(
-    FontGroup *fg, unsigned int num_cells, unsigned int num_glyphs, CPUCell *cpu_cells, GPUCell *gpu_cells,
+    FontGroup *fg, unsigned num_cells, unsigned num_glyphs, CPUCell *cpu_cells, GPUCell *gpu_cells,
     hb_glyph_info_t *info, hb_glyph_position_t *positions, RunFont rf, glyph_index *glyphs, unsigned glyph_count,
     bool center_glyph, const TextCache *tc, float scale, FontCellMetrics unscaled_metrics
 ) {
