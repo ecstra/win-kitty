@@ -137,7 +137,7 @@ static void initialize_font_group(FontGroup *fg);
 
 static void
 display_glyph(const pixel *b, unsigned width, unsigned height) {
-    print_argb32(b, width, height);
+    print_abgr32(b, width, height);
 }
 
 static void
@@ -1230,7 +1230,7 @@ render_group(
         canvas, rf, center_glyph, ri, canvas_width,
         scaled_metrics.cell_height, num_scaled_cells, num_glyphs, was_colored);
     if (PyErr_Occurred()) PyErr_Print();
-    // display_glyph(canvas, canvas_width, scaled_metrics.cell_height); printf("\n");
+    display_glyph(canvas, canvas_width, scaled_metrics.cell_height); printf("\n");
 
     fg->fcm = unscaled_metrics;  // needed for current_send_sprite_to_gpu()
 
