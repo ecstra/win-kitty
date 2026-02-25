@@ -1230,7 +1230,7 @@ render_group(
         canvas, rf, center_glyph, ri, canvas_width,
         scaled_metrics.cell_height, num_scaled_cells, num_glyphs, was_colored);
     if (PyErr_Occurred()) PyErr_Print();
-    display_glyph(canvas, canvas_width, scaled_metrics.cell_height); printf("\n");
+    // display_glyph(canvas, canvas_width, scaled_metrics.cell_height); printf("\n");
 
     fg->fcm = unscaled_metrics;  // needed for current_send_sprite_to_gpu()
 
