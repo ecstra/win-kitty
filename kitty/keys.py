@@ -124,8 +124,8 @@ class Mappings:
             from .fast_data_types import add_timer
 
             self._cancel_mode_timeout()
-            self.mode_timeout_timer_id = add_timer(self._on_mode_timeout, mode.timeout, False)
-            mode.timeout_timer_id = self.mode_timeout_timer_id
+            self.mode_timeout_timer_id = mode.timeout_timer_id = add_timer(
+                    self._on_mode_timeout, mode.timeout, False)
 
     def _cancel_mode_timeout(self) -> None:
         if self.mode_timeout_timer_id is not None:

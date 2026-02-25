@@ -1359,20 +1359,18 @@ class KeyboardMode:
 
 
 KeyboardModeMap = dict[str, KeyboardMode]
+key_map_option_converters: defaultdict[str, Callable[[str], Any]] = defaultdict(lambda: (lambda x: x))
+key_map_option_converters['timeout'] = float
 
 
 def parse_options_for_map(val: str) -> tuple[KeyMapOptions, str]:
     expecting_arg = ''
     ans = KeyMapOptions()
-    key_map_option_converters: dict[str, Callable[[str], object]] = {
-        'timeout': float,
-    }
     s = Shlex(val)
     while (tok := s.next_word())[0] > -1:
         x = tok[1]
         if expecting_arg:
-            convert = key_map_option_converters.get(expecting_arg)
-            object.__setattr__(ans, expecting_arg, convert(x) if convert else x)
+            object.__setattr__(ans, expecting_arg, key_map_option_converters[expecting_arg](x))
             expecting_arg = ''
         elif x.startswith('--'):
             expecting_arg = x[2:]
@@ -1382,8 +1380,7 @@ def parse_options_for_map(val: str) -> tuple[KeyMapOptions, str]:
             if expecting_arg not in allowed_key_map_options:
                 raise KeyError(f'The map option {x} is unknown. Allowed options: {", ".join(allowed_key_map_options)}')
             if sep == '=':
-                convert = key_map_option_converters.get(k)
-                object.__setattr__(ans, k, convert(v) if convert else v)
+                object.__setattr__(ans, k, key_map_option_converters[k](v))
                 expecting_arg = ''
         else:
             return ans, val[tok[0]:]

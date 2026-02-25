@@ -175,6 +175,8 @@ Detailed list of changes
 - Fix a regression that broke using line numbers with the edit-in-kitty command
   (:pull:`9346`)
 
+- Key maps: Allow specifying a timeout for multi key mappings and keyboard modes (:pull:`9551`)
+
 - macOS: Fix changes to :opt:`macos_titlebar_color` while in full screen not being applied after exiting fullscreen (:iss:`9350`)
 
 - ncurses: Fix ncurses not using dim because it is missing from the sgr property
