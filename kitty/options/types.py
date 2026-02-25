@@ -390,6 +390,7 @@ option_names = (
     'macos_traditional_fullscreen',
     'macos_window_resizable',
     'map',
+    'map_timeout',
     'mark1_background',
     'mark1_foreground',
     'mark2_background',
@@ -572,6 +573,7 @@ class Options:
     input_delay: int = 3
     italic_font: FontSpec = FontSpec(family=None, style=None, postscript_name=None, full_name=None, system='auto', axes=(), variable_name=None, features=(), created_from_string='auto')
     kitty_mod: int = 5
+    map_timeout: float = 0.0
     linux_bell_theme: str = '__custom'
     linux_display_server: choices_for_linux_display_server = 'auto'
     listen_on: str = 'none'

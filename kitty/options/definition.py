@@ -3847,6 +3847,24 @@ remove the default shortcuts.
 '''
     )
 
+opt('map_timeout', '0.0',
+    option_type='positive_float', ctype='time',
+    long_text='''
+The default timeout (in seconds) for multi-key mappings and modal keyboard modes.
+If you press the first key(s) of a multi-key mapping and don't press the next
+key within this timeout, the mapping is cancelled and the mode is exited. A value
+of zero disables the timeout. This can be overridden for specific modes using the
+:code:`--timeout` option when creating a keyboard mode with :code:`--new-mode`.
+For example::
+
+    # 2 second timeout for all mappings
+    map_timeout 2.0
+
+    # This mode will have a 5 second timeout (overrides the global 2 second timeout)
+    map --new-mode resize --timeout 5.0 kitty_mod+r
+'''
+    )
+
 opt('+action_alias', 'launch_tab launch --type=tab --cwd=current',
     option_type='action_alias',
     add_to_default=False,
