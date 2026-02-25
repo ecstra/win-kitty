@@ -10,15 +10,14 @@
 #include <stdbool.h>
 #include "base64.h"
 
-// Write the kitty graphics protocol escape codes for a 32-bit RGBA raster image to fp.
+// Write the kitty graphics protocol escape codes for a 32-bit RGBA image to fp.
 static inline void
 fprint_rgba32(FILE *fp, const uint32_t *rgba, uint32_t width, uint32_t height) {
     const uint8_t *data = (const uint8_t *)rgba;
-    const size_t total_bytes = (size_t)width * height * 4;
-    unsigned char b64_buf[4096];
+    const size_t total_bytes = (size_t)width * height * sizeof(uint32_t);
+    uint8_t b64_buf[4096];
     size_t offset = 0;
     bool first = true;
-
     while (offset < total_bytes) {
         size_t chunk = total_bytes - offset;
         if (chunk > 3072) chunk = 3072;

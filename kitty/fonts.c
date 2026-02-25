@@ -13,6 +13,7 @@
 #include "char-props.h"
 #include "decorations.h"
 #include "glyph-cache.h"
+#include "print-graphics.h"
 
 #define MISSING_GLYPH 1
 #define MAX_NUM_EXTRA_GLYPHS_PUA 4u
@@ -136,11 +137,7 @@ static void initialize_font_group(FontGroup *fg);
 
 static void
 display_rgba_data(const pixel *b, unsigned width, unsigned height) {
-    RAII_PyObject(m, PyImport_ImportModule("kitty.fonts.render"));
-    RAII_PyObject(f, PyObject_GetAttrString(m, "show"));
-    RAII_PyObject(data, PyMemoryView_FromMemory((char*)b, (Py_ssize_t)width * height * sizeof(b[0]), PyBUF_READ));
-    RAII_PyObject(ret, PyObject_CallFunction(f, "OII", data, width, height));
-    if (ret == NULL) PyErr_Print();
+    print_rgba32(b, width, height);
 }
 
 static void
@@ -1224,6 +1221,7 @@ render_group(
             scaled_canvas_width = canvas_width;
         } else memcpy(fg->canvas.buf, canvas, sizeof(pixel) * canvas_width * scaled_metrics.cell_height);
         canvas = fg->canvas.buf;
+        if (0) { print_rgba32(fg->canvas.buf, canvas_width, unscaled_metrics.cell_height); printf("\n"); }
     }
     apply_horizontal_alignment(
         canvas, rf, center_glyph, ri, canvas_width,
