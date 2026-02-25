@@ -793,7 +793,7 @@ static PyObject *descriptor_for_idx = NULL;
 
 void
 render_alpha_mask(const uint8_t *alpha_mask, pixel* dest, const Region *src_rect, const Region *dest_rect, size_t src_stride, size_t dest_stride, pixel color_rgb) {
-    pixel col = color_rgb << 8;
+    pixel col = (color_rgb << 8) & 0xffffff00;
     for (size_t sr = src_rect->top, dr = dest_rect->top; sr < src_rect->bottom && dr < dest_rect->bottom; sr++, dr++) {
         pixel *d = dest + dest_stride * dr;
         const uint8_t *s = alpha_mask + src_stride * sr;
@@ -956,7 +956,7 @@ map_scaled_decoration_geometry(DecorationGeometry sdg, Region src, Region dest) 
     unsigned unscaled_top = dest.top + (scaled_top - src.top);
     unsigned unscaled_bottom = unscaled_top + (scaled_bottom > scaled_top ? scaled_bottom - scaled_top : 0);
     unscaled_bottom = MIN(unscaled_bottom, dest.bottom);
-    /*printf("111111 src: (%u, %u) dest: (%u, %u) sdg: (%u, %u) scaled: (%u, %u) unscaled: (%u, %u)\n",*/
+    /*printf("src: (%u, %u) dest: (%u, %u) sdg: (%u, %u) scaled: (%u, %u) unscaled: (%u, %u)\n",*/
     /*    src.top, src.bottom, dest.top, dest.bottom, sdg.top, sdg.top + sdg.height, scaled_top, scaled_bottom, unscaled_top, unscaled_bottom);*/
     return (Region){.top=unscaled_top, .bottom=MAX(unscaled_top, unscaled_bottom)};
 }
@@ -1191,7 +1191,7 @@ render_group(
     }
 
     ensure_canvas_can_fit(fg, MAX(num_cells, num_scaled_cells) + 1, rf.scale);
-    if (rendering_in_smaller_area) ensure_canvas_can_fit(fg, 2 * num_cells + 1, 1);  // scratch space
+    if (rendering_in_smaller_area) ensure_canvas_can_fit(fg, 2 * num_cells + 1, (unsigned)ceil(scale));  // scratch space
     pixel *scratch = fg->canvas.buf + canvas_width * unscaled_metrics.cell_height;
     text_in_cell(cpu_cells, tc, global_glyph_render_scratch.lc);
     bool is_only_filled_boxes = false;
@@ -1215,8 +1215,12 @@ render_group(
     if (canvas == scratch) {
         if (canvas_width != scaled_canvas_width) {
             unsigned stride = MIN(canvas_width, scaled_canvas_width);
-            for (unsigned y = 0; y < scaled_metrics.cell_height; y++) memcpy(
-                fg->canvas.buf + y * canvas_width, canvas + y * scaled_canvas_width, sizeof(pixel) * stride);
+            for (unsigned y = 0; y < scaled_metrics.cell_height; y++) {
+                pixel *dest_row = fg->canvas.buf + y * canvas_width;
+                memcpy(dest_row, canvas + y * scaled_canvas_width, sizeof(pixel) * stride);
+                if (scaled_canvas_width < canvas_width) memset(
+                    dest_row + scaled_canvas_width, 0, sizeof(pixel) * (canvas_width - scaled_canvas_width));
+            }
             ri.canvas_width = canvas_width;
             scaled_canvas_width = canvas_width;
         } else memcpy(fg->canvas.buf, canvas, sizeof(pixel) * canvas_width * scaled_metrics.cell_height);
@@ -1226,7 +1230,7 @@ render_group(
         canvas, rf, center_glyph, ri, canvas_width,
         scaled_metrics.cell_height, num_scaled_cells, num_glyphs, was_colored);
     if (PyErr_Occurred()) PyErr_Print();
-    // display_glyph(canvas, canvas_width, unscaled_metrics.cell_height); printf("\n");
+    // display_glyph(canvas, canvas_width, scaled_metrics.cell_height); printf("\n");
 
     fg->fcm = unscaled_metrics;  // needed for current_send_sprite_to_gpu()
 
