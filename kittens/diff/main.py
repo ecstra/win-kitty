@@ -309,13 +309,13 @@ usage = 'file_or_directory_left file_or_directory_right'
 if __name__ == '__main__':
     main(sys.argv)
 elif __name__ == '__doc__':
+    from kitty.guess_mime_type import text_mimes
     cd = sys.cli_docs  # type: ignore
     cd['usage'] = usage
     cd['options'] = OPTIONS
     cd['help_text'] = help_text
     cd['short_desc'] = 'Pretty, side-by-side diffing of files and images'
-    cd['args_completion'] = CompletionSpec.from_string(
-            'type:file mime:text/* mime:image/* ext:sh ext:json ext:yaml ext:toml ext:lua ext:rss ext:xml ext:xhtml'
-            ' group:"Text and image files"')
+    mimes = ' '.join(f'mime:{x}' for x in ('text/*', 'image/*') + tuple(text_mimes))
+    cd['args_completion'] = CompletionSpec.from_string(f'type:file {mimes} group:"Text and image files"')
 elif __name__ == '__conf__':
     sys.options_definition = definition  # type: ignore
