@@ -136,8 +136,8 @@ static id_type font_group_id_counter = 0;
 static void initialize_font_group(FontGroup *fg);
 
 static void
-display_rgba_data(const pixel *b, unsigned width, unsigned height) {
-    print_rgba32(b, width, height);
+display_glyph(const pixel *b, unsigned width, unsigned height) {
+    print_argb32(b, width, height);
 }
 
 static void
@@ -357,7 +357,7 @@ calculate_underline_exclusion_zones(pixel *buf, const FontGroup *fg, DecorationG
     }
     thickness = MAX(1u, thickness);
     if (0) printf("dg: %u %u cell_height: %u scaled_cell_height: %u\n", dg.top, dg.height, fg->fcm.cell_height, scaled_metrics.cell_height);
-    if (0) { display_rgba_data(buf, fg->fcm.cell_width, fg->fcm.cell_height); printf("\n"); }
+    if (0) { display_glyph(buf, fg->fcm.cell_width, fg->fcm.cell_height); printf("\n"); }
     unsigned max_overlap = 0;
 #define is_rendered(x, y) ((buf[(y) * fg->fcm.cell_width + (x)] & 0x000000ff) > 0)
     for (unsigned x = 0; x < fg->fcm.cell_width; x++) {
@@ -387,7 +387,7 @@ current_send_sprite_to_gpu(FontGroup *fg, pixel *buf, DecorationMetadata dec, Fo
     if (dec.underline_region.height && OPT(underline_exclusion).thickness > 0) calculate_underline_exclusion_zones(
             buf, fg, dec.underline_region, scaled_metrics);
     send_sprite_to_gpu((FONTS_DATA_HANDLE)fg, ans, buf, dec.start_idx);
-    if (0) { printf("Sprite: %u dec_idx: %u\n", ans, dec.start_idx); display_rgba_data(buf, fg->fcm.cell_width, fg->fcm.cell_height); printf("\n"); }
+    if (0) { printf("Sprite: %u dec_idx: %u\n", ans, dec.start_idx); display_glyph(buf, fg->fcm.cell_width, fg->fcm.cell_height); printf("\n"); }
     return ans;
 }
 
@@ -1221,12 +1221,12 @@ render_group(
             scaled_canvas_width = canvas_width;
         } else memcpy(fg->canvas.buf, canvas, sizeof(pixel) * canvas_width * scaled_metrics.cell_height);
         canvas = fg->canvas.buf;
-        if (0) { print_rgba32(fg->canvas.buf, canvas_width, unscaled_metrics.cell_height); printf("\n"); }
     }
     apply_horizontal_alignment(
         canvas, rf, center_glyph, ri, canvas_width,
         scaled_metrics.cell_height, num_scaled_cells, num_glyphs, was_colored);
     if (PyErr_Occurred()) PyErr_Print();
+    // display_glyph(canvas, canvas_width, unscaled_metrics.cell_height); printf("\n");
 
     fg->fcm = unscaled_metrics;  // needed for current_send_sprite_to_gpu()
 
