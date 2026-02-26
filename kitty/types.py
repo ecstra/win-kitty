@@ -241,3 +241,18 @@ class NeighborsMap(TypedDict, total=False):
     top: list[int]
     right: list[int]
     bottom: list[int]
+
+
+class WindowResizeDrag(NamedTuple):
+    is_active: bool = False
+    cell_width: int = 0
+    cell_height: int = 0
+    horizontal_target_window_id: int = 0
+    vertical_target_window_id: int = 0
+    initial_x: float = 0
+    initial_y: float = 0
+    last_step_x: float = 0
+    last_step_y: float = 0
+
+    def __bool__(self) -> bool:
+        return self.is_active

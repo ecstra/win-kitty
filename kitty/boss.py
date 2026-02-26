@@ -13,8 +13,8 @@ from collections.abc import Callable, Container, Generator, Iterable, Iterator, 
 from contextlib import contextmanager, suppress
 from functools import partial
 from gettext import gettext as _
-from math import floor
 from gettext import ngettext
+from math import floor
 from time import sleep
 from typing import (
     TYPE_CHECKING,
@@ -24,6 +24,8 @@ from typing import (
     Union,
 )
 from weakref import WeakValueDictionary
+
+from kitty.types import WindowResizeDrag
 
 from .child import cached_process_data, default_env, set_default_env
 from .cli import create_opts, green, parse_args
@@ -382,7 +384,7 @@ class Boss:
         global_shortcuts: dict[str, SingleKey],
         talk_fd: int = -1,
     ):
-        self.drag_resize_active = False
+        self.drag_resize_of_window = WindowResizeDrag()
         self.atexit = Atexit()
         set_layout_options(opts)
         self.clipboard = Clipboard()
@@ -2418,50 +2420,31 @@ class Boss:
             tab.set_active_window(window_id)
 
     def drag_resize_start(self, x: float, y: float, cell_width: int, cell_height: int) -> None:
-        tab = self.active_tab
-        if not tab:
-            return
-
-        (horizontal, vertical) = tab.current_layout.drag_resize_target_windows(x, y, tab.windows)
-
-        self.drag_resize_cell_width = cell_width
-        self.drag_resize_cell_height = cell_height
-        self.drag_resize_target_horizontal = horizontal
-        self.drag_resize_target_vertical = vertical
-        self.drag_resize_active = True
-        self.drag_resize_initial_x = x
-        self.drag_resize_initial_y = y
-        self.drag_resize_last_step_x = 0
-        self.drag_resize_last_step_y = 0
+        if tab := self.active_tab:
+            horizontal, vertical = tab.current_layout.drag_resize_target_windows(x, y, tab.windows)
+            self.drag_resize_of_window = WindowResizeDrag(
+                is_active=True, horizontal_target_window_id=horizontal.id, vertical_target_window_id=vertical.id,
+                cell_width=cell_width, cell_height=cell_height, initial_x=x, initial_y=y)
 
     def drag_resize_update(self, x: float, y: float) -> None:
-        if not self.drag_resize_active:
+        if not (r := self.drag_resize_of_window):
             return
+        if h := self.window_id_map.get(r.horizontal_target_window_id):
+            step_x = floor((x - r.initial_x) / r.cell_width)
+            dx = step_x - r.last_step_x
+            if dx != 0:
+                self.resize_layout_window(h, float(dx), True, False)
+                self.drag_resize_of_window = r._replace(last_step_x=step_x)
 
-        if self.drag_resize_target_horizontal is not None:
-            step_x = floor((x - self.drag_resize_initial_x) / self.drag_resize_cell_width)
-            dx = step_x - self.drag_resize_last_step_x
-            if not dx == 0:
-                self.resize_layout_window(self.drag_resize_target_horizontal, float(dx), True, False)
-                self.drag_resize_last_step_x = step_x
-
-        if self.drag_resize_target_vertical is not None:
-            step_y = floor((y - self.drag_resize_initial_y) / self.drag_resize_cell_height)
-            dy = step_y - self.drag_resize_last_step_y
-            if not dy == 0:
-                self.resize_layout_window(self.drag_resize_target_vertical, float(dy), False, False)
-                self.drag_resize_last_step_y = step_y
+        if v := self.window_id_map.get(r.vertical_target_window_id):
+            step_y = floor((y - r.initial_y) / r.cell_height)
+            dy = step_y - r.last_step_y
+            if dy != 0:
+                self.resize_layout_window(v, float(dy), False, False)
+                self.drag_resize_of_window = r._replace(last_step_y=step_y)
 
     def drag_resize_end(self) -> None:
-        self.drag_resize_cell_width = 0
-        self.drag_resize_cell_height = 0
-        self.drag_resize_target_horizontal = None
-        self.drag_resize_target_vertical = None
-        self.drag_resize_active = False
-        self.drag_resize_initial_x = 0.0
-        self.drag_resize_initial_y = 0.0
-        self.drag_resize_last_step_x = 0
-        self.drag_resize_last_step_y = 0
+        self.drag_resize_of_window = WindowResizeDrag()
 
     def open_kitty_website(self) -> None:
         self.open_url(website_url())

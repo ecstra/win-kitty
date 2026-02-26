@@ -487,7 +487,7 @@ class Layout:
             (not top_half_clicked and len(top) > 0 and len(bottom) == 0)):
             vertical_target = all_windows.id_map[top[0]]
 
-        return (horizontal_target, vertical_target)
+        return horizontal_target, vertical_target
 
     def serialize(self, all_windows: WindowList) -> dict[str, Any]:
         ans = self.layout_state()
