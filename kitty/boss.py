@@ -2419,12 +2419,16 @@ class Boss:
         if tab:
             tab.set_active_window(window_id)
 
-    def drag_resize_start(self, x: float, y: float, cell_width: int, cell_height: int) -> None:
+    def drag_resize_start(self, x: float, y: float, cell_width: int, cell_height: int) -> bool:
         if tab := self.active_tab:
             horizontal, vertical = tab.current_layout.drag_resize_target_windows(x, y, tab.windows)
+            if horizontal is None or vertical is None:
+                return False
             self.drag_resize_of_window = WindowResizeDrag(
                 is_active=True, horizontal_target_window_id=horizontal.id, vertical_target_window_id=vertical.id,
                 cell_width=cell_width, cell_height=cell_height, initial_x=x, initial_y=y)
+            return True
+        return False
 
     def drag_resize_update(self, x: float, y: float) -> None:
         if not (r := self.drag_resize_of_window):
