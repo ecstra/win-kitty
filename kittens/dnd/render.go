@@ -48,7 +48,7 @@ func (dnd *dnd) render_screen() error {
 	}
 	lp.ClearScreen()
 	dnd.copy_button_region, dnd.move_button_region = button_region{}, button_region{}
-	if dnd.drag_started {
+	if dnd.drag_status.active {
 		lp.Println("Dragging data...")
 		return nil
 	}

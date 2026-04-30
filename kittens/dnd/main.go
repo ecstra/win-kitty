@@ -86,7 +86,7 @@ type dnd struct {
 	tdir_counter                           int
 	is_case_sensitive_filesystem           bool
 	data_has_been_dropped                  bool
-	drag_started                           bool
+	drag_status                            drag_status
 	in_test_mode                           bool
 	copy_button_region, move_button_region button_region
 	confirm_drop                           struct {
@@ -183,19 +183,6 @@ func (dnd *dnd) run_loop() (err error) {
 	}
 
 	dnd.lp.OnDnDData = func(cmd loop.DndCommand) error {
-		// TODO: Use lp.QueueDnDData to implement drag and drop protocol
-		// If allow_drags, start a drag when the terminal sends the t=o
-		// event. Presend data for any drag_source objects that have non nil
-		// data fields and whose data size is <= 1MB. Set drag_started to true.
-		// reset drag_started at the end of the drag. Use opts.DragAction to
-		// set what actions are allowed.
-
-		// When acting as a drag source, dont forget to implement support for
-		// remote dragging, which means providing data for the text/uri-list
-		// mime type file:// entries when the terminal requests it using the
-		// dnd protocol. If the action chosen is move, delete the files
-		// corresponding to the drag sources, including the files in the
-		// uri-list and exit.
 		switch cmd.Type {
 		case 'T':
 			switch string(cmd.Payload) {

@@ -607,7 +607,7 @@ func (dnd *dnd) on_drop_move(cell_x, cell_y int, has_more bool, offered_mimes st
 		}
 	}
 	dnd.drop_status.in_window = cell_x > -1 && cell_y > -1
-	if !dnd.drop_status.in_window || dnd.drag_started { // disallow self drag and drop
+	if !dnd.drop_status.in_window || dnd.drag_status.active { // disallow self drag and drop
 		dnd.reset_drop()
 	}
 	mimes_changed := !slices.Equal(prev_status.accepted_mimes, dnd.drop_status.accepted_mimes)
@@ -622,7 +622,7 @@ func (dnd *dnd) on_drop_move(cell_x, cell_y int, has_more bool, offered_mimes st
 	needs_rerender = needs_rerender || dnd.drop_status.in_window != prev_status.in_window
 	if is_drop {
 		needs_rerender = true
-		if dnd.drop_status.action == 0 || len(dnd.drop_status.accepted_mimes) == 0 || dnd.drag_started {
+		if dnd.drop_status.action == 0 || len(dnd.drop_status.accepted_mimes) == 0 || dnd.drag_status.active {
 			dnd.end_drop(false)
 			return
 		}
