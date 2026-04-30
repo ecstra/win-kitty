@@ -260,6 +260,8 @@ Detailed list of changes
 
 - :ac:`save_as_session`: when the filename input by the user has no extension, automatically add the ``.kitty-session`` extension (:pull:`9919`)
 
+- Linux: Workaround bug in Nvidia drivers that caused color corruption when resuming after suspend (:iss:`9844`)
+
 
 0.46.2 [2026-03-21]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
