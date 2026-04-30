@@ -321,7 +321,7 @@ operation, it indicates the drag should be started by sending ``t=P:x=-1``. At
 this time if the user has already cancelled the drag or the terminal determines
 the drag operation is not allowed, it must respond with ``t=E ; EPERM``. If any
 other error occurs starting the drag operation, it must respond with the appropriate
-POSIX error code. If it determines that the image data after conversion to
+POSIX error name. If it determines that the image data after conversion to
 display format is too large, it must respond with ``t=E ; EFBIG``. If the drag
 operation is successfully started, it must respond with ``t=E ; OK``.
 

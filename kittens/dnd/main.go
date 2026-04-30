@@ -240,6 +240,12 @@ func (dnd *dnd) run_loop() (err error) {
 			return fmt.Errorf("error from the terminal while reading dropped data: %s", string(cmd.Payload))
 		case 'r':
 			return dnd.on_drop_data(cmd)
+
+		// Drag source
+		case 'o':
+			return dnd.on_potential_drag_start(cmd.X, cmd.Y)
+		case 'E':
+			return dnd.on_drag_error(cmd)
 		}
 		return nil
 	}
@@ -305,8 +311,13 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 		}
 		s := drag_source{human_name: src, mime_type: mime}
 		if src == "-" || src == "/dev/stdin" {
-			s.human_name = "STDIN"
-			s.file = os.Stdin
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return 1, err
+			}
+			if len(data) > 0 {
+				drag_sources["text/plain"] = drag_source{human_name: "STDIN", mime_type: "text/plain", data: data}
+			}
 		} else {
 			path, err := filepath.Abs(src)
 			if err != nil {
