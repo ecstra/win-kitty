@@ -14,6 +14,10 @@ var _ = fmt.Print
 type drag_status struct {
 	active                 bool
 	terminal_accepted_drag bool
+	offered_mimes          []string
+	accepted_mime          int
+	accepted_operation     int
+	dropped                bool
 }
 
 func (dnd *dnd) on_potential_drag_start(cell_x, cell_y int) (err error) {
@@ -37,6 +41,7 @@ func (dnd *dnd) on_potential_drag_start(cell_x, cell_y int) (err error) {
 			dnd.lp.QueueDnDData(DC{Type: 'p', X: i, Operation: actions})
 		}
 	}
+	dnd.drag_status.offered_mimes = mimes
 	// TODO: set the drag image
 	dnd.lp.QueueDnDData(DC{Type: 'P', X: -1}) // start drag
 	dnd.drag_status.active = true
@@ -64,9 +69,14 @@ func (dnd *dnd) reset_drag() {
 
 func (dnd *dnd) on_drag_event(x, y int) (err error) {
 	switch x {
+	case 1:
+		dnd.drag_status.accepted_mime = y
+	case 2:
+		dnd.drag_status.accepted_operation = y
+	case 3:
+		dnd.drag_status.dropped = true
 	case 4:
 		dnd.reset_drag()
-		return dnd.render_screen()
 	}
-	return
+	return dnd.render_screen()
 }

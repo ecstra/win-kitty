@@ -50,6 +50,11 @@ func (dnd *dnd) render_screen() error {
 	dnd.copy_button_region, dnd.move_button_region = button_region{}, button_region{}
 	if dnd.drag_status.active {
 		lp.Println("Dragging data...")
+		if dnd.drag_status.dropped {
+			lp.Println("The dragged data has been dropped, waiting for data transfer requests...")
+		} else if dnd.drag_status.accepted_operation > 0 {
+			lp.Println("Another window is willing to accept the dragged data")
+		}
 		return nil
 	}
 	y := 0
