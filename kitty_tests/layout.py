@@ -3,7 +3,7 @@
 
 from kitty.config import defaults
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, RIGHT_EDGE, TOP_EDGE, Region
-from kitty.layout.base import lgd
+from kitty.layout.base import layout_dimension, lgd
 from kitty.layout.interface import Grid, Horizontal, Splits, Stack, Tall
 from kitty.layout.splits import Pair
 from kitty.types import WindowGeometry
@@ -324,6 +324,22 @@ class TestLayout(BaseTest):
         result = q.layout_action('maximize', ('horizontal',), all_windows)
         self.assertTrue(result)
         self.ae(root.bias, root_bias_before)
+
+    def test_layout_dimension_no_negative_cells(self):
+        # Regression test for issue #9946: when window padding exceeds the
+        # available space (e.g. after maximize sets a window to minimum width),
+        # layout_dimension must not produce a negative cells_per_window value
+        # which would cause right < left in the resulting window geometry.
+        for length, cell_length, decs in (
+            (8, 8, [(5, 5)]),   # padding (10) > length (8) > cell_length (8)
+            (6, 8, [(4, 4)]),   # length < cell_length
+            (0, 8, [(4, 4)]),   # zero length
+            (4, 8, [(3, 3)]),   # space_needed == length, no room for cells
+        ):
+            result = next(layout_dimension(0, length, cell_length, decs))
+            self.assertGreaterEqual(result.cells_per_window, 0,
+                f'cells_per_window={result.cells_per_window} < 0 for length={length}, '
+                f'cell_length={cell_length}, decs={decs}')
 
     def test_drag_resize_target_windows(self):
         # Helper: call drag_resize_target_windows with given window and edge flags.
