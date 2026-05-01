@@ -340,6 +340,14 @@ class TestLayout(BaseTest):
             self.assertGreaterEqual(result.cells_per_window, 0,
                 f'cells_per_window={result.cells_per_window} < 0 for length={length}, '
                 f'cell_length={cell_length}, decs={decs}')
+            self.assertGreaterEqual(result.content_size, 0,
+                f'content_size={result.content_size} < 0 for length={length}, '
+                f'cell_length={cell_length}, decs={decs}')
+            # content_pos must be within [0, length]: right edge = content_pos + content_size <= length
+            self.assertGreaterEqual(result.content_pos, 0)
+            self.assertLessEqual(result.content_pos + result.content_size, length,
+                f'right ({result.content_pos + result.content_size}) > length ({length}) for '
+                f'cell_length={cell_length}, decs={decs}')
 
     def test_drag_resize_target_windows(self):
         # Helper: call drag_resize_target_windows with given window and edge flags.
