@@ -1395,7 +1395,7 @@ class Boss:
             from .update_check import run_update_check
             run_update_check(get_options().update_check_interval * 60 * 60)
             self.update_check_started = True
-        if opts.auto_reload_config >= 0 and not hasattr(self, 'config_reload_watcher_process'):
+        if opts.auto_reload_config >= 0 and not hasattr(self, 'config_reload_watcher_process') and opts.all_config_paths:
             self.config_reload_watcher_process = subprocess.Popen(
                 [kitten_exe(), '__watch_conf__', str(os.getpid()), str(int(opts.auto_reload_config * 1000))] +
                 list(opts.all_config_paths), stdin=subprocess.PIPE)
