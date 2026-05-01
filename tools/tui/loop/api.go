@@ -672,7 +672,7 @@ func (self *Loop) DrawSizedText(text string, spec SizedText) {
 func (self *Loop) QueueDnDData(cmd DndCommand) IdType {
 	b := strings.Builder{}
 	b.Grow(64)
-	as_base64 := cmd.Type == 'r'
+	as_base64 := cmd.Type == 'r' || cmd.Type == 'p'
 	fmt.Fprintf(&b, "\x1b]%d;t=%c", kitty.DndCode, cmd.Type)
 	add := func(key byte, val int) {
 		if val != 0 {

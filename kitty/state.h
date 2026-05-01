@@ -639,6 +639,6 @@ void register_mimes_for_drop(OSWindow *w, const char **mimes, size_t sz);
 void request_drop_data(OSWindow *w, id_type wid, const char* mime);
 void cancel_current_drag_source(void);
 bool change_drag_image(int idx);
-int start_window_drag(Window *w);
+int start_window_drag(Window *w, bool in_test_mode);
 int notify_drag_data_ready(id_type os_window_id, const char *mime_type);
 BackgroundImage* background_image_for_os_window(OSWindow *w);

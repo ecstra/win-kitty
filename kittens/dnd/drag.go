@@ -33,7 +33,8 @@ func (dnd *dnd) on_potential_drag_start(cell_x, cell_y int) (err error) {
 		s := dnd.drag_sources[mt]
 		if len(s.data) > 0 && len(s.data)+total_preloaded_data_sz < 64*1024*1024 {
 			total_preloaded_data_sz += len(s.data)
-			dnd.lp.QueueDnDData(DC{Type: 'p', X: i, Operation: actions, Payload: utils.UnsafeStringToBytes(strings.Join(mimes, " "))})
+			dnd.lp.QueueDnDData(DC{Type: 'p', X: i, Operation: actions, Payload: s.data})
+			dnd.lp.QueueDnDData(DC{Type: 'p', X: i, Operation: actions})
 		}
 	}
 	// TODO: set the drag image
@@ -53,6 +54,19 @@ func (dnd *dnd) on_drag_error(cmd DC) (err error) {
 		}
 	default:
 		err = fmt.Errorf("terminal responded with drag source error: %s", payload)
+	}
+	return
+}
+
+func (dnd *dnd) reset_drag() {
+	dnd.drag_status = drag_status{}
+}
+
+func (dnd *dnd) on_drag_event(x, y int) (err error) {
+	switch x {
+	case 4:
+		dnd.reset_drag()
+		return dnd.render_screen()
 	}
 	return
 }

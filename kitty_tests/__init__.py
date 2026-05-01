@@ -337,8 +337,10 @@ class PTY:
     def __init__(
         self, argv=None, rows=25, columns=80, scrollback=100, cell_width=10, cell_height=20,
         cwd=None, env=None, stdin_fd=None, stdout_fd=None, needs_da1=True, window_id=0,
+        log_data_flow=False,
     ):
         self.is_child = False
+        self.log_data_flow = log_data_flow
         if isinstance(argv, str):
             argv = shlex.split(argv)
         self.write_buf = b''
@@ -423,6 +425,8 @@ class PTY:
     def write_to_child(self, data, flush=False):
         if isinstance(data, str):
             data = data.encode('utf-8')
+        if self.log_data_flow:
+            print('t -> c:', data)
         self.write_buf += data
         if flush:
             self.process_input_from_child(0)
@@ -446,6 +450,8 @@ class PTY:
             data = os.read(self.master_fd, io.DEFAULT_BUFFER_SIZE)
             bytes_read += len(data)
             self.received_bytes += data
+            if self.log_data_flow:
+                print('c -> t:', data)
             parse_bytes(self.screen, data)
         return bytes_read
 

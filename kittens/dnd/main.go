@@ -220,6 +220,8 @@ func (dnd *dnd) run_loop() (err error) {
 				dnd.send_test_response(utils.IfElse(dnd.drop_status.is_remote_client, "True", "False"))
 			case "DROP_URI_LIST":
 				dnd.send_test_response(strings.Join(dnd.drop_status.uri_list, "|"))
+			case "DRAG_ACTIVE":
+				dnd.send_test_response(utils.IfElse(dnd.drag_status.active, "DRAG_ACTIVE", "DRAG_INACTIVE"))
 			default:
 				dnd.send_test_response("UNKNOWN TEST COMMAND: " + string(cmd.Payload))
 			}
@@ -246,6 +248,8 @@ func (dnd *dnd) run_loop() (err error) {
 			return dnd.on_potential_drag_start(cmd.X, cmd.Y)
 		case 'E':
 			return dnd.on_drag_error(cmd)
+		case 'e':
+			return dnd.on_drag_event(cmd.X, cmd.Y)
 		}
 		return nil
 	}

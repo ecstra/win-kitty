@@ -21,6 +21,7 @@ from kitty.fast_data_types import (
     dnd_set_test_write_func,
     dnd_test_cleanup_fake_window,
     dnd_test_create_fake_window,
+    dnd_test_drag_finish,
     dnd_test_fake_drop_data,
     dnd_test_fake_drop_event,
     dnd_test_probe_state,
@@ -328,10 +329,29 @@ class TestDnDKitten(BaseTest):
             f.write(os.urandom(1113))
         create_fs(self.src_data_dir)
         self.finish_setup(cli_args=(f'--drag=image/png:{img_drag_path}', self.src_data_dir)) # )))
-        with self.subTest(remote=False):
-            self.dnd_kitten_drag(False, img_drag_path)
+        self.dnd_kitten_drag(False, img_drag_path)
+        self.exit_kitten()
 
     def dnd_kitten_drag(self, remote_client, img_drop_path):
+        # self.pty.log_data_flow = True
         copy, move = self.get_button_geometry()
-        dnd_test_start_drag_offer(self.capture.window_id, 1, 1)
-        self.wait_for_state('drag_operations', 3)
+        self.wait_for_state('can_offer', True)
+        self.wait_for_state('drag_operations', 0)
+        def wait_for_drag_active(active=True):
+            self.send_dnd_command_to_kitten('DRAG_ACTIVE')
+            self.wait_for_responses('DRAG_ACTIVE' if active else 'DRAG_INACTIVE')
+        def start_drag(x, y, expected):
+            dnd_test_start_drag_offer(self.capture.window_id, x, y)
+            wait_for_drag_active()
+            self.wait_for_state('drag_operations', expected)
+        def end_drag(canceled=True):
+            dnd_test_drag_finish(self.capture.window_id, canceled)
+            wait_for_drag_active(False)
+            self.wait_for_state('drag_operations', 0)
+        start_drag(1, 1, 3)
+        self.assertEqual(set(self.probe_state('drag_mimes')), {'image/png', 'text/uri-list'})
+        end_drag()
+        start_drag(copy[0] + 1, copy[1] + 1, 1)
+        end_drag()
+        start_drag(move[0] + 1, move[1] + 1, 2)
+        end_drag()

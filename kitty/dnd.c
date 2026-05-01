@@ -1424,7 +1424,7 @@ drag_start(Window *w) {
             if (img.sz != (size_t)img.width * (size_t)img.height * 4u) abrt(EINVAL);
         }
     }
-    int err = start_window_drag(w);
+    int err = start_window_drag(w, dnd_is_test_mode());
     if (err != 0) {
         abrt(err);
     } else {
@@ -2163,6 +2163,18 @@ dnd_test_request_drag_data(PyObject *self UNUSED, PyObject *args) {
 }
 
 static PyObject *
+dnd_test_drag_finish(PyObject *self UNUSED, PyObject *args) {
+    unsigned long long window_id; int canceled_by_user; int errcode = 0;
+    if (!PyArg_ParseTuple(args, "Kp|i", &window_id, &canceled_by_user, &errcode)) return NULL;
+    Window *w = window_for_window_id((id_type)window_id);
+    if (!w) { PyErr_SetString(PyExc_ValueError, "Window not found"); return NULL; }
+    global_state.drag_source.was_canceled = canceled_by_user;
+    if (!errcode) drag_notify(w, DRAG_NOTIFY_FINISHED);
+    cancel_drag(w, errcode);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
 dnd_test_drag_notify(PyObject *self UNUSED, PyObject *args) {
     // Call drag_notify with a specific type for testing the protocol output.
     // type: 0=ACCEPTED, 1=ACTION_CHANGED, 2=DROPPED, 3=FINISHED
@@ -2173,7 +2185,7 @@ dnd_test_drag_notify(PyObject *self UNUSED, PyObject *args) {
     int type;
     const char *accepted_mime = NULL;
     int action = 0, was_canceled = 0;
-    if (!PyArg_ParseTuple(args, "Ki|sii", &window_id, &type, &accepted_mime, &action, &was_canceled)) return NULL;
+    if (!PyArg_ParseTuple(args, "Ki|sip", &window_id, &type, &accepted_mime, &action, &was_canceled)) return NULL;
     Window *w = window_for_window_id((id_type)window_id);
     if (!w) { PyErr_SetString(PyExc_ValueError, "Window not found"); return NULL; }
     if (type < 0 || type > 3) { PyErr_SetString(PyExc_ValueError, "Invalid type"); return NULL; }
@@ -2229,6 +2241,9 @@ dnd_test_probe_state(PyObject *self UNUSED, PyObject *args) {
     if (strcmp(q, "drop_getting_data_for_mime") == 0) {
         return PyUnicode_FromString(w->drop.getting_data_for_mime ? w->drop.getting_data_for_mime : "");
     }
+    if (strcmp(q, "can_offer") == 0) {
+        return Py_NewRef(w->drag_source.can_offer ? Py_True : Py_False);
+    }
     if (strcmp(q, "drag_operations") == 0) {
         return PyLong_FromLong((long)w->drag_source.allowed_operations);
     }
@@ -2262,6 +2277,7 @@ static PyMethodDef dnd_methods[] = {
     METHODB(dnd_test_force_drag_dropped, METH_VARARGS),
     METHODB(dnd_test_request_drag_data, METH_VARARGS),
     METHODB(dnd_test_drag_notify, METH_VARARGS),
+    METHODB(dnd_test_drag_finish, METH_VARARGS),
     METHODB(dnd_test_probe_state, METH_VARARGS),
     {NULL, NULL, 0, NULL}
 };
