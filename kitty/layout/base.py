@@ -117,14 +117,14 @@ def layout_dimension(
     bias: None | Sequence[float] | dict[int, float] = None
 ) -> LayoutDimension:
     number_of_windows = len(decoration_pairs)
-    number_of_cells = length // cell_length
+    number_of_cells = max(0, length // cell_length)
     dec_vals: Iterable[int] = map(sum, decoration_pairs)
     space_needed_for_decorations = sum(dec_vals)
     extra = length - number_of_cells * cell_length
-    while extra < space_needed_for_decorations:
+    while extra < space_needed_for_decorations and number_of_cells > 0:
         number_of_cells -= 1
         extra = length - number_of_cells * cell_length
-    cells_map = calculate_cells_map(bias, number_of_windows, number_of_cells)
+    cells_map = calculate_cells_map(bias, number_of_windows, number_of_cells) if number_of_cells > 0 else [0] * number_of_windows
     assert sum(cells_map) == number_of_cells
 
     extra = length - number_of_cells * cell_length - space_needed_for_decorations
