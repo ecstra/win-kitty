@@ -24,6 +24,7 @@ from kitty.fast_data_types import (
     dnd_test_fake_drop_data,
     dnd_test_fake_drop_event,
     dnd_test_probe_state,
+    dnd_test_start_drag_offer,
 )
 from kitty.utils import as_file_url
 
@@ -315,8 +316,22 @@ class TestDnDKitten(BaseTest):
                 self.assertEqual(expected_dest_content, f.read())
 
         do_overwrite_drop(enter_content, '\x1b[13u')
-        do_overwrite_drop(b'overwrite-esc-test-content', '\x1b[27u', 0)
+        do_overwrite_drop(b'overwrite-esc-test-content', '\x1b[27u', 0)  # ]]]
 
     def assert_files_have_same_content(self, a, b):
         with open(a, 'rb') as fa, open(b, 'rb') as fb:
             self.assertEqual(fa.read(), fb.read(), f'{a} ({os.path.getsize(a)}) != {b} ({os.path.getsize(b)})')
+
+    def test_dnd_kitten_drag(self):
+        img_drag_path = 'image.png'
+        with open(os.path.join(self.kitten_wd, img_drag_path), 'wb') as f:
+            f.write(os.urandom(1113))
+        create_fs(self.src_data_dir)
+        self.finish_setup(cli_args=(f'--drag=image/png:{img_drag_path}', self.src_data_dir)) # )))
+        with self.subTest(remote=False):
+            self.dnd_kitten_drag(False, img_drag_path)
+
+    def dnd_kitten_drag(self, remote_client, img_drop_path):
+        copy, move = self.get_button_geometry()
+        dnd_test_start_drag_offer(self.capture.window_id, 1, 1)
+        self.wait_for_state('drag_operations', 3)

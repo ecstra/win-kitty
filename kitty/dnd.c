@@ -1916,7 +1916,7 @@ void
 drag_offer_start_to_child(Window *w, int32_t cell_x, int32_t cell_y, int32_t pixel_x, int32_t pixel_y) {
     char buf[256];
     int header_size = snprintf(
-        buf, sizeof(buf), "%d;t=o:x=%d:y=%d:X=%d:Y=%d", DND_CODE, cell_x, cell_y, pixel_x, pixel_y);
+        buf, sizeof(buf), "\x1b]%d;t=o:x=%d:y=%d:X=%d:Y=%d", DND_CODE, cell_x, cell_y, pixel_x, pixel_y);
     queue_payload_to_child(
         w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_size, NULL, 0, false);
 }
@@ -2229,6 +2229,25 @@ dnd_test_probe_state(PyObject *self UNUSED, PyObject *args) {
     if (strcmp(q, "drop_getting_data_for_mime") == 0) {
         return PyUnicode_FromString(w->drop.getting_data_for_mime ? w->drop.getting_data_for_mime : "");
     }
+    if (strcmp(q, "drag_operations") == 0) {
+        return PyLong_FromLong((long)w->drag_source.allowed_operations);
+    }
+    if (strcmp(q, "drag_mimes") == 0) {
+        PyObject *ans = PyTuple_New(w->drag_source.num_mimes);
+        for (size_t i = 0; i < w->drag_source.num_mimes; i++) PyTuple_SET_ITEM(
+            ans, i, PyUnicode_FromString(w->drag_source.items[i].mime_type));
+        return ans;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject*
+dnd_test_start_drag_offer(PyObject *self UNUSED, PyObject *args) {
+    unsigned long long window_id; int x=0, y=0, X=0, Y=0;
+    if (!PyArg_ParseTuple(args, "K|iiii", &window_id, &x, &y, &X, &Y)) return NULL;
+    Window *w = window_for_window_id((id_type)window_id);
+    if (!w) { PyErr_SetString(PyExc_ValueError, "Window not found"); return NULL; }
+    drag_offer_start_to_child(w, x, y, X, Y);
     Py_RETURN_NONE;
 }
 
@@ -2239,6 +2258,7 @@ static PyMethodDef dnd_methods[] = {
     METHODB(dnd_test_set_mouse_pos, METH_VARARGS),
     METHODB(dnd_test_fake_drop_event, METH_VARARGS),
     METHODB(dnd_test_fake_drop_data, METH_VARARGS),
+    METHODB(dnd_test_start_drag_offer, METH_VARARGS),
     METHODB(dnd_test_force_drag_dropped, METH_VARARGS),
     METHODB(dnd_test_request_drag_data, METH_VARARGS),
     METHODB(dnd_test_drag_notify, METH_VARARGS),
