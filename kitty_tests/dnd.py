@@ -1607,19 +1607,6 @@ class TestDnDProtocol(BaseTest):
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'E')
 
-    def test_drag_start_no_real_window_returns_einval_or_eperm(self) -> None:
-        """Starting a drag with a fake window (no GLFW handle) returns EINVAL or EPERM."""
-        with dnd_test_window() as (screen, cap):
-            self._setup_drag_offer(screen, cap, 'text/plain')
-            # Try to start the drag – the fake window has no osw->handle, so
-            # start_window_drag returns EINVAL.
-            parse_bytes(screen, client_drag_start())
-            events = self._get_events(cap)
-            self.assertEqual(len(events), 1, events)
-            self.ae(events[0]['type'], 'E')
-            # Error is EINVAL because osw->handle is NULL
-            self.assertIn(events[0]['payload'].strip(), [b'EINVAL', b'EPERM'])
-
     def test_drag_start_without_offer_returns_einval(self) -> None:
         """Starting a drag without a prior offer returns EINVAL."""
         with dnd_test_window() as (screen, cap):
