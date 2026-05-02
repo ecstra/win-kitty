@@ -21,7 +21,6 @@ void drop_set_status(Window *w, int operation, const char *payload, size_t paylo
 size_t drop_update_mimes(Window *w, const char **allowed_mimes, size_t allowed_mimes_count);
 void drop_dispatch_data(Window *w, const char *mime_type, const char *data, ssize_t sz);
 void drop_finish(Window *w);
-bool dnd_is_test_mode(void);
 
 typedef enum { DRAG_NOTIFY_ACCEPTED, DRAG_NOTIFY_ACTION_CHANGED, DRAG_NOTIFY_DROPPED, DRAG_NOTIFY_FINISHED } DragNotifyType;
 void drag_free_offer(Window *w);

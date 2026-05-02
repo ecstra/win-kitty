@@ -123,9 +123,16 @@ func (dnd *dnd) handle_data_request(idx int, send_remote_data bool) (err error) 
 	mime := dnd.drag_status.offered_mimes[idx]
 	ds := dnd.drag_sources[mime]
 	send_remote_data = send_remote_data && mime == "text/uri-list" && len(ds.uri_list) > 0
+	for _, dr := range dnd.drag_status.data_requests {
+		if dr.index == idx {
+			dnd.finish_drag("EINVAL")
+			return fmt.Errorf("terminal sent a duplicate drag data request")
+		}
+	}
 	dr := &data_request{drag_source: ds, send_remote_data: send_remote_data, index: idx}
 	if ds.path == "" {
 		dnd.lp.QueueDnDData(DC{Type: 'e', Y: idx, Payload: utils.UnsafeStringToBytes(base64.RawStdEncoding.EncodeToString(ds.data))})
+		dnd.lp.QueueDnDData(DC{Type: 'e', Y: idx}) // EOF
 		if !dr.send_remote_data {
 			return
 		}

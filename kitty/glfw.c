@@ -946,7 +946,6 @@ drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
 
     switch (ev->type) {
         case GLFW_DRAG_DATA_REQUEST:
-            ev->err_num = ENOENT;
             if (is_client_drag) {
                 ev->err_num = 0;
                 if (ev->data_sz) {
@@ -954,7 +953,7 @@ drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
                 } else {
                     ev->data = drag_get_data(w, ev->mime_type, &ev->data_sz, &ev->err_num);
                 }
-            }
+            } else ev->err_num = ENOENT;
             break;
         case GLFW_DRAG_ACCEPTED:
             free(ds.accepted_mime_type);
@@ -994,7 +993,6 @@ drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
 
 int
 notify_drag_data_ready(id_type os_window_id, const char *mime_type) {
-    if (dnd_is_test_mode()) return 0;  // In test mode, always succeed
     OSWindow *w = os_window_for_id(os_window_id);
     GLFWDragSourceItem item = {.mime_type = mime_type};
     if (w && w->handle) return glfwStartDrag(w->handle, &item, 1, NULL, -1, false);

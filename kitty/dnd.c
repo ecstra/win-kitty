@@ -14,6 +14,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stddef.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
@@ -100,6 +101,11 @@ rmtree_best_effort(const char *relpath, int dirfd) {
     safe_close(dirfd, __FILE__, __LINE__);
 }
 
+static bool
+dnd_is_test_mode(void) {
+    return g_dnd_test_write_func != NULL;
+}
+
 static char*
 mktempdir_in_cache(const char *prefix, int *fd) {
     char *ans = NULL;
@@ -174,11 +180,6 @@ dnd_set_test_write_func(PyObject *func, size_t mime_list_size_cap, size_t presen
     MIME_LIST_SIZE_CAP = mime_list_size_cap ? mime_list_size_cap : DEFAULT_MIME_LIST_SIZE_CAP;
     PRESENT_DATA_CAP = present_data_cap ? present_data_cap : DEFAULT_PRESENT_DATA_CAP;
     REMOTE_DRAG_LIMIT = remote_drag_limit ? remote_drag_limit : DEFAULT_REMOTE_DRAG_LIMIT;
-}
-
-bool
-dnd_is_test_mode(void) {
-    return g_dnd_test_write_func != NULL;
 }
 
 static int
@@ -1521,6 +1522,7 @@ drag_get_data(Window *w, const char *mime_type, size_t *sz, int *err_code) {
                 // No unread data
                 if (!ds.items[i].data_decode_initialized) {
                     // Transfer complete and all data read
+                    ds.items[i].data_requested_from_client = false;
                     *err_code = 0;
                     return NULL;
                 }
@@ -1529,11 +1531,14 @@ drag_get_data(Window *w, const char *mime_type, size_t *sz, int *err_code) {
                 return NULL;
             }
             // No fd yet, request data from the client
-            char buf[128];
-            ds.items[i].requested_remote_files = ds.is_remote_client && ds.items[i].is_uri_list;
-            int header_sz = snprintf(buf, sizeof(buf), "\x1b]%d;t=e:x=%d:y=%zu:Y=%d",
-                    DND_CODE, DRAG_NOTIFY_FINISHED + 2, i, ds.items[i].requested_remote_files);
-            queue_payload_to_child(w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_sz, NULL, 0, false);
+            if (!ds.items[i].data_requested_from_client) {
+                char buf[128];
+                ds.items[i].requested_remote_files = ds.is_remote_client && ds.items[i].is_uri_list;
+                int header_sz = snprintf(buf, sizeof(buf), "\x1b]%d;t=e:x=%d:y=%zu:Y=%d",
+                        DND_CODE, DRAG_NOTIFY_FINISHED + 2, i, ds.items[i].requested_remote_files);
+                queue_payload_to_child(w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_sz, NULL, 0, false);
+                ds.items[i].data_requested_from_client = true;
+            }
             *err_code = EAGAIN;
             return NULL;
         }
@@ -1582,8 +1587,10 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
         int err = parse_errno_name(payload, payload_sz);
         ds.items[idx].fd_plus_one = -err;
         ds.items[idx].data_decode_initialized = false;
-        int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
-        if (ret) cancel_drag(w, ret);
+        if (!dnd_is_test_mode()) {
+            int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
+            if (ret) cancel_drag(w, ret);
+        }
         return;
     }
 
@@ -1592,8 +1599,10 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
         ds.items[idx].data_decode_initialized = false;
         if (ds.items[idx].fd_plus_one > 0) {
             if (!ds.items[idx].requested_remote_files) {
-                int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
-                if (ret) cancel_drag(w, ret);
+                if (!dnd_is_test_mode()) {
+                    int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
+                    if (ret) cancel_drag(w, ret);
+                }
             }
         }
         return;
@@ -1631,8 +1640,10 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
         ds.items[idx].data_capacity += outlen;
         // Notify as soon as any data is available
         if (!ds.items[idx].requested_remote_files) {
-            int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
-            if (ret) cancel_drag(w, ret);
+            if (!dnd_is_test_mode()) {
+                int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
+                if (ret) cancel_drag(w, ret);
+            }
         }
     }
 }
@@ -1727,7 +1738,7 @@ finish_remote_data(Window *w, size_t item_idx) {
         if ((ret = write_all(fd, "\r\n", 2))) abrt(ret);
     }
     free(ds.items[item_idx].uri_list); ds.items[item_idx].uri_list = NULL; ds.items[item_idx].num_uris = 0;
-    int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[item_idx].mime_type);
+    int ret = dnd_is_test_mode() ? 0 : notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[item_idx].mime_type);
     abrt(ret);
 }
 
@@ -2262,6 +2273,25 @@ dnd_test_start_drag_offer(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject*
+dnd_test_drag_get_data(PyObject *self UNUSED, PyObject *args) {
+    const char *mime; unsigned long long window_id;
+    if (!PyArg_ParseTuple(args, "Ks", &window_id, &mime)) return NULL;
+    Window *w = window_for_window_id((id_type)window_id);
+    if (!w) { PyErr_SetString(PyExc_ValueError, "Window not found"); return NULL; }
+    int err; size_t sz;
+    const char *data = drag_get_data(w, mime, &sz, &err);
+    if (err != 0) {
+        if (data) drag_free_data(w, mime, data, sz);
+        errno = err;
+        PyErr_SetFromErrno(PyExc_OSError);
+        return NULL;
+    }
+    PyObject *ans = PyBytes_FromStringAndSize(data ? data : "", sz);
+    if (data) drag_free_data(w, mime, data, sz);
+    return ans;
+}
+
 static PyMethodDef dnd_methods[] = {
     {"dnd_set_test_write_func", (PyCFunction)py_dnd_set_test_write_func, METH_VARARGS, ""},
     METHODB(dnd_test_create_fake_window, METH_NOARGS),
@@ -2275,6 +2305,7 @@ static PyMethodDef dnd_methods[] = {
     METHODB(dnd_test_drag_notify, METH_VARARGS),
     METHODB(dnd_test_drag_finish, METH_VARARGS),
     METHODB(dnd_test_probe_state, METH_VARARGS),
+    METHODB(dnd_test_drag_get_data, METH_VARARGS),
     {NULL, NULL, 0, NULL}
 };
 

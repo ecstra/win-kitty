@@ -324,7 +324,7 @@ typedef struct Window {
         struct { int32_t x, y, X, Y; bool active; } in_flight_remote_file_data;
         struct {
             const char *mime_type; uint8_t *optional_data; size_t data_size, data_capacity; base64_state base64_state;
-            bool data_decode_initialized, is_uri_list, requested_remote_files;
+            bool data_decode_initialized, is_uri_list, requested_remote_files, data_requested_from_client;
             int fd_plus_one;
             char** uri_list; size_t num_uris;
             DragRemoteItem *remote_items; size_t num_remote_items;

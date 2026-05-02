@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPLv3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
+import errno
 import fnmatch
 import itertools
 import os
@@ -22,6 +23,7 @@ from kitty.fast_data_types import (
     dnd_test_cleanup_fake_window,
     dnd_test_create_fake_window,
     dnd_test_drag_finish,
+    dnd_test_drag_get_data,
     dnd_test_drag_notify,
     dnd_test_fake_drop_data,
     dnd_test_fake_drop_event,
@@ -328,11 +330,29 @@ class TestDnDKitten(BaseTest):
     def test_dnd_kitten_drag(self):
         img_drag_path = 'image.png'
         with open(os.path.join(self.kitten_wd, img_drag_path), 'wb') as f:
-            f.write(os.urandom(1113))
+            self.img_drag_data = os.urandom(10113)
+            f.write(self.img_drag_data)
         create_fs(self.src_data_dir)
         self.finish_setup(cli_args=(f'--drag=image/png:{img_drag_path}', self.src_data_dir)) # )))
         self.dnd_kitten_drag(False, img_drag_path)
         self.exit_kitten()
+        self.img_drag_data = None
+
+    def read_drag_data(self, mime):
+        ans = b''
+        while True:
+            try:
+                chunk = dnd_test_drag_get_data(self.capture.window_id, mime)
+                if not chunk:
+                    break
+                ans += chunk
+            except OSError as err:
+                if err.errno == errno.EAGAIN:
+                    self.pty.process_input_from_child()
+                    continue
+                del chunk, ans
+                raise
+        return ans
 
     def dnd_kitten_drag(self, remote_client, img_drop_path):
         # self.pty.log_data_flow = True
@@ -365,4 +385,6 @@ class TestDnDKitten(BaseTest):
         dnd_test_drag_notify(self.capture.window_id, 2)
         self.send_dnd_command_to_kitten('DRAG_STATUS')
         self.wait_for_responses('text/uri-list:2:true')
+        self.assertEqual(self.img_drag_data, self.read_drag_data('image/png'))
+        # self.read_drag_data('text/uri-list')
         end_drag(False)
