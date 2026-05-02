@@ -1385,7 +1385,7 @@ PyTypeObject Color_Type = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "kitty.fast_data_types.Color",
     .tp_basicsize = sizeof(Color),
-    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_VECTORCALL,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
     .tp_doc = "Color",
     .tp_new = new_color,
     .tp_vectorcall = color_vectorcall,
