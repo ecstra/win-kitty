@@ -100,7 +100,6 @@ func (s *StreamingBase64Decoder) Decode(input []byte, output []byte) iter.Seq2[[
 // Finish decoding the stream. Resets the decoder. Returned slice can be nil
 // if no leftover bytes are present.
 func (s *StreamingBase64Decoder) Finish() ([]byte, error) {
-
 	defer func() {
 		s.num_leftover = 0
 		s.total_read = 0
