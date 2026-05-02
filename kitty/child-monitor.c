@@ -889,11 +889,11 @@ thumbnail_callback(OSWindow *os_window) {
         double scale = 300. / vw;
         thumb_h = (unsigned)(vh * scale + 0.5f);
     }
-    RAII_PyObject(pixels, PyBytes_FromStringAndSize(NULL, 4 * thumb_w * thumb_h));
+    RAII_PyObject(pixels, PyBytes_FromStringAndSize(NULL, (Py_ssize_t)4 * thumb_w * thumb_h));
     if (pixels && global_state.boss) {
         take_screenshot_of_rectangular_region(
             os_window, region, (unsigned char*)PyBytes_AS_STRING(pixels), &thumb_w, &thumb_h);
-        _PyBytes_Resize(&pixels, 4 * thumb_w *thumb_h);
+        _PyBytes_Resize(&pixels, (Py_ssize_t)4 * thumb_w * thumb_h);
         PyObject *r = PyObject_CallMethod(
             global_state.boss, tc.callback, "KKOII", os_window->id, tc.window, pixels, thumb_w, thumb_h);
         if (!r) PyErr_Print(); else Py_DECREF(r);
