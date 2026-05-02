@@ -26,6 +26,8 @@ Subsequent chunks may optionally omit all
 metadata except the ``m`` and ``i`` keys. While a chunked transfer is in
 progress it is a protocol error to for the sending side to
 send any protocol related escape codes other than chunked ones.
+In particular, this means that the receiving side should use the metadata from
+the first chunk in a chain of chunks only.
 
 All integer values used in this escape code must be 32-bit signed or unsigned
 integers encoded in decimal representation.

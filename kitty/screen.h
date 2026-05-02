@@ -207,6 +207,10 @@ typedef struct {
     ListOfChars *lc;
     monotonic_t parsing_at;
     ExtraCursors extra_cursors;
+    struct {
+        bool active;
+        DnDCommand metadata;
+    } dnd_chunking;
 } Screen;
 
 #define pixel_scroll_enabled(screen) (OPT(pixel_scroll) && !screen->paused_rendering.expires_at && screen->linebuf == screen->main_linebuf)

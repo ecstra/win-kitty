@@ -176,6 +176,7 @@ static Line* range_line_(Screen *self, int y);
 void
 screen_reset(Screen *self) {
     screen_pause_rendering(self, false, 0);
+    self->dnd_chunking.active = false;
     self->extra_cursors.count = 0; zero_at_ptr(&self->extra_cursors.color); self->extra_cursors.dirty = true;
     self->main_pointer_shape_stack.count = 0; self->alternate_pointer_shape_stack.count = 0;
     if (self->linebuf == self->alt_linebuf) screen_toggle_screen_buffer(self, true, true);
@@ -1523,10 +1524,22 @@ screen_mark_potential_url_drag(Screen *self) {
 }
 
 void
-screen_handle_dnd_command(Screen *self, const DnDCommand *cmd, const uint8_t *payload) {
-    if (!self->window_id) return;
-    Window *w = window_for_window_id(self->window_id);
-    if (!w) return;
+screen_handle_dnd_command(Screen *self, const DnDCommand *cmd_, const uint8_t *payload) {
+    Window *w;
+    if (!self->window_id || !(w = window_for_window_id(self->window_id))) return;
+    const DnDCommand *cmd; DnDCommand copy;
+    if (self->dnd_chunking.active) {
+        copy = self->dnd_chunking.metadata;
+        copy.more = cmd_->more; copy.payload_sz = cmd_->payload_sz;
+        cmd = &copy;
+        self->dnd_chunking.active = cmd->more != 0;
+    } else {
+        cmd = cmd_;
+        if (cmd_->more) {
+            self->dnd_chunking.active = true;
+            self->dnd_chunking.metadata = *cmd_;
+        }
+    }
     switch(cmd->type) {
         case 'a':
             if (cmd->cell_x == 1) drop_register_machine_id(w, payload, cmd->payload_sz);

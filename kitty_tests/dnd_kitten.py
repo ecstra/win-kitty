@@ -339,6 +339,7 @@ class TestDnDKitten(BaseTest):
         self.img_drag_data = None
 
     def read_drag_data(self, mime):
+        # self.pty.log_data_flow = True
         ans = b''
         while True:
             try:
