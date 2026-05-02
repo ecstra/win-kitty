@@ -70,6 +70,10 @@ type Loop struct {
 	style_ctx                              style.Context
 	atomic_update_active                   bool
 	pointer_shapes                         []PointerShape
+	dnd_chunking                           struct {
+		active   bool
+		metadata DndCommand
+	}
 
 	// Queried capabilities from terminal
 	TerminalCapabilities TerminalCapabilities

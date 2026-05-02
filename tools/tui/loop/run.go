@@ -271,6 +271,16 @@ func (self *Loop) handle_dnd(data []byte) error {
 			}
 		}
 	}
+	if self.dnd_chunking.active {
+		self.dnd_chunking.metadata.Payload = cmd.Payload
+		self.dnd_chunking.metadata.Has_more = cmd.Has_more
+		self.dnd_chunking.active = cmd.Has_more
+		return self.OnDnDData(self.dnd_chunking.metadata)
+	}
+	if cmd.Has_more {
+		self.dnd_chunking.active = true
+		self.dnd_chunking.metadata = cmd
+	}
 	return self.OnDnDData(cmd)
 }
 
