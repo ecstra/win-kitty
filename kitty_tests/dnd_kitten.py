@@ -22,8 +22,10 @@ from kitty.fast_data_types import (
     dnd_test_cleanup_fake_window,
     dnd_test_create_fake_window,
     dnd_test_drag_finish,
+    dnd_test_drag_notify,
     dnd_test_fake_drop_data,
     dnd_test_fake_drop_event,
+    dnd_test_force_drag_dropped,
     dnd_test_probe_state,
     dnd_test_start_drag_offer,
 )
@@ -340,6 +342,9 @@ class TestDnDKitten(BaseTest):
         def wait_for_drag_active(active=True):
             self.send_dnd_command_to_kitten('DRAG_ACTIVE')
             self.wait_for_responses('DRAG_ACTIVE' if active else 'DRAG_INACTIVE')
+            if active:
+                self.send_dnd_command_to_kitten('DRAG_OK')
+                self.wait_for_responses('DRAG_OK')
         def start_drag(x, y, expected):
             dnd_test_start_drag_offer(self.capture.window_id, x, y)
             wait_for_drag_active()
@@ -348,10 +353,16 @@ class TestDnDKitten(BaseTest):
             dnd_test_drag_finish(self.capture.window_id, canceled)
             wait_for_drag_active(False)
             self.wait_for_state('drag_operations', 0)
-        start_drag(1, 1, 3)
+        start_drag(move[0] + 1, move[1] + 1, 2)
         self.assertEqual(set(self.probe_state('drag_mimes')), {'image/png', 'text/uri-list'})
         end_drag()
         start_drag(copy[0] + 1, copy[1] + 1, 1)
         end_drag()
-        start_drag(move[0] + 1, move[1] + 1, 2)
-        end_drag()
+        start_drag(1, 1, 3)
+        dnd_test_drag_notify(self.capture.window_id, 0, 'text/uri-list')
+        dnd_test_drag_notify(self.capture.window_id, 1, '', GLFW_DRAG_OPERATION_MOVE)
+        dnd_test_force_drag_dropped(self.capture.window_id)
+        dnd_test_drag_notify(self.capture.window_id, 2)
+        self.send_dnd_command_to_kitten('DRAG_STATUS')
+        self.wait_for_responses('text/uri-list:2:true')
+        end_drag(False)

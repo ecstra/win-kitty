@@ -222,6 +222,10 @@ func (dnd *dnd) run_loop() (err error) {
 				dnd.send_test_response(strings.Join(dnd.drop_status.uri_list, "|"))
 			case "DRAG_ACTIVE":
 				dnd.send_test_response(utils.IfElse(dnd.drag_status.active, "DRAG_ACTIVE", "DRAG_INACTIVE"))
+			case "DRAG_OK":
+				dnd.send_test_response(utils.IfElse(dnd.drag_status.terminal_accepted_drag, "DRAG_OK", "DRAG_NOT_OK"))
+			case "DRAG_STATUS":
+				dnd.send_test_response(fmt.Sprintf("%s:%d:%v", dnd.drag_status.offered_mimes[dnd.drag_status.accepted_mime], dnd.drag_status.accepted_operation, dnd.drag_status.dropped))
 			default:
 				dnd.send_test_response("UNKNOWN TEST COMMAND: " + string(cmd.Payload))
 			}
@@ -249,7 +253,7 @@ func (dnd *dnd) run_loop() (err error) {
 		case 'E':
 			return dnd.on_drag_error(cmd)
 		case 'e':
-			return dnd.on_drag_event(cmd.X, cmd.Y)
+			return dnd.on_drag_event(cmd.X, cmd.Y, cmd.Operation)
 		}
 		return nil
 	}

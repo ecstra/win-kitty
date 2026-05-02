@@ -2125,10 +2125,6 @@ dnd_test_force_drag_dropped(PyObject *self UNUSED, PyObject *args) {
     if (!PyArg_ParseTuple(args, "K", &window_id)) return NULL;
     Window *w = window_for_window_id((id_type)window_id);
     if (!w) { PyErr_SetString(PyExc_ValueError, "Window not found"); return NULL; }
-    if (w->drag_source.state != DRAG_SOURCE_BEING_BUILT) {
-        PyErr_SetString(PyExc_ValueError, "Drag source state is not BEING_BUILT");
-        return NULL;
-    }
     // Simulate what drag_start does on success, without calling start_window_drag
     for (size_t i = 0; i < w->drag_source.num_mimes; i++) {
         free(w->drag_source.items[i].optional_data);

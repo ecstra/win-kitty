@@ -67,12 +67,12 @@ func (dnd *dnd) reset_drag() {
 	dnd.drag_status = drag_status{}
 }
 
-func (dnd *dnd) on_drag_event(x, y int) (err error) {
+func (dnd *dnd) on_drag_event(x, y, operation int) (err error) {
 	switch x {
 	case 1:
 		dnd.drag_status.accepted_mime = y
 	case 2:
-		dnd.drag_status.accepted_operation = y
+		dnd.drag_status.accepted_operation = operation
 	case 3:
 		dnd.drag_status.dropped = true
 	case 4:
