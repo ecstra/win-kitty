@@ -192,16 +192,16 @@ func (s *StreamingBase64Encoder) Encode(input []byte, output []byte) iter.Seq2[[
 
 // Finish encoding the stream. Resets the encoder. Returned slice can be nil
 // if no leftover bytes are present.
-func (s *StreamingBase64Encoder) Finish() ([]byte, error) {
+func (s *StreamingBase64Encoder) Finish() []byte {
 	defer func() {
 		s.num_leftover = 0
 		s.total_read = 0
 	}()
 	if s.num_leftover == 0 {
-		return nil, nil
+		return nil
 	}
 	encodedLen := base64.RawStdEncoding.EncodedLen(s.num_leftover)
-	output := make([]byte, encodedLen)
-	base64.RawStdEncoding.Encode(output, s.leftover[:s.num_leftover])
-	return output, nil
+	output := [4]byte{}
+	base64.RawStdEncoding.Encode(output[:encodedLen], s.leftover[:s.num_leftover])
+	return output[:encodedLen]
 }

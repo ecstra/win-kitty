@@ -386,9 +386,7 @@ These represent possibly chunked data for files, symlinks and directories, as
 denoted by the ``X`` key. As above, end of data for an individual entry is
 indicated by an escape code with ``m=0`` and no payload. ``idx`` is the one
 based index into the list of entries in the ``text/uri-list`` MIME type.
-``file://`` URLs that point to symlinks must be resolved to files or
-directories and sent. So actual symlinks will appear only when recursing
-through directories as described below. Only regular files should be sent.
+Only regular files, symlinks and directories should be sent.
 
 Terminals should write the transmitted data into a temporary directory
 and replace the entries in the ``text/uri-list`` data with the transmitted

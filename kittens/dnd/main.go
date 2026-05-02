@@ -76,7 +76,7 @@ func (d *dir_handle) unref() *dir_handle {
 type dnd struct {
 	opts                     *Options
 	drop_dests               map[string]*drop_dest
-	drag_sources             map[string]drag_source
+	drag_sources             map[string]*drag_source
 	allow_drops, allow_drags bool
 
 	lp                                     *loop.Loop
@@ -253,9 +253,13 @@ func (dnd *dnd) run_loop() (err error) {
 		case 'E':
 			return dnd.on_drag_error(cmd)
 		case 'e':
-			return dnd.on_drag_event(cmd.X, cmd.Y, cmd.Operation)
+			return dnd.on_drag_event(cmd.X, cmd.Y, cmd.Operation, cmd.Yp)
 		}
 		return nil
+	}
+
+	dnd.lp.OnWriteComplete = func(msg_id loop.IdType, has_pending_writes bool) (err error) {
+		return dnd.on_send_done(msg_id)
 	}
 
 	dnd.lp.OnKeyEvent = func(e *loop.KeyEvent) (err error) {
@@ -311,20 +315,20 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 			drop_dests[mime] = &drop_dest{human_name: dest, path: path, mime_type: mime}
 		}
 	}
-	drag_sources := make(map[string]drag_source)
+	drag_sources := make(map[string]*drag_source)
 	for _, spec := range opts.Drag {
 		mime, src, found := strings.Cut(spec, ":")
 		if !found {
 			return 1, fmt.Errorf("invalid drag source %s, must be of the form mime-type:path", spec)
 		}
-		s := drag_source{human_name: src, mime_type: mime}
+		s := &drag_source{human_name: src, mime_type: mime}
 		if src == "-" || src == "/dev/stdin" {
 			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
 				return 1, err
 			}
 			if len(data) > 0 {
-				drag_sources["text/plain"] = drag_source{human_name: "STDIN", mime_type: "text/plain", data: data}
+				drag_sources["text/plain"] = &drag_source{human_name: "STDIN", mime_type: "text/plain", data: data}
 			}
 		} else {
 			path, err := filepath.Abs(src)
@@ -342,7 +346,7 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 			return 1, err
 		}
 		if len(data) > 0 {
-			drag_sources["text/plain"] = drag_source{human_name: "STDIN", mime_type: "text/plain", data: data}
+			drag_sources["text/plain"] = &drag_source{human_name: "STDIN", mime_type: "text/plain", data: data}
 		}
 	}
 	var uri_list []uri_list_item
@@ -372,7 +376,7 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 			uris[i] = u.uri
 		}
 		payload := strings.Join(uris, "\r\n") + "\r\n"
-		drag_sources["text/uri-list"] = drag_source{
+		drag_sources["text/uri-list"] = &drag_source{
 			human_name: "Files", mime_type: "text/uri-list", uri_list: uri_list, data: utils.UnsafeStringToBytes(payload),
 		}
 	}

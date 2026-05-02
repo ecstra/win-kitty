@@ -403,10 +403,7 @@ func encodeRoundtrip(t *testing.T, plaintext []byte, chunkSize int) {
 	if err != nil {
 		t.Fatalf("chunkSize=%d: unexpected Encode error: %v", chunkSize, err)
 	}
-	tail, err := e.Finish()
-	if err != nil {
-		t.Fatalf("chunkSize=%d: unexpected Finish error: %v", chunkSize, err)
-	}
+	tail := e.Finish()
 	got = append(got, tail...)
 
 	want := []byte(base64.RawStdEncoding.EncodeToString(plaintext))
@@ -445,9 +442,9 @@ func TestEncoderFinishLeftover(t *testing.T) {
 	// num_leftover=0: empty encoder, Finish must return (nil, nil).
 	t.Run("leftover=0", func(t *testing.T) {
 		var e StreamingBase64Encoder
-		out, err := e.Finish()
-		if err != nil || out != nil {
-			t.Fatalf("expected (nil,nil), got (%v,%v)", out, err)
+		out := e.Finish()
+		if out != nil {
+			t.Fatalf("expected (nil,nil), got (%v)", out)
 		}
 	})
 
@@ -461,9 +458,9 @@ func TestEncoderFinishLeftover(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		out, err := e.Finish()
-		if err != nil || out != nil {
-			t.Fatalf("expected (nil,nil), got (%v,%v)", out, err)
+		out := e.Finish()
+		if out != nil {
+			t.Fatalf("expected (nil,nil), got (%v)", out)
 		}
 	})
 
@@ -477,10 +474,7 @@ func TestEncoderFinishLeftover(t *testing.T) {
 				t.Fatalf("unexpected Encode error: %v", err)
 			}
 		}
-		tail, err := e.Finish()
-		if err != nil {
-			t.Fatalf("unexpected Finish error: %v", err)
-		}
+		tail := e.Finish()
 		want := []byte(base64.RawStdEncoding.EncodeToString([]byte("d")))
 		if !bytes.Equal(tail, want) {
 			t.Fatalf("want %q, got %q", want, tail)
@@ -497,10 +491,7 @@ func TestEncoderFinishLeftover(t *testing.T) {
 				t.Fatalf("unexpected Encode error: %v", err)
 			}
 		}
-		tail, err := e.Finish()
-		if err != nil {
-			t.Fatalf("unexpected Finish error: %v", err)
-		}
+		tail := e.Finish()
 		want := []byte(base64.RawStdEncoding.EncodeToString([]byte("de")))
 		if !bytes.Equal(tail, want) {
 			t.Fatalf("want %q, got %q", want, tail)
@@ -536,9 +527,9 @@ func TestEncoderEmptyInput(t *testing.T) {
 			t.Fatalf("unexpected error on empty input: %v", err)
 		}
 	}
-	out, err := e.Finish()
-	if err != nil || out != nil {
-		t.Fatalf("expected (nil,nil) for empty input, got (%v,%v)", out, err)
+	out := e.Finish()
+	if out != nil {
+		t.Fatalf("expected (nil,nil) for empty input, got (%v)", out)
 	}
 }
 
@@ -576,10 +567,7 @@ func TestEncoderNumLeftoverInEncode(t *testing.T) {
 			t.Fatalf("firstCallLen=%d rest Encode error: %v", firstCallLen, err)
 		}
 		got = append(got, rest...)
-		tail, err := e.Finish()
-		if err != nil {
-			t.Fatalf("firstCallLen=%d Finish error: %v", firstCallLen, err)
-		}
+		tail := e.Finish()
 		got = append(got, tail...)
 
 		want := []byte(base64.RawStdEncoding.EncodeToString(plain))
@@ -603,10 +591,7 @@ func TestEncoderFinishResetsState(t *testing.T) {
 		}
 		got1 = append(got1, enc...)
 	}
-	tail1, err := e.Finish()
-	if err != nil {
-		t.Fatal(err)
-	}
+	tail1 := e.Finish()
 	got1 = append(got1, tail1...)
 	want1 := []byte(base64.RawStdEncoding.EncodeToString(plain1))
 	if !bytes.Equal(got1, want1) {
@@ -622,10 +607,7 @@ func TestEncoderFinishResetsState(t *testing.T) {
 		}
 		got2 = append(got2, enc...)
 	}
-	tail2, err := e.Finish()
-	if err != nil {
-		t.Fatal(err)
-	}
+	tail2 := e.Finish()
 	got2 = append(got2, tail2...)
 	want2 := []byte(base64.RawStdEncoding.EncodeToString(plain2))
 	if !bytes.Equal(got2, want2) {
@@ -684,10 +666,7 @@ func TestEncoderDecoderRoundtrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Encode error: %v", err)
 			}
-			tail, err := e.Finish()
-			if err != nil {
-				t.Fatalf("Encode Finish error: %v", err)
-			}
+			tail := e.Finish()
 			encoded = append(encoded, tail...)
 
 			// Decode using RawStdEncoding (no padding)
