@@ -1745,6 +1745,8 @@ finish_remote_data(Window *w, size_t item_idx) {
         new_size += 2;
     }
     free(ds.items[item_idx].uri_list); ds.items[item_idx].uri_list = NULL; ds.items[item_idx].num_uris = 0;
+    // The fd has been completely rewritten with updated (cached) URIs; update the read tracking
+    // fields so drag_get_data returns the full new content starting from the beginning.
     ds.items[item_idx].data_capacity = new_size;
     ds.items[item_idx].data_size = 0;
     int ret = dnd_is_test_mode() ? 0 : notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[item_idx].mime_type);
