@@ -201,7 +201,11 @@ func (dnd *dnd) on_send_done(id loop.IdType) (err error) {
 		}
 	}
 	if id == dnd.drag_status.remote_item_write_id {
-		err = dnd.next_remote_item()
+		if dnd.drag_status.current_remote_file != nil {
+			err = dnd.send_next_file_chunk()
+		} else {
+			err = dnd.next_remote_item()
+		}
 	}
 	return
 }
@@ -294,7 +298,7 @@ func (dnd *dnd) send_next_file_chunk() (err error) {
 				dnd.send_remote_item_payload(cr.parent_dir_handle, cr.idx_in_parent, cr.idx_in_uri_list, 0, chunk)
 			}
 			dnd.drag_status.remote_item_write_id = dnd.send_remote_item_payload(cr.parent_dir_handle, cr.idx_in_parent, cr.idx_in_uri_list, 0, nil)
-			return
+			return nil
 		}
 		dnd.finish_drag("EIO")
 		return err
