@@ -351,11 +351,11 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 	}
 	var uri_list []uri_list_item
 	for _, arg := range args {
-		st, err := os.Stat(arg)
+		st, err := os.Lstat(arg)
 		if err != nil {
 			return 1, err
 		}
-		if st.IsDir() || st.Mode().IsRegular() {
+		if st.IsDir() || st.Mode().IsRegular() || st.Mode().Type()&os.ModeSymlink != 0 {
 			path, err := filepath.Abs(arg)
 			if err != nil {
 				return 1, err

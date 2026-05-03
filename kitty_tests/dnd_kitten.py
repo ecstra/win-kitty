@@ -333,7 +333,8 @@ class TestDnDKitten(BaseTest):
             self.img_drag_data = os.urandom(10113)
             f.write(self.img_drag_data)
         create_fs(self.src_data_dir)
-        self.finish_setup(cli_args=(f'--drag=image/png:{img_drag_path}', self.src_data_dir)) # )))
+        tl = tuple(os.path.join(self.src_data_dir, x) for x in os.listdir(self.src_data_dir))
+        self.finish_setup(cli_args=(f'--drag=image/png:{img_drag_path}', ) + tl) # )))
         self.dnd_kitten_drag(False, img_drag_path)
         self.exit_kitten()
         self.img_drag_data = None
@@ -387,5 +388,13 @@ class TestDnDKitten(BaseTest):
         self.send_dnd_command_to_kitten('DRAG_STATUS')
         self.wait_for_responses('text/uri-list:2:true')
         self.assertEqual(self.img_drag_data, self.read_drag_data('image/png'))
-        # self.read_drag_data('text/uri-list')
+        uri_list = self.read_drag_data('text/uri-list').decode().splitlines()
+        paths = set()
+        for line in uri_list:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                purl = urlparse(line)
+                if purl.scheme == 'file':
+                    paths.add(purl.path)
+        self.assertEqual(set(os.listdir(self.src_data_dir)), {os.path.basename(x) for x in paths})
         end_drag(False)
