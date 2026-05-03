@@ -123,7 +123,6 @@ func (s *StreamingBase64Decoder) Finish() ([]byte, error) {
 type StreamingBase64Encoder struct {
 	leftover     [3]byte
 	num_leftover int
-	total_read   int64
 }
 
 // The size of output buffer needed to encode the provided number of input bytes.
@@ -157,13 +156,11 @@ func (s *StreamingBase64Encoder) Encode(input []byte, output []byte) iter.Seq2[[
 				}
 				outOffset += 4
 				currIn = currIn[need:]
-				s.total_read += int64(need)
 				s.num_leftover = 0
 			} else {
 				// Still not enough to complete a group of 3
 				copy(s.leftover[s.num_leftover:], currIn)
 				s.num_leftover += len(currIn)
-				s.total_read += int64(len(currIn))
 				return
 			}
 		}
@@ -178,14 +175,12 @@ func (s *StreamingBase64Encoder) Encode(input []byte, output []byte) iter.Seq2[[
 			}
 			outOffset += encodedLen
 			currIn = currIn[processableLen:]
-			s.total_read += int64(processableLen)
 		}
 
 		// 3. Buffer remaining bytes (1-2) for the next Encode call
 		if len(currIn) > 0 {
 			copy(s.leftover[:], currIn)
 			s.num_leftover = len(currIn)
-			s.total_read += int64(len(currIn))
 		}
 	}
 }
@@ -193,15 +188,12 @@ func (s *StreamingBase64Encoder) Encode(input []byte, output []byte) iter.Seq2[[
 // Finish encoding the stream. Resets the encoder. Returned slice can be nil
 // if no leftover bytes are present.
 func (s *StreamingBase64Encoder) Finish() []byte {
-	defer func() {
-		s.num_leftover = 0
-		s.total_read = 0
-	}()
 	if s.num_leftover == 0 {
 		return nil
 	}
 	encodedLen := base64.RawStdEncoding.EncodedLen(s.num_leftover)
 	output := [4]byte{}
 	base64.RawStdEncoding.Encode(output[:encodedLen], s.leftover[:s.num_leftover])
+	s.num_leftover = 0
 	return output[:encodedLen]
 }
