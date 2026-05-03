@@ -224,7 +224,11 @@ func (dnd *dnd) on_data_request_finished(i int) (err error) {
 func (dnd *dnd) send_remote_item_payload(parent_dir_handle, idx_in_parent, idx_in_uri_list, item_type int, payload []byte) loop.IdType {
 	cmd := DC{Type: 'k', Xp: item_type, X: idx_in_uri_list + 1}
 	if len(payload) > 0 {
-		cmd.Payload = utils.UnsafeStringToBytes(base64.RawStdEncoding.EncodeToString(payload))
+		if item_type == 0 {
+			cmd.Payload = payload
+		} else {
+			cmd.Payload = utils.UnsafeStringToBytes(base64.RawStdEncoding.EncodeToString(payload))
+		}
 	}
 	if parent_dir_handle != 0 {
 		cmd.Yp = parent_dir_handle
