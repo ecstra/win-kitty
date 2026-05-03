@@ -347,7 +347,7 @@ func (dnd *dnd) start_remote_data_send(ds *drag_source) (err error) {
 				return err
 			}
 		} else {
-			f := remote_data_item{idx_in_parent: i, metadata: x.metadata, path: x.path}
+			f := remote_data_item{idx_in_parent: i, idx_in_uri_list: i, metadata: x.metadata, path: x.path}
 			dnd.drag_status.remote_items = append(dnd.drag_status.remote_items, &f)
 		}
 	}
