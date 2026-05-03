@@ -329,13 +329,20 @@ class TestDnDKitten(BaseTest):
 
     def test_dnd_kitten_drag(self):
         img_drag_path = 'image.png'
-        with open(os.path.join(self.kitten_wd, img_drag_path), 'wb') as f:
-            self.img_drag_data = os.urandom(10113)
-            f.write(self.img_drag_data)
-        create_fs(self.src_data_dir)
+        def create_files():
+            with open(os.path.join(self.kitten_wd, img_drag_path), 'wb') as f:
+                self.img_drag_data = os.urandom(10113)
+                f.write(self.img_drag_data)
+            create_fs(self.src_data_dir)
+        create_files()
         tl = tuple(os.path.join(self.src_data_dir, x) for x in os.listdir(self.src_data_dir))
         self.finish_setup(cli_args=(f'--drag=image/png:{img_drag_path}', ) + tl) # )))
-        self.dnd_kitten_drag(False, img_drag_path)
+        with self.subTest(remote_client=False):
+            self.dnd_kitten_drag(False, img_drag_path)
+        self.reset_kitten(True)
+        create_files()
+        with self.subTest(remote_client=True):
+            self.dnd_kitten_drag(True, img_drag_path)
         self.exit_kitten()
         self.img_drag_data = None
 
@@ -352,7 +359,7 @@ class TestDnDKitten(BaseTest):
                 if err.errno == errno.EAGAIN:
                     self.pty.process_input_from_child()
                     continue
-                del chunk, ans
+                chunk = ans = b''
                 raise
         return ans
 
@@ -388,6 +395,8 @@ class TestDnDKitten(BaseTest):
         self.send_dnd_command_to_kitten('DRAG_STATUS')
         self.wait_for_responses('text/uri-list:2:true')
         self.assertEqual(self.img_drag_data, self.read_drag_data('image/png'))
+        # if remote_client:
+        #     self.pty.log_data_flow = True
         uri_list = self.read_drag_data('text/uri-list').decode().splitlines()
         paths = set()
         for line in uri_list:
@@ -396,5 +405,10 @@ class TestDnDKitten(BaseTest):
                 purl = urlparse(line)
                 if purl.scheme == 'file':
                     paths.add(purl.path)
-        self.assertEqual(set(os.listdir(self.src_data_dir)), {os.path.basename(x) for x in paths})
+                    if remote_client:
+                        self.assertNotEqual(self.src_data_dir, os.path.dirname(purl.path))
+                    else:
+                        self.assertEqual(self.src_data_dir, os.path.dirname(purl.path))
+        src_items = set(os.listdir(self.src_data_dir))
+        self.assertEqual(src_items, {os.path.basename(x) for x in paths})
         end_drag(False)

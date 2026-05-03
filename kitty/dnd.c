@@ -1492,6 +1492,10 @@ drag_get_data(Window *w, const char *mime_type, size_t *sz, int *err_code) {
                 ds.items[i].fd_plus_one = 0;
                 return NULL;
             }
+            if (ds.items[i].requested_remote_files) {  // wait for remote files to be read
+                *err_code = EAGAIN;
+                return NULL;
+            }
             if (ds.items[i].fd_plus_one > 0) {
                 // data_size = read position, data_capacity = bytes written to file
                 if (ds.items[i].data_capacity > ds.items[i].data_size) {
@@ -1728,6 +1732,7 @@ write_all(int fd, const void *buf, size_t sz) {
 static void
 finish_remote_data(Window *w, size_t item_idx) {
     const int fd = ds.items[item_idx].fd_plus_one - 1;
+    ds.items[item_idx].requested_remote_files = false;
     if (safe_ftruncate(fd, 0) != 0) abrt(errno);
     if (lseek(fd, 0, SEEK_SET) == -1) abrt(errno);
     for (size_t i = 0; i < ds.items[item_idx].num_uris; i++) {
@@ -1738,7 +1743,7 @@ finish_remote_data(Window *w, size_t item_idx) {
     }
     free(ds.items[item_idx].uri_list); ds.items[item_idx].uri_list = NULL; ds.items[item_idx].num_uris = 0;
     int ret = dnd_is_test_mode() ? 0 : notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[item_idx].mime_type);
-    abrt(ret);
+    if (ret) abrt(ret);
 }
 
 #define mi ds.items[mime_item_idx]

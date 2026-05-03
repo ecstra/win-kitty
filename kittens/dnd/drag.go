@@ -33,6 +33,7 @@ type remote_data_item struct {
 	write_id                         loop.IdType
 	base64                           streaming_base64.StreamingBase64Encoder
 	parent_dir_handle, idx_in_parent int
+	idx_in_uri_list                  int
 }
 
 type drag_status struct {
@@ -220,21 +221,19 @@ func (dnd *dnd) on_data_request_finished(i int) (err error) {
 	return
 }
 
-func (dnd *dnd) send_remote_item_payload(parent_dir_handle, idx, item_type int, payload []byte) loop.IdType {
-	cmd := DC{Type: 'k', X: item_type}
+func (dnd *dnd) send_remote_item_payload(parent_dir_handle, idx_in_parent, idx_in_uri_list, item_type int, payload []byte) loop.IdType {
+	cmd := DC{Type: 'k', Xp: item_type, X: idx_in_uri_list + 1}
 	if len(payload) > 0 {
 		cmd.Payload = utils.UnsafeStringToBytes(base64.RawStdEncoding.EncodeToString(payload))
 	}
 	if parent_dir_handle != 0 {
 		cmd.Yp = parent_dir_handle
-		cmd.Y = idx + 1
-	} else {
-		cmd.X = idx + 1
+		cmd.Y = idx_in_parent + 1
 	}
 	return dnd.lp.QueueDnDData(cmd)
 }
 
-func (dnd *dnd) send_remote_dir(path string, parent_dir_handle, idx int) (children []*remote_data_item, err error) {
+func (dnd *dnd) send_remote_dir(path string, idx_in_uri_list, parent_dir_handle, idx int) (children []*remote_data_item, err error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		dnd.finish_drag("EIO")
@@ -249,24 +248,26 @@ func (dnd *dnd) send_remote_dir(path string, parent_dir_handle, idx int) (childr
 			dnd.finish_drag("EIO")
 			return nil, err
 		}
-		x := remote_data_item{parent_dir_handle: handle, idx_in_parent: i, metadata: st, path: filepath.Join(path, entry.Name())}
+		x := remote_data_item{
+			parent_dir_handle: handle, idx_in_parent: i, metadata: st, idx_in_uri_list: idx_in_uri_list,
+			path: filepath.Join(path, entry.Name())}
 		children = append(children, &x)
 		names = append(names, entry.Name())
 	}
 	payload := utils.UnsafeStringToBytes(strings.Join(names, "\x00"))
-	dnd.send_remote_item_payload(parent_dir_handle, idx, handle, payload)
-	dnd.drag_status.remote_item_write_id = dnd.send_remote_item_payload(parent_dir_handle, idx, handle, nil)
+	dnd.send_remote_item_payload(parent_dir_handle, idx, idx_in_uri_list, handle, payload)
+	dnd.drag_status.remote_item_write_id = dnd.send_remote_item_payload(parent_dir_handle, idx, idx_in_uri_list, handle, nil)
 	return
 }
 
-func (dnd *dnd) send_remote_symlink(path string, parent_dir_handle, idx int) (err error) {
+func (dnd *dnd) send_remote_symlink(path string, idx_in_uri_list, parent_dir_handle, idx int) (err error) {
 	target, err := os.Readlink(path)
 	if err != nil {
 		dnd.finish_drag("EIO")
 		return err
 	}
-	dnd.send_remote_item_payload(parent_dir_handle, idx, 1, utils.UnsafeStringToBytes(target))
-	dnd.drag_status.remote_item_write_id = dnd.send_remote_item_payload(parent_dir_handle, idx, 1, nil)
+	dnd.send_remote_item_payload(parent_dir_handle, idx, idx_in_uri_list, 1, utils.UnsafeStringToBytes(target))
+	dnd.drag_status.remote_item_write_id = dnd.send_remote_item_payload(parent_dir_handle, idx, idx_in_uri_list, 1, nil)
 	return
 }
 
@@ -278,18 +279,17 @@ func (dnd *dnd) send_next_file_chunk() (err error) {
 	n, err := cr.file.Read(read_buf[:])
 	if n > 0 {
 		for chunk := range cr.base64.Encode(read_buf[:n], encode_buf[:]) {
-			dnd.drag_status.remote_item_write_id = dnd.send_remote_item_payload(cr.parent_dir_handle, cr.idx_in_parent, 0, chunk)
+			dnd.drag_status.remote_item_write_id = dnd.send_remote_item_payload(cr.parent_dir_handle, cr.idx_in_parent, cr.idx_in_uri_list, 0, chunk)
 		}
 	}
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			cr.file.Close()
 			dnd.drag_status.current_remote_file = nil
-			dnd.drag_status.remote_items = dnd.drag_status.remote_items[1:]
 			if chunk := cr.base64.Finish(); len(chunk) > 0 {
-				dnd.send_remote_item_payload(cr.parent_dir_handle, cr.idx_in_parent, 0, chunk)
+				dnd.send_remote_item_payload(cr.parent_dir_handle, cr.idx_in_parent, cr.idx_in_uri_list, 0, chunk)
 			}
-			dnd.drag_status.remote_item_write_id = dnd.send_remote_item_payload(cr.parent_dir_handle, cr.idx_in_parent, 0, nil)
+			dnd.drag_status.remote_item_write_id = dnd.send_remote_item_payload(cr.parent_dir_handle, cr.idx_in_parent, cr.idx_in_uri_list, 0, nil)
 			return
 		}
 		dnd.finish_drag("EIO")
@@ -300,20 +300,22 @@ func (dnd *dnd) send_next_file_chunk() (err error) {
 
 func (dnd *dnd) next_remote_item() (err error) {
 	if len(dnd.drag_status.remote_items) < 1 {
+		dnd.lp.QueueDnDData(DC{Type: 'k'}) // inform terminal remote data is finished
 		if len(dnd.drag_status.data_requests) > 0 {
 			err = dnd.send_data_for_data_request(0)
 		}
 		return
 	}
 	x := dnd.drag_status.remote_items[0]
+	dnd.drag_status.remote_items = dnd.drag_status.remote_items[1:]
 	if x.metadata.IsDir() {
-		children, err := dnd.send_remote_dir(x.path, x.parent_dir_handle, x.idx_in_parent)
+		children, err := dnd.send_remote_dir(x.path, x.idx_in_uri_list, x.parent_dir_handle, x.idx_in_parent)
 		if err != nil {
 			return err
 		}
 		dnd.drag_status.remote_items = append(dnd.drag_status.remote_items, children...)
 	} else if x.metadata.Mode().Type()&os.ModeSymlink != 0 {
-		if err = dnd.send_remote_symlink(x.path, x.parent_dir_handle, x.idx_in_parent); err != nil {
+		if err = dnd.send_remote_symlink(x.path, x.idx_in_uri_list, x.parent_dir_handle, x.idx_in_parent); err != nil {
 			return
 		}
 	} else {
@@ -335,13 +337,13 @@ func (dnd *dnd) start_remote_data_send(ds *drag_source) (err error) {
 	items := []*remote_data_item{}
 	for i, x := range ds.uri_list {
 		if x.metadata.IsDir() {
-			if children, err := dnd.send_remote_dir(x.path, 0, i); err != nil {
+			if children, err := dnd.send_remote_dir(x.path, i, 0, i); err != nil {
 				return err
 			} else {
 				items = append(items, children...)
 			}
 		} else if x.metadata.Mode().Type()&os.ModeSymlink != 0 {
-			if err = dnd.send_remote_symlink(x.path, 0, i); err != nil {
+			if err = dnd.send_remote_symlink(x.path, i, 0, i); err != nil {
 				return err
 			}
 		} else {
