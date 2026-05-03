@@ -33,6 +33,19 @@ default=disallowed
 type=choices
 Allow dropping anywhere, not just on the Copy or Move drop regions. Dropping anywhere will perform
 the specified action.
+
+
+--drag-thumbnail
+Path to an image to use as the drag icon when starting a drag. Must be in PNG/JPEG/GIF/WEBP formats.
+Other formats will require the presence of ImageMagick on the system to load the image.
+If not specified, an image is derived based on the data being dragged.
+
+
+--drag-thumbnail-size
+default=512
+type=int
+The thumbnail size for the image used as the drag icon. Images larger than this size are downscaled.
+Note that the terminal may reject the drag if the image is too large.
 '''.format
 
 

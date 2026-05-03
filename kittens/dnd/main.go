@@ -5,6 +5,7 @@ package dnd
 import (
 	"bytes"
 	"fmt"
+	"image"
 	"io"
 	"maps"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/kovidgoyal/imaging"
 	"github.com/kovidgoyal/kitty/tools/cli"
 	"github.com/kovidgoyal/kitty/tools/tty"
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
@@ -78,6 +80,7 @@ type dnd struct {
 	opts                     *Options
 	drop_dests               map[string]*drop_dest
 	drag_sources             map[string]*drag_source
+	drag_thumbnail           image.Image
 	allow_drops, allow_drags bool
 
 	lp                                     *loop.Loop
@@ -382,6 +385,12 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 		}
 	}
 	dnd := dnd{opts: opts, drop_dests: drop_dests, drag_sources: drag_sources}
+	if opts.DragThumbnail != "" {
+		if dnd.drag_thumbnail, err = imaging.Open(opts.DragThumbnail); err != nil {
+			return 1, err
+		}
+	}
+
 	defer func() {
 		dnd.end_drop(false)
 		if dnd.confirm_drop.staging_dir != nil {

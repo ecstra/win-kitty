@@ -328,6 +328,10 @@ class TestDnDKitten(BaseTest):
             self.assertEqual(fa.read(), fb.read(), f'{a} ({os.path.getsize(a)}) != {b} ({os.path.getsize(b)})')
 
     def test_dnd_kitten_drag(self):
+        from .graphics import png_data
+        drag_thumbnail = os.path.join(self.test_dir, 'drag.png')
+        with open(drag_thumbnail, 'wb') as f:
+            f.write(png_data)
         img_drag_path = 'image.png'
         def create_files():
             with open(os.path.join(self.kitten_wd, img_drag_path), 'wb') as f:
@@ -336,7 +340,7 @@ class TestDnDKitten(BaseTest):
             create_fs(self.src_data_dir)
         create_files()
         tl = tuple(os.path.join(self.src_data_dir, x) for x in os.listdir(self.src_data_dir))
-        self.finish_setup(cli_args=(f'--drag=image/png:{img_drag_path}', ) + tl) # )))
+        self.finish_setup(cli_args=(f'--drag-thumbnail={drag_thumbnail}', f'--drag=image/png:{img_drag_path}') + tl) # )))
         with self.subTest(remote_client=False):
             self.dnd_kitten_drag(False, img_drag_path)
         self.reset_kitten(True)
@@ -378,6 +382,7 @@ class TestDnDKitten(BaseTest):
             dnd_test_start_drag_offer(self.capture.window_id, x, y)
             wait_for_drag_active()
             self.wait_for_state('drag_operations', expected)
+            self.wait_for_state('drag_thumbnail_size', 4)
         def end_drag(canceled=True):
             dnd_test_drag_finish(self.capture.window_id, canceled)
             wait_for_drag_active(False)

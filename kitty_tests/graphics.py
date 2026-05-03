@@ -19,7 +19,7 @@ try:
     from PIL import Image
 except ImportError:
     Image = None
-
+png_data = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg==')
 
 def send_command(screen, cmd, payload=b''):
     cmd = '\033_G' + cmd
@@ -505,7 +505,6 @@ class TestGraphics(BaseTest):
 
     def test_load_png_simple(self):
         # 1x1 transparent PNG
-        png_data = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg==')
         expected = b'\x00\xff\xff\x7f'
         self.ae(load_png_data(png_data), (expected, 1, 1))
         s, g, pl, sl = load_helpers(self)

@@ -3,6 +3,7 @@ package dnd
 import (
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"maps"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/emmansun/base64"
+	"github.com/kovidgoyal/imaging"
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
 	"github.com/kovidgoyal/kitty/tools/utils"
 	"github.com/kovidgoyal/kitty/tools/utils/streaming_base64"
@@ -50,6 +52,72 @@ type drag_status struct {
 	remote_item_write_id   loop.IdType
 }
 
+func find_drag_image(drag_sources map[string]*drag_source) image.Image {
+	for mime, ds := range drag_sources {
+		if strings.HasPrefix(mime, "image/") && ds.path != "" {
+			q, err := imaging.Open(ds.path)
+			if err == nil {
+				return q
+			}
+		}
+	}
+	var uri_list []string
+	if ds := drag_sources["text/uri-list"]; ds != nil && len(ds.data) > 0 {
+		if q, err := parse_uri_list(string(ds.data)); err == nil {
+			for _, path := range q {
+				if path != "" {
+					uri_list = append(uri_list, path)
+				}
+			}
+		}
+	}
+	for _, path := range uri_list {
+		q, err := imaging.Open(path)
+		if err == nil {
+			return q
+		}
+	}
+	// TODO: Try to generate an image based preview using the machinery from the choose-files kitten
+	return nil
+}
+
+func (dnd *dnd) set_drag_image() (err error) {
+	img := dnd.drag_thumbnail
+	if img == nil {
+		img = find_drag_image(dnd.drag_sources)
+	}
+	if img == nil {
+		return
+	}
+	num_channels := utils.IfElse(imaging.IsOpaque(img), 3, 4)
+	sz := dnd.opts.DragThumbnailSize
+	if max(img.Bounds().Dx(), img.Bounds().Dy()) > sz {
+		w, h := 0, 0
+		if img.Bounds().Dx() >= img.Bounds().Dy() {
+			w = sz
+		} else {
+			h = sz
+		}
+		img = imaging.ResizeWithOpacity(img, w, h, imaging.Lanczos, num_channels == 3)
+		if dnd.drag_thumbnail != nil {
+			dnd.drag_thumbnail = img
+		}
+	}
+	var pix []byte
+	if imaging.IsOpaque(img) {
+		_, pix = 3, imaging.AsRGBData8(img)
+	} else {
+		pix = imaging.AsRGBAData8(img)
+	}
+	cmd := DC{
+		Type: 'p', X: -1, Y: utils.IfElse(num_channels == 3, 24, 32), Xp: img.Bounds().Dx(), Yp: img.Bounds().Dy(),
+		Payload: pix}
+	dnd.lp.QueueDnDData(cmd)
+	cmd.Payload = nil
+	dnd.lp.QueueDnDData(cmd)
+	return nil
+}
+
 func (dnd *dnd) on_potential_drag_start(cell_x, cell_y int) (err error) {
 	if !dnd.allow_drags || dnd.drag_status.active {
 		return
@@ -72,7 +140,11 @@ func (dnd *dnd) on_potential_drag_start(cell_x, cell_y int) (err error) {
 		}
 	}
 	dnd.drag_status.offered_mimes = mimes
-	// TODO: set the drag image
+	err = dnd.set_drag_image()
+	if err != nil {
+		dnd.finish_drag("EIO")
+		return err
+	}
 	dnd.lp.QueueDnDData(DC{Type: 'P', X: -1}) // start drag
 	dnd.drag_status.active = true
 

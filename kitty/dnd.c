@@ -1405,6 +1405,8 @@ expand_png_data(Window *w, size_t idx) {
 }
 #undef fail
 
+static size_t last_total_image_size = 0;
+
 void
 drag_start(Window *w) {
     if (ds.state != DRAG_SOURCE_BEING_BUILT) abrt(EINVAL);
@@ -1424,6 +1426,7 @@ drag_start(Window *w) {
             if (img.sz != (size_t)img.width * (size_t)img.height * 4u) abrt(EINVAL);
         }
     }
+    last_total_image_size = total_size;
     int err = start_window_drag(w, dnd_is_test_mode());
     if (err != 0) {
         abrt(err);
@@ -2260,6 +2263,9 @@ dnd_test_probe_state(PyObject *self UNUSED, PyObject *args) {
         for (size_t i = 0; i < w->drag_source.num_mimes; i++) PyTuple_SET_ITEM(
             ans, i, PyUnicode_FromString(w->drag_source.items[i].mime_type));
         return ans;
+    }
+    if (strcmp(q, "drag_thumbnail_size") == 0) {
+        return PyLong_FromSize_t(last_total_image_size);
     }
     Py_RETURN_NONE;
 }
