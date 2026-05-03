@@ -28,6 +28,7 @@ var _ = debugprintln
 type uri_list_item struct {
 	path, uri, human_name string
 	file                  *os.File
+	metadata              os.FileInfo
 }
 
 type drag_source struct {
@@ -365,7 +366,7 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 				upath = "/" + upath
 			}
 			u := &url.URL{Scheme: "file", Path: upath}
-			uri_list = append(uri_list, uri_list_item{path: path, uri: u.String(), human_name: arg})
+			uri_list = append(uri_list, uri_list_item{path: path, uri: u.String(), human_name: arg, metadata: st})
 		} else {
 			return 1, fmt.Errorf("%s is not a directory or regular file", arg)
 		}
