@@ -411,4 +411,13 @@ class TestDnDKitten(BaseTest):
                         self.assertEqual(self.src_data_dir, os.path.dirname(purl.path))
         src_items = set(os.listdir(self.src_data_dir))
         self.assertEqual(src_items, {os.path.basename(x) for x in paths})
+        if remote_client:
+            for actual in paths:
+                expected = os.path.join(self.src_data_dir, os.path.basename(actual))
+                if os.path.isdir(actual):
+                    self.assert_trees_equal(expected, actual)
+                elif os.path.islink(actual):
+                    self.assertEqual(os.readlink(expected), os.readlink(actual))
+                else:
+                    self.assert_files_have_same_content(expected, actual)
         end_drag(False)
