@@ -488,6 +488,26 @@ fallback_font(char_type ch, const char *family, bool bold, bool italic, bool pre
     ok = _native_fc_match(pat, ans);
 end:
     if (pat != NULL) FcPatternDestroy(pat);
+    if (!ok && builtin_nerd_font.face && builtin_nerd_font.descriptor &&
+            glyph_id_for_codepoint(builtin_nerd_font.face, ch) > 0) {
+        PyObject *pypath = PyDict_GetItemString(builtin_nerd_font.descriptor, "path");
+        PyObject *pyindex = PyDict_GetItemString(builtin_nerd_font.descriptor, "index");
+        PyObject *pyhinting = PyDict_GetItemString(builtin_nerd_font.descriptor, "hinting");
+        PyObject *pyhintstyle = PyDict_GetItemString(builtin_nerd_font.descriptor, "hint_style");
+        if (pypath && PyUnicode_Check(pypath)) {
+            const char *path = PyUnicode_AsUTF8(pypath);
+            if (path) {
+                ans->path = strdup(path);
+                if (ans->path) {
+                    ans->index = (pyindex && PyLong_Check(pyindex)) ? (int)PyLong_AsLong(pyindex) : 0;
+                    ans->hinting = (pyhinting && PyLong_Check(pyhinting)) ? (int)PyLong_AsLong(pyhinting) : 0;
+                    ans->hintstyle = (pyhintstyle && PyLong_Check(pyhintstyle)) ? (int)PyLong_AsLong(pyhintstyle) : 0;
+                    ok = true;
+                }
+            }
+        }
+        if (PyErr_Occurred()) PyErr_Clear();
+    }
     return ok;
 }
 
