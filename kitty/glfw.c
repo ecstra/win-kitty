@@ -801,7 +801,7 @@ on_drop(GLFWwindow *window, GLFWDropEvent *ev) {
             os_window->last_drag_event.y = (int)(ev->ypos * os_window->viewport_y_ratio);
             on_mouse_position_update(ev->xpos, ev->ypos);
             if (is_client_drop) {
-                if (ev->type == GLFW_DROP_ENTER) w->drop.accepted_operation = GLFW_DRAG_OPERATION_COPY;
+                if (ev->type == GLFW_DROP_ENTER) w->drop.accepted_operation = GLFW_DRAG_OPERATION_NONE;
                 drop_move_on_child(w, ev->mimes, ev->num_mimes, false);
                 ev->num_mimes = drop_update_mimes(w, ev->mimes, ev->num_mimes);
                 ev->operation.allowed = w->drop.accepted_operation;
