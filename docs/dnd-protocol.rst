@@ -303,15 +303,25 @@ negative number starting with ``-1`` for the first image and so on. Clients
 then the second and so on. When transmitting images, the image data format is
 specified using the ``y`` key. A value of ``y=24`` mean 24bit RGB data and
 ``y=32`` means 32bit RGBA data. Colors in the RGB/A data must be in the sRGB
-color space. Using ``y=100`` means the data is a PNG image. Additionally, the
-``X`` and ``Y`` keys must be used to specify the width and height of the image
-data in pixels. If the size of the transmitted data does not match the image
-dimensions the terminal must replay with ``t=E ; EINVAL``. Terminals are free
-to impose a limit on the amount of image data, to avoid Denial-of-service
-attacks. If the image data is too much or the image is too large they must
-reply with ``t=E ; EFBIG`` and abort the drag. By default, the drag will be
-started using the first image, if any. During the drag, the terminal program
-can change the image by sending::
+color space. Using ``y=100`` means the data is a PNG image. Using ``y=0`` means
+the payload is UTF-8 base64 encoded text. The terminal will render the text to
+display the image. Additionally, the ``X`` and ``Y`` keys must be used to
+specify the width and height of the image data in pixels. If the size of the
+transmitted data does not match the image dimensions the terminal must replay
+with ``t=E ; EINVAL``. When using ``y=0`` the ``X`` and ``Y`` keys specify the
+text size as ``base_font_size * X/Y``. Where ``base_font_size`` is the normal
+font size the terminal uses for text. Note that terminals **may** ignore
+newlines and render all text on a single line so client programs should not
+send too much text. The ``o`` key is used to specify if the background the
+text is drawn on is transparent or not. ``o=0`` means transparent and ``o=1024``
+means fully opaque. In other words background opacity is ``o/1024``.
+This is particularly useful when drawing a Unicode symbol as the icon for the drag.
+
+Terminals are free to impose a limit on the amount of image data, to avoid
+Denial-of-service attacks. If the image data is too much or the image is too
+large they must reply with ``t=E ; EFBIG`` and abort the drag. By default, the
+drag will be started using the first image, if any. During the drag, the
+terminal program can change the image by sending::
 
     OSC _dnd_code ; t=P:x=idx ST
 
