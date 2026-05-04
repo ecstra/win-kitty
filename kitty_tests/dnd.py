@@ -140,14 +140,17 @@ def client_drag_pre_send(idx: int, data_b64: str, client_id: int = 0, more: bool
 
 def client_drag_add_image(
     idx: int, fmt: int, width: int, height: int, data_b64: str,
-    client_id: int = 0, more: bool = False,
+    client_id: int = 0, more: bool = False, opacity: int = 0,
 ) -> bytes:
     """Escape code for adding an image thumbnail (t=p:x=-idx:y=fmt:X=w:Y=h ; b64).
 
     *idx*: 1-based image number (will be negated, so idx=1 means x=-1).
-    *fmt*: 24=RGB, 32=RGBA, 100=PNG.
+    *fmt*: 0=text, 24=RGB, 32=RGBA, 100=PNG.
+    *opacity*: background opacity for fmt=0 (0=transparent, 1024=opaque).
     """
     meta = f'{DND_CODE};t=p:x=-{idx}:y={fmt}:X={width}:Y={height}'
+    if opacity:
+        meta += f':o={opacity}'
     if client_id:
         meta += f':i={client_id}'
     if more:
@@ -1930,8 +1933,45 @@ class TestDnDProtocol(BaseTest):
             parse_bytes(screen, client_drag_start())
             self.assert_error(cap)
 
+    def test_drag_add_image_text_valid(self) -> None:
+        """Adding a text thumbnail (fmt=0) is accepted without error."""
+        with dnd_test_window() as (screen, cap):
+            self._setup_drag_offer(screen, cap, 'text/plain')
+            text = '📁'
+            data_b64 = standard_b64encode(text.encode()).decode()
+            parse_bytes(screen, client_drag_add_image(1, 0, 1, 1, data_b64))
+            self._assert_no_output(cap)
 
-    # ---- Request queue and disambiguation tests --------------------------------
+    def test_drag_add_image_text_zero_scale(self) -> None:
+        """Text thumbnail with X=0 and Y=0 (default 1/1 scaling) is accepted."""
+        with dnd_test_window() as (screen, cap):
+            self._setup_drag_offer(screen, cap, 'text/plain')
+            text = 'drag me'
+            data_b64 = standard_b64encode(text.encode()).decode()
+            # X=0, Y=0 means default scaling (1/1)
+            parse_bytes(screen, client_drag_add_image(1, 0, 0, 0, data_b64))
+            self._assert_no_output(cap)
+
+    def test_drag_add_image_text_with_opacity(self) -> None:
+        """Text thumbnail with opacity key is accepted."""
+        with dnd_test_window() as (screen, cap):
+            self._setup_drag_offer(screen, cap, 'text/plain')
+            text = 'file'
+            data_b64 = standard_b64encode(text.encode()).decode()
+            # o=512 means 50% opaque background
+            parse_bytes(screen, client_drag_add_image(1, 0, 1, 1, data_b64, opacity=512))
+            self._assert_no_output(cap)
+
+    def test_drag_add_image_text_fully_opaque(self) -> None:
+        """Text thumbnail with fully opaque background (o=1024) is accepted."""
+        with dnd_test_window() as (screen, cap):
+            self._setup_drag_offer(screen, cap, 'text/plain')
+            text = 'hello'
+            data_b64 = standard_b64encode(text.encode()).decode()
+            parse_bytes(screen, client_drag_add_image(1, 0, 2, 1, data_b64, opacity=1024))
+            self._assert_no_output(cap)
+
+
 
     def test_x_key_echoed_in_data_response(self) -> None:
         """x= key is echoed in data responses to identify which request is being answered."""

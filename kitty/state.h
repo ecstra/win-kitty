@@ -331,7 +331,7 @@ typedef struct Window {
             char *base_dir_for_remote_items; int base_dir_fd_plus_one;
         } *items;
         struct {
-            int width, height, fmt; uint8_t *data; size_t sz, capacity; bool started; base64_state base64_state;
+            int width, height, fmt, opacity; uint8_t *data; size_t sz, capacity; bool started; base64_state base64_state;
         } images[16];
         size_t pre_sent_total_sz, images_sent_total_sz;
         unsigned img_idx;

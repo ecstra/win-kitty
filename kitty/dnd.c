@@ -1343,17 +1343,18 @@ drag_add_pre_sent_data(Window *w, unsigned idx, const uint8_t *payload, size_t s
 #define img ds.images[idx]
 
 void
-drag_add_image(Window *w, unsigned idx, int fmt, int width, int height, const uint8_t *payload, size_t sz) {
+drag_add_image(Window *w, unsigned idx, int fmt, int width, int height, int opacity, const uint8_t *payload, size_t sz) {
     if (ds.state != DRAG_SOURCE_BEING_BUILT) abrt(EINVAL);
     if (idx + 1 >= arraysz(ds.images)) abrt(EFBIG);
     if (ds.images_sent_total_sz + sz > PRESENT_DATA_CAP) abrt(EFBIG);
     ds.images_sent_total_sz += sz;
     if (!img.started) {
-        if (fmt != 24 && fmt != 32 && fmt != 100) abrt(EINVAL);
-        if (width < 1 || height < 1) abrt(EINVAL);
+        if (fmt != 0 && fmt != 24 && fmt != 32 && fmt != 100) abrt(EINVAL);
+        if (fmt != 0 && (width < 1 || height < 1)) abrt(EINVAL);
         img.started = true;
         img.width = width; img.height = height;
         img.fmt = fmt;
+        img.opacity = opacity;
         base64_init_stream_decoder(&img.base64_state);
     }
     if (img.capacity < sz + img.sz) {
@@ -1420,10 +1421,66 @@ drag_start(Window *w) {
                 case 100:
                     if (!expand_png_data(w, idx)) return;
                     break;
+                case 0: {
+                    // Text format: render using draw_window_title
+                    OSWindow *osw = os_window_for_kitty_window(w->id);
+                    if (!osw || !osw->fonts_data) break;  // no fonts available, skip
+                    int X = img.width > 0 ? img.width : 1;
+                    int Y = img.height > 0 ? img.height : 1;
+                    double adjusted_font_sz = osw->fonts_data->font_sz_in_pts * (double)X / (double)Y;
+                    double ydpi = osw->fonts_data->logical_dpi_y;
+                    double px_sz_d = adjusted_font_sz * ydpi / 72.0;
+                    if (px_sz_d < 1.0) px_sz_d = 1.0;
+                    size_t render_height = (size_t)(px_sz_d * 4.0 / 3.0 + 0.5);
+                    if (render_height < 1) render_height = 1;
+                    // White text on a background with the specified opacity
+                    color_type fg_color = 0xFFFFFF;
+                    uint8_t bg_alpha = (uint8_t)(((uint32_t)img.opacity * 255u + 512u) / 1024u);
+                    color_type bg_color = ((uint32_t)bg_alpha) << 24;
+                    // Add a null terminator for draw_window_title
+                    uint8_t *txt = realloc(img.data, img.sz + 1);
+                    if (!txt) { abrt(ENOMEM); return; }
+                    img.data = txt; txt[img.sz] = '\0';
+                    // Render into a max-width buffer; draw_window_title clips to actual text width
+                    size_t max_width = 4096;
+                    size_t buf_sz = max_width * render_height * 4;
+                    uint8_t *render_buf = malloc(buf_sz);
+                    if (!render_buf) { abrt(ENOMEM); return; }
+                    size_t actual_width = max_width;
+                    bool ok = draw_window_title(adjusted_font_sz, ydpi, (const char*)img.data,
+                                               fg_color, bg_color, render_buf,
+                                               max_width, render_height, &actual_width);
+                    if (!ok || actual_width < 1) { free(render_buf); break; }
+                    // Compact the buffer if actual_width < max_width (rows are laid out
+                    // with actual_width stride by draw_window_title)
+                    size_t final_sz = actual_width * render_height * 4;
+                    if (actual_width < max_width) {
+                        uint8_t *compact = realloc(render_buf, final_sz);
+                        if (!compact) { free(render_buf); abrt(ENOMEM); return; }
+                        render_buf = compact;
+                    }
+                    // Un-premultiply alpha: draw_window_title output is pre-multiplied RGBA
+                    for (size_t j = 0; j < actual_width * render_height; j++) {
+                        uint8_t *px = render_buf + j * 4;
+                        uint16_t a = px[3];
+                        if (a > 0) {
+                            px[0] = (uint8_t)((uint16_t)px[0] * 255u / a);
+                            px[1] = (uint8_t)((uint16_t)px[1] * 255u / a);
+                            px[2] = (uint8_t)((uint16_t)px[2] * 255u / a);
+                        }
+                    }
+                    free(img.data);
+                    img.data = render_buf;
+                    img.sz = final_sz;
+                    img.width = (int)actual_width;
+                    img.height = (int)render_height;
+                    img.fmt = 32;
+                    break;
+                }
             }
             total_size += img.sz;
             if (total_size > 2 * PRESENT_DATA_CAP) abrt(EFBIG);
-            if (img.sz != (size_t)img.width * (size_t)img.height * 4u) abrt(EINVAL);
+            if (img.fmt != 0 && img.sz != (size_t)img.width * (size_t)img.height * 4u) abrt(EINVAL);
         }
     }
     last_total_image_size = total_size;
