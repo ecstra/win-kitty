@@ -25,6 +25,7 @@ static size_t MIME_LIST_SIZE_CAP = DEFAULT_MIME_LIST_SIZE_CAP;
 static size_t PRESENT_DATA_CAP = DEFAULT_PRESENT_DATA_CAP;
 #define DEFAULT_REMOTE_DRAG_LIMIT 1024 * 1024 * 1024
 static size_t REMOTE_DRAG_LIMIT = DEFAULT_REMOTE_DRAG_LIMIT;
+#define DRAG_OPACITY_MAX 1024u
 static PyObject *g_dnd_test_write_func = NULL;
 static const unsigned file_permissions = 0644;
 static const unsigned dir_permissions = 0755;
@@ -1433,40 +1434,38 @@ drag_start(Window *w) {
                     if (px_sz_d < 1.0) px_sz_d = 1.0;
                     size_t render_height = (size_t)(px_sz_d * 4.0 / 3.0 + 0.5);
                     if (render_height < 1) render_height = 1;
-                    // White text on a background with the specified opacity
+                    // White text on a background with the specified opacity (0-DRAG_OPACITY_MAX)
                     color_type fg_color = 0xFFFFFF;
-                    uint8_t bg_alpha = (uint8_t)(((uint32_t)img.opacity * 255u + 512u) / 1024u);
+                    uint8_t bg_alpha = (uint8_t)(((uint32_t)img.opacity * 255u + DRAG_OPACITY_MAX / 2) / DRAG_OPACITY_MAX);
                     color_type bg_color = ((uint32_t)bg_alpha) << 24;
                     // Add a null terminator for draw_window_title
                     uint8_t *txt = realloc(img.data, img.sz + 1);
                     if (!txt) { abrt(ENOMEM); return; }
                     img.data = txt; txt[img.sz] = '\0';
-                    // Render into a max-width buffer; draw_window_title clips to actual text width
+                    // Render into a max-width buffer; draw_window_title reduces actual_width
+                    // to fit the text, using actual_width as the row stride in the buffer
                     size_t max_width = 4096;
-                    size_t buf_sz = max_width * render_height * 4;
-                    uint8_t *render_buf = malloc(buf_sz);
+                    uint8_t *render_buf = malloc(max_width * render_height * 4);
                     if (!render_buf) { abrt(ENOMEM); return; }
                     size_t actual_width = max_width;
                     bool ok = draw_window_title(adjusted_font_sz, ydpi, (const char*)img.data,
                                                fg_color, bg_color, render_buf,
                                                max_width, render_height, &actual_width);
                     if (!ok || actual_width < 1) { free(render_buf); break; }
-                    // Compact the buffer if actual_width < max_width (rows are laid out
-                    // with actual_width stride by draw_window_title)
+                    // Shrink the buffer to the actual rendered size (data is already compact
+                    // since draw_window_title uses actual_width as the row stride)
                     size_t final_sz = actual_width * render_height * 4;
-                    if (actual_width < max_width) {
-                        uint8_t *compact = realloc(render_buf, final_sz);
-                        if (!compact) { free(render_buf); abrt(ENOMEM); return; }
-                        render_buf = compact;
-                    }
+                    uint8_t *compact = realloc(render_buf, final_sz);
+                    if (!compact) { free(render_buf); abrt(ENOMEM); return; }
+                    render_buf = compact;
                     // Un-premultiply alpha: draw_window_title output is pre-multiplied RGBA
                     for (size_t j = 0; j < actual_width * render_height; j++) {
                         uint8_t *px = render_buf + j * 4;
                         uint16_t a = px[3];
                         if (a > 0) {
-                            px[0] = (uint8_t)((uint16_t)px[0] * 255u / a);
-                            px[1] = (uint8_t)((uint16_t)px[1] * 255u / a);
-                            px[2] = (uint8_t)((uint16_t)px[2] * 255u / a);
+                            px[0] = (uint8_t)(((uint16_t)px[0] * 255u + a / 2u) / a);
+                            px[1] = (uint8_t)(((uint16_t)px[1] * 255u + a / 2u) / a);
+                            px[2] = (uint8_t)(((uint16_t)px[2] * 255u + a / 2u) / a);
                         }
                     }
                     free(img.data);

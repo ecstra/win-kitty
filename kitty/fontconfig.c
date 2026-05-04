@@ -494,14 +494,14 @@ end:
         PyObject *pyindex = PyDict_GetItemString(builtin_nerd_font.descriptor, "index");
         PyObject *pyhinting = PyDict_GetItemString(builtin_nerd_font.descriptor, "hinting");
         PyObject *pyhintstyle = PyDict_GetItemString(builtin_nerd_font.descriptor, "hint_style");
-        if (pypath) {
+        if (pypath && PyUnicode_Check(pypath)) {
             const char *path = PyUnicode_AsUTF8(pypath);
             if (path) {
                 ans->path = strdup(path);
                 if (ans->path) {
-                    ans->index = pyindex ? (int)PyLong_AsLong(pyindex) : 0;
-                    ans->hinting = pyhinting ? (int)PyLong_AsLong(pyhinting) : 0;
-                    ans->hintstyle = pyhintstyle ? (int)PyLong_AsLong(pyhintstyle) : 0;
+                    ans->index = (pyindex && PyLong_Check(pyindex)) ? (int)PyLong_AsLong(pyindex) : 0;
+                    ans->hinting = (pyhinting && PyLong_Check(pyhinting)) ? (int)PyLong_AsLong(pyhinting) : 0;
+                    ans->hintstyle = (pyhintstyle && PyLong_Check(pyhintstyle)) ? (int)PyLong_AsLong(pyhintstyle) : 0;
                     ok = true;
                 }
             }
