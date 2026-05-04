@@ -1514,9 +1514,11 @@ drag_notify(Window *w, DragNotifyType type) {
     size_t sz = snprintf(buf, sizeof(buf), "\x1b]%d;t=e:x=%d", DND_CODE, type + 1);
     switch(type) {
         case DRAG_NOTIFY_ACCEPTED:
-            for (size_t i = 0; i < ds.num_mimes; i++) {
-                if (strcmp(ds.items[i].mime_type, global_state.drag_source.accepted_mime_type) == 0) {
-                    sz += snprintf(buf + sz, sizeof(buf) - sz, ":y=%zu", i); break;
+            if (global_state.drag_source.accepted_mime_type != NULL) {
+                for (size_t i = 0; i < ds.num_mimes; i++) {
+                    if (strcmp(ds.items[i].mime_type, global_state.drag_source.accepted_mime_type) == 0) {
+                        sz += snprintf(buf + sz, sizeof(buf) - sz, ":y=%zu", i); break;
+                    }
                 }
             } break;
         case DRAG_NOTIFY_ACTION_CHANGED:
