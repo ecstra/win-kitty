@@ -943,8 +943,14 @@ drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
     if (ds.from_window && (w = window_for_window_id(ds.from_window)) && w->drag_source.state) {
         is_client_drag = true;
     }
+    // On Wayland, wen compositor doesnt support top level drag protocol we get
+    // a drop event for what is either a cancel or a drop on something that
+    // does not accept the drop. In both of these cases we need to send the
+    // client a drop cancel.
+    GLFWDragEventType t = ev->type;
+    if (is_client_drag && ev->drop_maybe_a_cancel) t = GLFW_DRAG_CANCELLED;
 
-    switch (ev->type) {
+    switch (t) {
         case GLFW_DRAG_DATA_REQUEST:
             if (is_client_drag) {
                 ev->err_num = 0;

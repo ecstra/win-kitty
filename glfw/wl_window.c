@@ -3190,14 +3190,16 @@ static const struct xdg_toplevel_listener drag_toplevel_listener = {
 };
 
 static void
-cancel_drag(GLFWDragEventType type) {
+cancel_drag2(GLFWDragEventType type, bool maybe_a_cancel) {
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (window) {
-        GLFWDragEvent ev = {.type=type};
+        GLFWDragEvent ev = {.type=type, .drop_maybe_a_cancel=maybe_a_cancel};
         _glfwInputDragSourceRequest(window, &ev);
     }
     _glfwFreeDragSourceData();
 }
+
+static void cancel_drag(GLFWDragEventType type) { cancel_drag2(type, false); }
 
 #define dr _glfw.wl.drag.data_requests[i]
 
@@ -3424,9 +3426,13 @@ drag_source_cancelled(void *data UNUSED, struct wl_data_source *source UNUSED) {
     // impossible to distinguish between drag cancelled and dropped but not
     // accepted. https://gitlab.freedesktop.org/wayland/wayland/-/issues/140
     // so we assume this is a drop unless we are in top-level mode. Sigh.
-    const GLFWDragEventType t = _glfw.wl.drag.toplevel_xdg_toplevel ? GLFW_DRAG_CANCELLED : GLFW_DRAG_DROPPED;
-    debug_input("Drag source cancelled: is_drop: %d\n", t == GLFW_DRAG_DROPPED);
-    cancel_drag(t);
+    if (_glfw.wl.drag.toplevel_xdg_toplevel) {
+        debug_input("Drag source cancelled\n");
+        cancel_drag(GLFW_DRAG_CANCELLED);
+    } else {
+        debug_input("Drag source cancelled or dropped on something that doesnt accept it\n");
+        cancel_drag2(GLFW_DRAG_DROPPED, true);
+    }
 }
 
 

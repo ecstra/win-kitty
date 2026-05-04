@@ -1840,6 +1840,7 @@ typedef struct GLFWDragEvent {
     const char *data; size_t data_sz;
     int err_num;  // POSIX error code indicating failure fetching data
     GLFWDragOperationType action;  // can be 0 indicating no action
+    bool drop_maybe_a_cancel;  // Happens on wayland compositors that dont implement top-level drag
 } GLFWDragEvent;
 
 typedef void (* GLFWdragsourcefun)(GLFWwindow* window, GLFWDragEvent *ev);
