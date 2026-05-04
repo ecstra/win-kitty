@@ -48,15 +48,6 @@ func (dnd *dnd) render_screen() error {
 	}
 	lp.ClearScreen()
 	dnd.copy_button_region, dnd.move_button_region = button_region{}, button_region{}
-	if dnd.drag_status.active {
-		lp.Println("Dragging data...")
-		if dnd.drag_status.dropped {
-			lp.Println("The dragged data has been dropped, waiting for data transfer requests...")
-		} else if dnd.drag_status.accepted_operation > 0 {
-			lp.Println("Another window is willing to accept the dragged data")
-		}
-		return nil
-	}
 	y := 0
 	sz, _ := lp.ScreenSize()
 	render_paragraph := func(text string) {
@@ -68,6 +59,15 @@ func (dnd *dnd) render_screen() error {
 	next_line := func() {
 		lp.Println()
 		y++
+	}
+	if dnd.drag_status.active {
+		lp.Println("Dragging data...")
+		if dnd.drag_status.dropped {
+			render_paragraph("The dragged data has been dropped, waiting for data transfer requests...")
+		} else if dnd.drag_status.accepted_operation > 0 {
+			render_paragraph("Another window is willing to accept the dragged data")
+		}
+		return nil
 	}
 
 	if len(dnd.confirm_drop.overwrites) > 0 {
@@ -86,7 +86,7 @@ func (dnd *dnd) render_screen() error {
 	}
 
 	if dnd.drop_status.reading_data {
-		lp.Println("Reading dropped data, please wait...")
+		render_paragraph("Reading dropped data, please wait...")
 		return nil
 	}
 
