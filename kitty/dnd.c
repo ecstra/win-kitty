@@ -25,7 +25,6 @@ static size_t MIME_LIST_SIZE_CAP = DEFAULT_MIME_LIST_SIZE_CAP;
 static size_t PRESENT_DATA_CAP = DEFAULT_PRESENT_DATA_CAP;
 #define DEFAULT_REMOTE_DRAG_LIMIT 1024 * 1024 * 1024
 static size_t REMOTE_DRAG_LIMIT = DEFAULT_REMOTE_DRAG_LIMIT;
-#define DRAG_OPACITY_MAX 1024u
 static PyObject *g_dnd_test_write_func = NULL;
 static const unsigned file_permissions = 0644;
 static const unsigned dir_permissions = 0755;
@@ -1425,7 +1424,8 @@ drag_start(Window *w) {
                 case 0: {
                     // Text format: render using draw_window_title
                     OSWindow *osw = os_window_for_kitty_window(w->id);
-                    if (!osw || !osw->fonts_data) break;  // no fonts available, skip
+                    Screen *screen = w->render_data.screen;
+                    if (!osw || !osw->fonts_data || !screen) break;  // no fonts available, skip
                     int X = img.width > 0 ? img.width : 1;
                     int Y = img.height > 0 ? img.height : 1;
                     double adjusted_font_sz = osw->fonts_data->font_sz_in_pts * (double)X / (double)Y;
@@ -1434,10 +1434,13 @@ drag_start(Window *w) {
                     if (px_sz_d < 1.0) px_sz_d = 1.0;
                     size_t render_height = (size_t)(px_sz_d * 4.0 / 3.0 + 0.5);
                     if (render_height < 1) render_height = 1;
-                    // White text on a background with the specified opacity (0-DRAG_OPACITY_MAX)
-                    color_type fg_color = 0xFFFFFF;
+                    ColorProfile *cp = screen->color_profile;
+                    color_type fg_color = colorprofile_to_color(
+                        cp, cp->overridden.default_fg, cp->configured.default_fg).rgb | 0xff000000;
+                    static const unsigned DRAG_OPACITY_MAX = 1024u;
                     uint8_t bg_alpha = (uint8_t)(((uint32_t)img.opacity * 255u + DRAG_OPACITY_MAX / 2) / DRAG_OPACITY_MAX);
-                    color_type bg_color = ((uint32_t)bg_alpha) << 24;
+                    color_type bg_color = colorprofile_to_color(
+                        cp, cp->overridden.default_bg, cp->configured.default_bg).rgb | (((uint32_t)bg_alpha) << 24);
                     // Add a null terminator for draw_window_title
                     uint8_t *txt = realloc(img.data, img.sz + 1);
                     if (!txt) { abrt(ENOMEM); return; }
@@ -1474,12 +1477,11 @@ drag_start(Window *w) {
                     img.width = (int)actual_width;
                     img.height = (int)render_height;
                     img.fmt = 32;
-                    break;
-                }
+                } break;
             }
             total_size += img.sz;
             if (total_size > 2 * PRESENT_DATA_CAP) abrt(EFBIG);
-            if (img.fmt != 0 && img.sz != (size_t)img.width * (size_t)img.height * 4u) abrt(EINVAL);
+            if (img.sz != (size_t)img.width * (size_t)img.height * 4u) abrt(EINVAL);
         }
     }
     last_total_image_size = total_size;
