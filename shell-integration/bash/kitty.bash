@@ -26,6 +26,7 @@ if [[ -n "$KITTY_BASH_INJECT" ]]; then
                     is_sudoedit="y"
                     builtin break;
                 fi
+                [[ "$arg" == "--" ]] && builtin break  # end of options
                 [[ "$arg" != -* && "$arg" != *=* ]] && builtin break  # command found
             done
             if [[ "$is_sudoedit" == "y" ]]; then
