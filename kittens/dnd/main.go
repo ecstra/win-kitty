@@ -80,6 +80,7 @@ type dnd struct {
 	opts                     *Options
 	drop_dests               map[string]*drop_dest
 	drag_sources             map[string]*drag_source
+	initial_drag_sources     map[string]*drag_source
 	drag_thumbnail           image.Image
 	allow_drops, allow_drags bool
 
@@ -163,6 +164,7 @@ func (dnd *dnd) run_loop() (err error) {
 	defer dnd.remove_tdir()
 
 	dnd.allow_drops, dnd.allow_drags = len(dnd.drop_dests) > 0, len(dnd.drag_sources) > 0
+	dnd.initial_drag_sources = dnd.drag_sources
 	if dnd.lp, err = loop.New(); err != nil {
 		return err
 	}
@@ -214,6 +216,8 @@ func (dnd *dnd) run_loop() (err error) {
 				dnd.lp.StopOfferingDrags()
 				dnd.remove_tdir()
 				dnd.setup_base_dir(base_dir)
+				dnd.drag_sources = dnd.initial_drag_sources
+				dnd.allow_drops, dnd.allow_drags = len(dnd.drop_dests) > 0, len(dnd.drag_sources) > 0
 				machine_id := ""
 				if string(cmd.Payload) == "SETUP_REMOTE" {
 					machine_id = "remote-client-for-test"

@@ -459,4 +459,9 @@ class TestDnDKitten(BaseTest):
                     self.assertEqual(os.readlink(expected), os.readlink(actual))
                 else:
                     self.assert_files_have_same_content(expected, actual)
+        src_items_before = set(os.listdir(self.src_data_dir))
         end_drag(False)
+        # After a move drag finishes, all source files from text/uri-list should be deleted
+        for name in src_items_before:
+            item_path = os.path.join(self.src_data_dir, name)
+            self.assertFalse(os.path.lexists(item_path), f'move drag: {name} should have been deleted from source')
