@@ -118,12 +118,13 @@ func (dnd *dnd) set_drag_image_text() (err error) {
 			}
 		}
 	}
-	if icon != "" {
-		cmd := DC{Type: 'p', X: -1, Xp: 6, Yp: 1, Payload: []byte(icon)}
-		dnd.lp.QueueDnDData(cmd)
-		cmd.Payload = nil
-		dnd.lp.QueueDnDData(cmd)
+	if icon == "" {
+		icon = strings.TrimSpace("󰮐 ")
 	}
+	cmd := DC{Type: 'p', X: -1, Xp: 6, Yp: 1, Payload: []byte(icon)}
+	dnd.lp.QueueDnDData(cmd)
+	cmd.Payload = nil
+	dnd.lp.QueueDnDData(cmd)
 	return nil
 }
 
