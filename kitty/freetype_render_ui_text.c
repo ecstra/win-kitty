@@ -651,8 +651,8 @@ release_freetype_render_context(FreeTypeRenderCtx ctx) { if (ctx) { cleanup((Ren
 static PyObject*
 render_line(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
     // use for testing as below
-    // kitty +runpy "from kitty.fast_data_types import *; open('/tmp/test.rgba', 'wb').write(freetype_render_line())" && convert -size 800x60 -depth 8 /tmp/test.rgba /tmp/test.png && icat /tmp/test.png
-    const char *text = "Test 猫 H🐱🚀b rendering with ellipsis for cut off text", *family = NULL;
+    // kitty +runpy "from kitty.fast_data_types import *; open('/tmp/test.rgba', 'wb').write(freetype_render_line())" && magick -size 800x60 -depth 8 /tmp/test.rgba /tmp/test.png && icat /tmp/test.png
+    const char *text = "Test 猫 H🐱🚀b r\U000f0320endering with ellipsis for cut off text", *family = NULL;
     unsigned int width = 800, height = 60, right_margin = 0;
     int bold = 0, italic = 0;
     unsigned long fg = 0, bg = 0xfffefefe;
