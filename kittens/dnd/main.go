@@ -139,7 +139,12 @@ func (dnd *dnd) run_loop() (err error) {
 			debugprintln("dnd kitten exiting with error: ", err)
 		}
 	}()
-	base_dir, err := os.Getwd()
+	base_dir := dnd.opts.DropDest
+	if base_dir == "" {
+		base_dir, err = os.Getwd()
+	} else {
+		base_dir, err = filepath.Abs(base_dir)
+	}
 	if err != nil {
 		return err
 	}

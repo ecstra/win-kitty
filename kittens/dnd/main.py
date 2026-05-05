@@ -20,6 +20,10 @@ it will prevent that MIME type being dropped, useful to disable accepting text/p
 text/uri-list.
 
 
+--drop-dest
+Path to the directory in which dropped data is saved. Defaults to the current working directory.
+
+
 --confirm-drop-overwrite
 type=bool-set
 Ask for confirmation when dropping text/uri-list data if the drop will cause any existing
