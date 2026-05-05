@@ -54,10 +54,8 @@ type drag_status struct {
 }
 
 func find_drag_image(drag_sources map[string]*drag_source) image.Image {
-	all_paths := []string{}
 	for mime, ds := range drag_sources {
 		if ds.path != "" {
-			all_paths = append(all_paths, ds.path)
 			if strings.HasPrefix(mime, "image/") {
 				q, err := imaging.Open(ds.path)
 				if err == nil {
@@ -72,7 +70,6 @@ func find_drag_image(drag_sources map[string]*drag_source) image.Image {
 			for _, path := range q {
 				if path != "" {
 					uri_list = append(uri_list, path)
-					all_paths = append(all_paths, path)
 				}
 			}
 		}
@@ -82,10 +79,6 @@ func find_drag_image(drag_sources map[string]*drag_source) image.Image {
 		if err == nil {
 			return q
 		}
-	}
-	for _, path := range all_paths {
-		_ = path
-		// TODO: Try to generate an image based preview using the machinery from the choose-files kitten
 	}
 	return nil
 }
