@@ -1435,7 +1435,7 @@ drag_start(Window *w) {
                     size_t render_height = (size_t)(px_sz_d * 4.0 / 3.0 + 0.5);
                     if (render_height < 1) render_height = 1;
                     ColorProfile *cp = screen->color_profile;
-                    color_type fg_color = colorprofile_to_color(
+                    const color_type fg_color = colorprofile_to_color(
                         cp, cp->overridden.default_fg, cp->configured.default_fg).rgb | 0xff000000;
                     static const unsigned DRAG_OPACITY_MAX = 1024u;
                     uint8_t bg_alpha = (uint8_t)(((uint32_t)img.opacity * 255u + DRAG_OPACITY_MAX / 2) / DRAG_OPACITY_MAX);
@@ -1447,7 +1447,7 @@ drag_start(Window *w) {
                     img.data = txt; txt[img.sz] = '\0';
                     // Render into a max-width buffer; draw_window_title reduces actual_width
                     // to fit the text, using actual_width as the row stride in the buffer
-                    size_t max_width = 4096;
+                    const size_t max_width = screen->cell_size.width * screen->columns;
                     uint8_t *render_buf = malloc(max_width * render_height * 4);
                     if (!render_buf) { abrt(ENOMEM); return; }
                     size_t actual_width = max_width;
