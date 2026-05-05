@@ -51,6 +51,7 @@ type drag_status struct {
 	current_remote_file    *remote_data_item
 	dir_handle_counter     int
 	remote_item_write_id   loop.IdType
+	remote_data_was_sent   bool
 }
 
 func find_drag_image(drag_sources map[string]*drag_source) image.Image {
@@ -458,6 +459,7 @@ func (dnd *dnd) next_remote_item() (err error) {
 func (dnd *dnd) start_remote_data_send(ds *drag_source) (err error) {
 	dnd.drag_status.dir_handle_counter = 2
 	dnd.drag_status.remote_item_write_id = 0
+	dnd.drag_status.remote_data_was_sent = true
 	items := []*remote_data_item{}
 	for i, x := range ds.uri_list {
 		if x.metadata.IsDir() {
