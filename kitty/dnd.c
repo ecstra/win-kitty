@@ -1453,8 +1453,6 @@ drag_start(Window *w) {
                                                fg_color, bg_color, render_buf,
                                                max_width, render_height, &actual_width);
                     if (!ok || actual_width < 1) { free(render_buf); break; }
-                    // Shrink the buffer to the actual rendered size (data is already compact
-                    // since draw_window_title uses actual_width as the row stride)
                     size_t final_sz = actual_width * render_height * 4;
                     // Un-premultiply alpha: draw_window_title output is pre-multiplied RGBA
                     for (size_t j = 0; j < actual_width * render_height; j++) {
