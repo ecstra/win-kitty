@@ -699,6 +699,8 @@ func (self *Loop) QueueDnDData(cmd DndCommand) IdType {
 		dest := make([]byte, base64.RawStdEncoding.EncodedLen(len(payload)))
 		base64.RawStdEncoding.Encode(dest, utils.UnsafeStringToBytes(payload))
 		payload = utils.UnsafeBytesToString(dest)
+	} else {
+		payload = string(cmd.Payload)
 	}
 	const chunk_size = 4096
 	var ans IdType

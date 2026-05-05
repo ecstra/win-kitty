@@ -1357,8 +1357,8 @@ drag_add_image(Window *w, unsigned idx, int fmt, int width, int height, int opac
         img.opacity = opacity;
         base64_init_stream_decoder(&img.base64_state);
     }
-    if (img.capacity < sz + img.sz) {
-        size_t newcap = MAX(img.capacity * 2, sz + img.sz);
+    if (img.capacity < MAX(32, sz + img.sz)) {
+        size_t newcap = MAX(img.capacity * 2, MAX(32, sz + img.sz));
         uint8_t *tmp = realloc(img.data, newcap);
         if (!tmp) abrt(ENOMEM);
         img.data = tmp;

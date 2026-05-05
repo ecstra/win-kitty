@@ -1108,7 +1108,7 @@ func IconForFileWithMode(path string, mode fs.FileMode, follow_symlinks bool) st
 		return string(FOLDER)
 	case fs.ModeSymlink:
 		if follow_symlinks {
-			if dest, err := os.Readlink(path); err == nil {
+			if dest, err := filepath.EvalSymlinks(path); err == nil {
 				if st, err := os.Stat(dest); err == nil {
 					if st.IsDir() {
 						return string(SYMLINK_TO_DIR)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/emmansun/base64"
 	"github.com/kovidgoyal/imaging"
+	"github.com/kovidgoyal/kitty/tools/icons"
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
 	"github.com/kovidgoyal/kitty/tools/utils"
 	"github.com/kovidgoyal/kitty/tools/utils/streaming_base64"
@@ -53,11 +54,15 @@ type drag_status struct {
 }
 
 func find_drag_image(drag_sources map[string]*drag_source) image.Image {
+	all_paths := []string{}
 	for mime, ds := range drag_sources {
-		if strings.HasPrefix(mime, "image/") && ds.path != "" {
-			q, err := imaging.Open(ds.path)
-			if err == nil {
-				return q
+		if ds.path != "" {
+			all_paths = append(all_paths, ds.path)
+			if strings.HasPrefix(mime, "image/") {
+				q, err := imaging.Open(ds.path)
+				if err == nil {
+					return q
+				}
 			}
 		}
 	}
@@ -67,6 +72,7 @@ func find_drag_image(drag_sources map[string]*drag_source) image.Image {
 			for _, path := range q {
 				if path != "" {
 					uri_list = append(uri_list, path)
+					all_paths = append(all_paths, path)
 				}
 			}
 		}
@@ -77,7 +83,47 @@ func find_drag_image(drag_sources map[string]*drag_source) image.Image {
 			return q
 		}
 	}
-	// TODO: Try to generate an image based preview using the machinery from the choose-files kitten
+	for _, path := range all_paths {
+		_ = path
+		// TODO: Try to generate an image based preview using the machinery from the choose-files kitten
+	}
+	return nil
+}
+
+func (dnd *dnd) set_drag_image_text() (err error) {
+	icon := ""
+	from_path := func(path string) bool {
+		if st, err := os.Lstat(path); err == nil {
+			ans := strings.TrimSpace(icons.IconForFileWithMode(path, st.Mode(), true))
+			if ans != "" {
+				icon = ans
+				return true
+			}
+		}
+		return false
+	}
+	for _, ds := range dnd.drag_sources {
+		if ds.path != "" && from_path(ds.path) {
+			break
+		}
+	}
+	if icon == "" {
+		if ds := dnd.drag_sources["text/uri-list"]; ds != nil && len(ds.data) > 0 {
+			if q, err := parse_uri_list(string(ds.data)); err == nil {
+				for _, path := range q {
+					if path != "" && from_path(path) {
+						break
+					}
+				}
+			}
+		}
+	}
+	if icon != "" {
+		cmd := DC{Type: 'p', X: -1, Xp: 6, Yp: 1, Payload: []byte(icon)}
+		dnd.lp.QueueDnDData(cmd)
+		cmd.Payload = nil
+		dnd.lp.QueueDnDData(cmd)
+	}
 	return nil
 }
 
@@ -87,7 +133,7 @@ func (dnd *dnd) set_drag_image() (err error) {
 		img = find_drag_image(dnd.drag_sources)
 	}
 	if img == nil {
-		return
+		return dnd.set_drag_image_text()
 	}
 	num_channels := utils.IfElse(imaging.IsOpaque(img), 3, 4)
 	sz := dnd.opts.DragThumbnailSize
