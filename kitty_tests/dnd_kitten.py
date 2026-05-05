@@ -323,6 +323,39 @@ class TestDnDKitten(BaseTest):
         do_overwrite_drop(enter_content, '\x1b[13u')
         do_overwrite_drop(b'overwrite-esc-test-content', '\x1b[27u', 0)  # ]]]
 
+        # ---- move operation: source items deleted for local client only ----
+        move_file = jn(self.src_data_dir, 'move_test.txt')
+        move_dir = jn(self.src_data_dir, 'move_test_dir')
+        move_link = jn(self.src_data_dir, 'move_test_link')
+        os.makedirs(move_dir)
+        with open(jn(move_dir, 'inside.txt'), 'wb') as f:
+            f.write(b'nested file in move dir')
+        with open(move_file, 'wb') as f:
+            f.write(b'move test content')
+        os.symlink('nonexistent_target', move_link)
+        move_uri = (
+            as_file_url(self.src_data_dir, 'move_test.txt') + '\r\n' +
+            as_file_url(self.src_data_dir, 'move_test_dir') + '\r\n' +
+            as_file_url(self.src_data_dir, 'move_test_link') + '\r\n'
+        ).encode()
+        dnd_test_fake_drop_event(self.capture.window_id, False, ['text/uri-list'], move[0]+1, move[1]+1)
+        self.wait_for_state('drop_action', GLFW_DRAG_OPERATION_MOVE)
+        dnd_test_fake_drop_event(self.capture.window_id, True, ['text/uri-list'], move[0]+1, move[1]+1)
+        self.wait_for_state('drop_data_requests', ((1, 0, 0),))
+        dnd_test_fake_drop_data(self.capture.window_id, 'text/uri-list', move_uri)
+        self.wait_for_state('last_drop_action', GLFW_DRAG_OPERATION_MOVE)
+        self.wait_for_state('drop_action', 0)
+        if remote_client:
+            # Remote move: source items must NOT be deleted (the source app handles deletion)
+            self.assertTrue(os.path.exists(move_file), 'remote move: source file must not be deleted')
+            self.assertTrue(os.path.isdir(move_dir), 'remote move: source directory must not be deleted')
+            self.assertTrue(os.path.lexists(move_link), 'remote move: source symlink must not be deleted')
+        else:
+            # Local move: source items must be deleted after successful move
+            self.assertFalse(os.path.exists(move_file), 'local move: source file must be deleted')
+            self.assertFalse(os.path.exists(move_dir), 'local move: source directory must be deleted')
+            self.assertFalse(os.path.lexists(move_link), 'local move: source symlink must be deleted')
+
     def assert_files_have_same_content(self, a, b):
         with open(a, 'rb') as fa, open(b, 'rb') as fb:
             self.assertEqual(fa.read(), fb.read(), f'{a} ({os.path.getsize(a)}) != {b} ({os.path.getsize(b)})')

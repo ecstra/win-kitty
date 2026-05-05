@@ -449,8 +449,21 @@ func (dnd *dnd) end_drop(success bool) {
 	if dnd.drop_status.reading_data {
 		dnd.lp.QueueDnDData(DC{
 			Type: 'r', Operation: utils.IfElse(success, dnd.drop_status.action, 0)}) // end drop
-		if success && dnd.drop_status.action == 2 && !dnd.drop_status.is_remote_client {
-			// TODO: delete all dropped files/dirs/symlinks after successful move
+		if success && dnd.drop_status.action == move_on_drop && !dnd.drop_status.is_remote_client {
+			for _, path := range dnd.drop_status.uri_list {
+				if path == "" {
+					continue
+				}
+				st, err := os.Lstat(path)
+				if err != nil {
+					continue
+				}
+				if st.IsDir() {
+					os.RemoveAll(path)
+				} else {
+					os.Remove(path)
+				}
+			}
 		}
 	}
 	dnd.reset_drop()
