@@ -189,9 +189,11 @@ static pixel
 alpha_blend_premult(pixel over, pixel under) {
     const uint16_t over_r = (over >> 16) & 0xff, over_g = (over >> 8) & 0xff, over_b = over & 0xff;
     const uint16_t under_r = (under >> 16) & 0xff, under_g = (under >> 8) & 0xff, under_b = under & 0xff;
-    const uint16_t factor = 255 - ((over >> 24) & 0xff);
+    const uint16_t over_alpha = (over >> 24) & 0xff;
+    const uint16_t factor = 255 - over_alpha;
+    const uint16_t result_alpha = over_alpha + (uint16_t)(factor * ((under >> 24) & 0xff) / 255);
 #define ans(x) (over_##x + (factor * under_##x) / 255)
-    return ARGB(under >> 24, ans(r), ans(g), ans(b));
+    return ARGB(result_alpha, ans(r), ans(g), ans(b));
 #undef ans
 }
 
@@ -316,7 +318,7 @@ render_run(RenderCtx *ctx, RenderState *rs) {
     unsigned int limit = len;
     for (unsigned int i = 0; i < len; i++) {
         float delta = (float)positions[i].x_offset / 64.0f + (float)positions[i].x_advance / 64.0f;
-        if (pos + delta >= rs->output_width) {
+        if (pos + delta > rs->output_width) {
             limit = i;
             break;
         }
