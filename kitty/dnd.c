@@ -1445,7 +1445,7 @@ drag_start(Window *w) {
                     uint8_t *txt = realloc(img.data, img.sz + 1);
                     if (!txt) { abrt(ENOMEM); return; }
                     img.data = txt; txt[img.sz] = '\0';
-                    const size_t max_width = screen->cell_size.width * screen->columns;
+                    const size_t max_width = (size_t)screen->cell_size.width * screen->columns;
                     uint8_t *render_buf = malloc(max_width * render_height * 4);
                     if (!render_buf) { abrt(ENOMEM); return; }
                     size_t actual_width = max_width;
