@@ -960,7 +960,28 @@ cocoa_render_line_of_text(const char *text, const color_type fg, const color_typ
     CGContextSetRGBStrokeColor(ctx, ((fg >> 16) & 0xff) / 255.f, ((fg >> 8) & 0xff) / 255.f, (fg & 0xff) / 255.f, 1.f);
 
     NSColor *color = [NSColor colorWithCalibratedRed:((fg >> 16) & 0xff) / 255.f green:((fg >> 8) & 0xff) / 255.f blue:(fg & 0xff) / 255.f alpha:1.0];
-    NSAttributedString *str = [[NSAttributedString alloc] initWithString:@(text) attributes:@{(NSString *)kCTFontAttributeName: (__bridge id)system_ui_font, NSForegroundColorAttributeName: color}];
+    CTFontRef render_font = system_ui_font;
+    CTFontRef font_with_nerd = NULL;
+    if (builtin_nerd_font_descriptor) {
+        CFArrayRef cascade_list = CFArrayCreate(kCFAllocatorDefault, (const void *[]){builtin_nerd_font_descriptor}, 1, &kCFTypeArrayCallBacks);
+        if (cascade_list) {
+            CFDictionaryRef attrs = CFDictionaryCreate(kCFAllocatorDefault,
+                (const void *[]){kCTFontCascadeListAttribute}, (const void *[]){cascade_list},
+                1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+            CFRelease(cascade_list);
+            if (attrs) {
+                CTFontDescriptorRef nerd_desc = CTFontDescriptorCreateWithAttributes(attrs);
+                CFRelease(attrs);
+                if (nerd_desc) {
+                    font_with_nerd = CTFontCreateCopyWithAttributes(system_ui_font, 0, NULL, nerd_desc);
+                    CFRelease(nerd_desc);
+                    if (font_with_nerd) render_font = font_with_nerd;
+                }
+            }
+        }
+    }
+    NSAttributedString *str = [[NSAttributedString alloc] initWithString:@(text) attributes:@{(NSString *)kCTFontAttributeName: (__bridge id)render_font, NSForegroundColorAttributeName: color}];
+    if (font_with_nerd) CFRelease(font_with_nerd);
     if (!str) { CGContextRelease(ctx); return false; }
     CTLineRef line = CTLineCreateWithAttributedString((CFAttributedStringRef)str);
     [str release];
