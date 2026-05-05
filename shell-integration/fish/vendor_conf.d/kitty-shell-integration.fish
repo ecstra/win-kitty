@@ -144,20 +144,42 @@ function __ksi_schedule --on-event fish_prompt -d "Setup kitty integration after
         and not test -r "/usr/share/terminfo/x/xterm-kitty" -o -r "/usr/share/terminfo/78/xterm-kitty"
         # Ensure terminfo is available in sudo
         function sudo
-            set --local is_sudoedit "n"
+            set --local cannot_set_env_var "n"
+            set --local ignore_arg "n"
             for arg in $argv
-                if string match -q -- "-e" "$arg" or string match -q -- "--edit" "$arg"
-                    set is_sudoedit "y"
-                    break
+                if string match -q -- "$ignore_arg" "y"
+                    set ignore_arg "n"
+                    continue
                 end
-                if string match -q -- "--" "$arg"
+                if string match -r -q -- '^--$' "$arg"
                     break  # end of options
                 end
-                if not string match -r -q -- "^-" "$arg" and not string match -r -q -- "=" "$arg"
-                    break  # reached the command
+                if string match -r -q -- '^-[^-]*e' "$arg" or string match -q -- "--edit" "$arg"
+                    set cannot_set_env_var "y"  # sudo -e
+                    break
                 end
+                if string match -r -q -- '^-[^-]*v' "$arg" or string match -q -- "--validate" "$arg"
+                    set cannot_set_env_var "y"  # sudo-rs -e
+                    break
+                end
+                if string match -r -q -- '--user|--group|--host|--chdir|--chroot|--role|--type|--command-timeout|--auth-type|--login-class|--prompt|--close-from|--other-user' "$arg"
+
+                    set ignore_arg="y"
+                    continue
+                end
+                if string match -r -q -- '--.+' "$arg"
+                    continue
+                end
+                if string match -r -q -- '-.*a|-.*C|-.*c|-.*D|-.*g|-.*h|-.*p|-.*R|-.*r|-.*t|-.*T|-.*u)' "$arg"
+                    set ignore_arg="y"
+                    continue
+                end
+                if string match -r -q -- '-.+' "$arg" or string match -r -q -- '.+=.+' "$arg"
+                    continue
+                end
+                break  # command found
             end
-            if string match -q -- "$is_sudoedit" "y"
+            if string match -q -- "$cannot_set_env_var" "y"
                 command sudo $argv
             else
                 command sudo TERMINFO="$TERMINFO" $argv

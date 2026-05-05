@@ -18,23 +18,33 @@ if [[ -n "$KITTY_BASH_INJECT" ]]; then
 
     if [[ -n "$ksi_val" && "$ksi_val" != *no-sudo* && -n "$TERMINFO" && ! ( -r "/usr/share/terminfo/x/xterm-kitty" || -r "/usr/share/terminfo/78/xterm-kitty" ) ]]; then
         # this must be done before sourcing user bashrc otherwise aliasing of sudo does not work
-        sudo() {
-            # Ensure terminfo is available in sudo
-            builtin local is_sudoedit="n"
-            for arg; do
-                if [[ "$arg" == "-e" || $arg == "--edit" ]]; then
-                    is_sudoedit="y"
-                    builtin break;
+            sudo() {
+                # Ensure terminfo is available in sudo
+                builtin local cannot_set_env_var="n"
+                builtin local ignore_arg="n"
+                for arg; do
+                    if [[ "$ignore_arg" == "y" ]]; then ignore_arg="n"; builtin continue; fi
+                    case "$arg" in
+                        --) builtin break ;;  # end of options
+                        # sudo -e disallows setting env vars
+                        --edit | -e* | -[!-]*e*) cannot_set_env_var="y"; builtin break ;;
+                        # sudo-rs -v disallows setting env vars
+                        --validate | -v* | -[!-]*v*) cannot_set_env_var="y"; builtin break ;;
+                        # flags that require a following argument
+                        --user|--group|--host|--chdir|--chroot|--role|--type|--command-timeout|--auth-type|--login-class|--prompt|--close-from|--other-user) ignore_arg="y" ;;
+                        --*) ;;  # misc long opt
+                        -*a|-*C|-*c|-*D|-*g|-*h|-*p|-*R|-*r|-*t|-*T|-*u) ignore_arg="y" ;;
+                        # flag or env var setting
+                        -* | *=*) ;;
+                        *) builtin break ;;  # command found
+                    esac
+                done
+                if [[ "$cannot_set_env_var" == "y" ]]; then
+                    builtin command sudo "$@";
+                else
+                    builtin command sudo TERMINFO="$TERMINFO" "$@";
                 fi
-                [[ "$arg" == "--" ]] && builtin break  # end of options
-                [[ "$arg" != -* && "$arg" != *=* ]] && builtin break  # command found
-            done
-            if [[ "$is_sudoedit" == "y" ]]; then
-                builtin command sudo "$@";
-            else
-                builtin command sudo TERMINFO="$TERMINFO" "$@";
-            fi
-        }
+            }
     fi
 
     if [[ "$kitty_bash_inject" == *"posix"* ]]; then

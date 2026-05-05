@@ -32,6 +32,33 @@ def bash_ok():
     return int(major_ver) >= 5 and relstatus == 'release'
 
 
+def extract_sudo_function(
+    content: str, opening='sudo() {', closing='}',
+    witht='command sudo TERMINFO="$TERMINFO" "$@";', without='command sudo "$@";'
+) -> str:
+    """Extract the sudo() function from bash/zsh shell integration content using indentation."""
+    lines = content.split('\n')
+    start_idx = None
+    indent_len = None
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped == opening:
+            start_idx = i
+            indent_len = len(line) - len(stripped)
+            break
+    if start_idx is None:
+        return None
+    for i in range(start_idx + 1, len(lines)):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped == closing and (len(line) - len(line.lstrip())) == indent_len:
+            func = '\n'.join(lines[start_idx:i + 1])
+            func = func.replace(witht, 'echo "with_terminfo";')
+            func = func.replace(without, 'echo "no_terminfo";')
+            return func
+    return None
+
+
 def basic_shell_env(home_dir):
     ans = {
         'PATH': os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'),
@@ -114,6 +141,69 @@ class ShellIntegration(BaseTest):
                     if e.errno == errno.ENOTEMPTY:
                         continue
                     raise
+
+    @unittest.skipUnless(shutil.which('zsh'), 'zsh not installed')
+    def test_zsh_sudo_parser(self):
+        if self.with_kitten:
+            return
+        src = os.path.join(shell_integration_dir, 'zsh', 'kitty-integration')
+        with open(src) as f:
+            func = extract_sudo_function(f.read())
+        self.assertIsNotNone(func)
+        self.sudo_parser_tests(['zsh', '--no-rcs', '-c'], func)
+
+    @unittest.skipUnless(bash_ok(), 'bash not installed, too old, or debug build')
+    def test_bash_sudo_parser(self):
+        if self.with_kitten:
+            return
+        src = os.path.join(shell_integration_dir, 'bash', 'kitty.bash')
+        with open(src) as f:
+            func = extract_sudo_function(f.read())
+        self.assertIsNotNone(func)
+        self.sudo_parser_tests(['bash', '--noprofile', '--norc', '-c'], func)
+
+    @unittest.skipUnless(shutil.which('fish'), 'fish not installed')
+    def test_fish_sudo_parser(self):
+        if self.with_kitten:
+            return
+        src = os.path.join(shell_integration_dir, 'fish', 'vendor_conf.d', 'kitty-shell-integration.fish')
+        with open(src) as f:
+            func = extract_sudo_function(
+                f.read(), opening='function sudo', closing='end', witht='sudo TERMINFO="$TERMINFO" $argv',
+                without='sudo $argv')
+        self.assertIsNotNone(func)
+        self.sudo_parser_tests(['fish', '--no-config', '-c'], func)
+
+    def sudo_parser_tests(self, shell: list[str], func: str) -> None:
+        test_cases = [
+            (['ls'],                               'with_terminfo', 'simple command'),
+            (['-e', 'file.txt'],                   'no_terminfo',   '-e flag'),
+            (['--edit', 'file.txt'],               'no_terminfo',   '--edit flag'),
+            (['-v'],                               'no_terminfo',   '-v validate flag'),
+            (['--validate'],                       'no_terminfo',   '--validate flag'),
+            (['-nv'],                              'no_terminfo',   '-nv grouped flags'),
+            (['-ne', 'file.txt'],                  'no_terminfo',   '-ne grouped flags'),
+            (['-u', 'root', 'ls'],                 'with_terminfo', '-u takes argument'),
+            (['-u', 'root', '-v'],                 'no_terminfo',   '-u arg then -v'),
+            (['--', '-v'],                         'with_terminfo', '-- ends option processing'),
+            (['TERM=xterm-kitty', 'ls'],           'with_terminfo', 'env var before command'),
+            (['TERM=xterm-kitty', '-v', 'ls'],     'no_terminfo',   'env var before -v'),
+            (['-g', 'wheel', '-v'],                'no_terminfo', '-g takes argument'),
+            (['-D', '/tmp', '-e'],                 'no_terminfo', '-D takes argument'),
+            (['-R', '/chroot', '-e'],              'no_terminfo', '-R takes argument'),
+            (['-h', 'localhost', '-v'],            'no_terminfo', '-h takes argument'),
+            (['-uroot', '-v', 'ls'],               'with_terminfo', '-u with embedded argument'),
+            (['--user', '-v', 'ls'],               'with_terminfo', '--user takes argument'),
+            (['--user=root', '-v', 'ls'],          'no_terminfo', '--user=root self-contained'),
+        ]
+        for cmd, expected, _ in test_cases:
+            func += f'\n\nsudo {" ".join(cmd)}'
+        cp = subprocess.run(shell + [func], capture_output=True)
+        self.assertEqual(cp.returncode, 0, f'{shell[0]} failed with stderr: {cp.stderr.decode()}')
+        for i, line in enumerate(cp.stdout.decode().splitlines()):
+            line = line.strip()
+            cmd, expected, desc = test_cases[i]
+            self.assertEqual(expected, line, str(cmd))
 
     @unittest.skipUnless(shutil.which('zsh'), 'zsh not installed')
     def test_zsh_integration(self):
