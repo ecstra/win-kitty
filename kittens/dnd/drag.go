@@ -230,11 +230,12 @@ func (dnd *dnd) on_drag_event(x, y, operation, Y int) (err error) {
 	case 4:
 		was_dropped := dnd.drag_status.dropped
 		was_move := dnd.drag_status.accepted_operation == 2
+		was_remote := dnd.drag_status.remote_data_was_sent
 		dnd.reset_drag()
 		if was_dropped && dnd.has_exit_on("drag-finish") {
 			dnd.lp.Quit(0)
 		}
-		if was_dropped && was_move {
+		if was_dropped && was_move && was_remote {
 			if ds := dnd.drag_sources["text/uri-list"]; ds != nil {
 				for _, item := range ds.uri_list {
 					if item.metadata.IsDir() {

@@ -69,7 +69,8 @@ They will be dragged as the text/uri-list MIME type which can then be dropped in
 file manager or similar program to copy the files.
 
 If the text/uri-list MIME type is dropped onto this window, the files and directories in it are
-copied into the current working directory.
+copied into the current working directory. When dragging from this window, if a move operation is
+performed when dropping and the drop is to a remote machine, the files and directories to drag and deleted.
 
 If data is present on STDIN it is set as text/plain when dragging, unless text/plain is specified via --drag.
 Any text/plain data that is dropped onto this window is output to STDOUT, if STDOUT is connected to a file, otherwise it
