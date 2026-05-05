@@ -467,6 +467,9 @@ func (dnd *dnd) end_drop(success bool) {
 		}
 	}
 	dnd.reset_drop()
+	if success && dnd.has_exit_on("drop-finish") {
+		dnd.lp.Quit(0)
+	}
 }
 
 func (dnd *dnd) all_drop_data_received() (err error) {

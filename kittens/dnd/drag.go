@@ -227,7 +227,11 @@ func (dnd *dnd) on_drag_event(x, y, operation, Y int) (err error) {
 	case 3:
 		dnd.drag_status.dropped = true
 	case 4:
+		was_dropped := dnd.drag_status.dropped
 		dnd.reset_drag()
+		if was_dropped && dnd.has_exit_on("drag-finish") {
+			dnd.lp.Quit(0)
+		}
 	case 5:
 		if err = dnd.handle_data_request(y, Y == 1); err != nil {
 			return err

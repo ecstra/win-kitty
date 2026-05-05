@@ -103,6 +103,15 @@ func (dnd *dnd) send_test_response(payload string) {
 	dnd.lp.DebugPrintln(payload)
 }
 
+func (dnd *dnd) has_exit_on(event string) bool {
+	for _, e := range strings.Split(dnd.opts.ExitOn, ",") {
+		if strings.TrimSpace(e) == event {
+			return true
+		}
+	}
+	return false
+}
+
 func (dnd *dnd) setup_base_dir(base_dir string) (err error) {
 	if dnd.drop_output_dir != nil {
 		dnd.drop_output_dir.Close()
@@ -281,7 +290,11 @@ func (dnd *dnd) run_loop() (err error) {
 				return dnd.drop_confirm(true)
 			}
 		}
-		if e.MatchesPressOrRepeat("ctrl+c") || e.MatchesPressOrRepeat("esc") {
+		if e.MatchesPressOrRepeat("ctrl+c") {
+			dnd.lp.Quit(0)
+			return
+		}
+		if e.MatchesPressOrRepeat("esc") && dnd.has_exit_on("esc-key") {
 			dnd.lp.Quit(0)
 			return
 		}
