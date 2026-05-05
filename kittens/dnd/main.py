@@ -50,6 +50,14 @@ default=512
 type=int
 The thumbnail size for the image used as the drag icon. Images larger than this size are downscaled.
 Note that the terminal may reject the drag if the image is too large.
+
+
+--exit-on
+default=esc-key
+A comma separated list of events to exit on. Possible events are :code:`drag-finish`,
+:code:`drop-finish` and :code:`esc-key`. The first two events refer to a successful
+completion of a drag or a drop respectively. :code:`esc-key` means press the :kbd:`Esc`
+key.
 '''.format
 
 
