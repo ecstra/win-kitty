@@ -345,6 +345,7 @@ class TestDnDKitten(BaseTest):
         dnd_test_fake_drop_data(self.capture.window_id, 'text/uri-list', move_uri)
         self.wait_for_state('last_drop_action', GLFW_DRAG_OPERATION_MOVE)
         self.wait_for_state('drop_action', 0)
+        self.roundtrip()
         if remote_client:
             # Remote move: source items must NOT be deleted (the source app handles deletion)
             self.assertTrue(os.path.exists(move_file), 'remote move: source file must not be deleted')
