@@ -4191,7 +4191,10 @@ void _glfwCocoaPostEmptyEvent(void) {
                 NSEvent *currentEvent = [NSApp currentEvent];
                 if (currentEvent && currentEvent.type == NSEventTypeKeyDown && currentEvent.keyCode == 53) {
                     ev.type = GLFW_DRAG_CANCELLED;
-                } else ev.type = GLFW_DRAG_DROPPED;
+                } else {
+                    ev.type = GLFW_DRAG_DROPPED;
+                    ev.drop_maybe_a_cancel = true;
+                }
             } break;
             default:
                 ev.type = GLFW_DRAG_DROPPED; break;
