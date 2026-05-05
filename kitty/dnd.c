@@ -1445,8 +1445,6 @@ drag_start(Window *w) {
                     uint8_t *txt = realloc(img.data, img.sz + 1);
                     if (!txt) { abrt(ENOMEM); return; }
                     img.data = txt; txt[img.sz] = '\0';
-                    // Render into a max-width buffer; draw_window_title reduces actual_width
-                    // to fit the text, using actual_width as the row stride in the buffer
                     const size_t max_width = screen->cell_size.width * screen->columns;
                     uint8_t *render_buf = malloc(max_width * render_height * 4);
                     if (!render_buf) { abrt(ENOMEM); return; }
@@ -1458,9 +1456,6 @@ drag_start(Window *w) {
                     // Shrink the buffer to the actual rendered size (data is already compact
                     // since draw_window_title uses actual_width as the row stride)
                     size_t final_sz = actual_width * render_height * 4;
-                    uint8_t *compact = realloc(render_buf, final_sz);
-                    if (!compact) { free(render_buf); abrt(ENOMEM); return; }
-                    render_buf = compact;
                     // Un-premultiply alpha: draw_window_title output is pre-multiplied RGBA
                     for (size_t j = 0; j < actual_width * render_height; j++) {
                         uint8_t *px = render_buf + j * 4;
