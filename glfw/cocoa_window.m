@@ -1590,7 +1590,7 @@ reset_drop_copy_mimes(_GLFWDropData *d) {
 
 - (NSDragOperation)draggingUpdated:(id <NSDraggingInfo>)sender
 {
-    if (!window->ns.drop_data.drag_accepted) return NSDragOperationNone;
+    if (!window->ns.drop_data.mimes_count) return NSDragOperationNone;
     const NSRect contentRect = [window->ns.view frame];
     const NSPoint pos = [sender draggingLocation];
     double xpos = pos.x;
