@@ -1871,7 +1871,7 @@ uniqify_dir_entries_for_case_insensitive_fs(DragRemoteItem *children, size_t cou
         char *lower = lowercase_copy(orig_name);
         if (!lower) continue;
         if (vt_is_end(vt_get(&seen, lower))) {
-            if (vt_is_end(vt_insert(&seen, lower))) { free(lower); break; }  // OOM
+            if (vt_is_end(vt_insert(&seen, lower))) { free(lower); continue; }  // OOM, skip tracking this entry
             continue;
         }
         free(lower);
