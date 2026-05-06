@@ -25,7 +25,7 @@ Only the first chunk is guaranteed to have metadata other than the ``m`` key.
 Subsequent chunks may optionally omit all
 metadata except the ``m`` and ``i`` keys. While a chunked transfer is in
 progress it is a protocol error to for the sending side to
-send any protocol related escape codes other than chunked ones.
+send any protocol related escape codes other than chunked ones or query (``t=q|Q``) ones.
 In particular, this means that the receiving side should use the metadata from
 the first chunk in a chain of chunks only.
 
@@ -438,6 +438,28 @@ inform the client of it with::
 The error code for too many resources is ``EMFILE`` for IO errors is ``EIO``
 and so on.
 
+Detecting support for this protocol
+-------------------------------------
+
+Clients can query the terminal emulator for support of this protocol
+using::
+
+    OSC _dnd_code ; t=q:i=optional ST
+
+The ``i`` key is optional, if present it will be echoed back in the responses
+from the terminal. A terminal supporting this protocol **must** respond with::
+
+    OSC _dnd_code ; t=q:i=echoed ; payload ST
+
+Here, ``payload`` is a colon separated list of ``key=value`` pairs. These
+specify support for optional/future parts of this protocol. Currently the
+payload is empty, but that might change as the protocol evolves.
+
+The client should send these escape codes followed by a request for the `primary device
+attributes <https://vt100.net/docs/vt510-rm/DA1.html>`_. If a response for the
+device attributes is received before a response for the queries, then the
+terminal does not support this protocol.
+
 Multiplexers
 -----------------
 
@@ -469,6 +491,7 @@ Key      Value                 Default    Description
                                           ``e`` - a drag offer event occurred
                                           ``E`` - a drag offer data error occurred
                                           ``k`` - data for uri-list items in drag offer
+                                          ``q`` - query support for this protocol
 
 ``m``    Chunking indicator    ``0``      ``0`` or ``1``
 

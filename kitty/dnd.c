@@ -294,6 +294,13 @@ queue_payload_to_child(id_type id, uint32_t client_id, PendingData *pending, con
     if (pending->count) check_for_pending_writes();
 }
 
+void
+dnd_query(Window *w, uint32_t client_id) {
+    char buf[64];
+    ssize_t header_size = snprintf(buf, sizeof(buf), "\x1b]%d;t=q", DND_CODE);
+    send_payload_to_child(w->id, client_id, buf, header_size, NULL, 0, false);
+}
+
 static bool
 is_same_machine(const char *client_machine_id, size_t sz) {
     if (!sz || !client_machine_id) return true;

@@ -1583,6 +1583,9 @@ screen_handle_dnd_command(Screen *self, const DnDCommand *cmd_, const uint8_t *p
             drag_remote_file_data(
                 w, cmd->cell_x, cmd->cell_y, cmd->pixel_x, cmd->pixel_y, cmd->more != 0, payload, cmd->payload_sz);
         } break;
+        case 'q': {
+            dnd_query(w, cmd->client_id);
+        } break;
     }
 }
 

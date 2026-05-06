@@ -8,6 +8,7 @@
 
 #include "state.h"
 
+void dnd_query(Window *w, uint32_t client_id);
 
 void drop_register_window(Window *w, const uint8_t *payload, size_t payload_sz, bool on, uint32_t client_id, bool more);
 void drop_register_machine_id(Window *w, const uint8_t *machine_id, size_t sz);
