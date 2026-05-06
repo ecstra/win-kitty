@@ -153,7 +153,8 @@ detect_tempdir_case_sensitivity(const char *tempdir_path) {
     if (!basename_len) return;
     char upper_basename[PATH_MAX];
     if (basename_len >= sizeof(upper_basename)) return;
-    for (size_t i = 0; i <= basename_len; i++) upper_basename[i] = (char)toupper((unsigned char)basename[i]);
+    for (size_t i = 0; i < basename_len; i++) upper_basename[i] = (char)toupper((unsigned char)basename[i]);
+    upper_basename[basename_len] = '\0';
     if (strcmp(upper_basename, basename) == 0) return;  // already all-uppercase, cannot distinguish
     char upper_path[PATH_MAX];
     if (dirname_len + 1 + basename_len + 1 > sizeof(upper_path)) return;
@@ -1850,7 +1851,8 @@ lowercase_copy(const char *s) {
     size_t len = strlen(s);
     char *ans = malloc(len + 1);
     if (!ans) return NULL;
-    for (size_t i = 0; i <= len; i++) ans[i] = (char)tolower((unsigned char)s[i]);
+    for (size_t i = 0; i < len; i++) ans[i] = (char)tolower((unsigned char)s[i]);
+    ans[len] = '\0';
     return ans;
 }
 
