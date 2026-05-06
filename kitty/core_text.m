@@ -952,7 +952,7 @@ cocoa_render_line_of_text(const char *text, const color_type fg, const color_typ
 
     CGContextSetShouldAntialias(ctx, true);
     CGContextSetShouldSmoothFonts(ctx, true);  // sub-pixel antialias
-    CGContextSetRGBFillColor(ctx, ((bg >> 16) & 0xff) / 255.f, ((bg >> 8) & 0xff) / 255.f, (bg & 0xff) / 255.f, 1.f);
+    CGContextSetRGBFillColor(ctx, ((bg >> 16) & 0xff) / 255.f, ((bg >> 8) & 0xff) / 255.f, (bg & 0xff) / 255.f, ((bg >> 24) & 0xff) / 255.f);
     CGContextFillRect(ctx, CGRectMake(0.0, 0.0, width, height));
     CGContextSetTextDrawingMode(ctx, kCGTextFill);
     CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
