@@ -44,6 +44,14 @@ def client_unregister(client_id: int = 0) -> bytes:
     return _osc(meta)
 
 
+def client_query(client_id: int = 0) -> bytes:
+    """Escape code a client sends to query protocol support (t=q)."""
+    meta = f'{DND_CODE};t=q'
+    if client_id:
+        meta += f':i={client_id}'
+    return _osc(meta)
+
+
 def client_accept(operation: int, mimes: str = '', client_id: int = 0) -> bytes:
     """Escape code a client sends to signal acceptance of the current drop (t=m:o=…)."""
     meta = f'{DND_CODE};t=m:o={operation}'
@@ -3132,3 +3140,38 @@ class TestDnDProtocol(BaseTest):
             parse_bytes(screen, client_remote_file_finish())
             self._assert_no_output(cap)
             # No crash or leak - cleanup happens in context manager exit
+
+    # ---- query tests --------------------------------------------------------
+
+    def test_query_response(self) -> None:
+        """Sending t=q without a client_id yields a t=q response with no payload."""
+        with dnd_test_window() as (screen, cap):
+            parse_bytes(screen, client_query())
+            events = self._get_events(cap)
+            self.assertEqual(len(events), 1, events)
+            ev = events[0]
+            self.ae(ev['type'], 'q')
+            self.ae(ev['payload'], b'')
+            self.assertNotIn('i', ev['meta'])
+
+    def test_query_response_with_client_id(self) -> None:
+        """Sending t=q:i=N yields a t=q response with the client_id echoed."""
+        client_id = 77
+        with dnd_test_window() as (screen, cap):
+            parse_bytes(screen, client_query(client_id))
+            events = self._get_events(cap)
+            self.assertEqual(len(events), 1, events)
+            ev = events[0]
+            self.ae(ev['type'], 'q')
+            self.ae(ev['meta'].get('i'), str(client_id))
+            self.ae(ev['payload'], b'')
+
+    def test_query_works_without_registration(self) -> None:
+        """A query can be issued even without registering for drops."""
+        with dnd_test_window() as (screen, cap):
+            # Explicitly unregister so the window is not listening for drops.
+            parse_bytes(screen, client_unregister())
+            parse_bytes(screen, client_query())
+            events = self._get_events(cap)
+            self.assertEqual(len(events), 1, events)
+            self.ae(events[0]['type'], 'q')
