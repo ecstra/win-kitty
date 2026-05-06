@@ -11,6 +11,7 @@
 #include "safe-wrappers.h"
 #include "iqsort.h"
 #include "png-reader.h"
+#include <ctype.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -135,6 +136,33 @@ mktempdir_in_cache(const char *prefix, int *fd) {
     if (PyErr_Occurred()) PyErr_Print();
     errno = EIO;
     return NULL;
+}
+
+// -1 = unknown, 0 = case-sensitive, 1 = case-insensitive
+static int tempdir_case_insensitive = -1;
+
+static void
+detect_tempdir_case_sensitivity(const char *tempdir_path) {
+    if (tempdir_case_insensitive >= 0) return;
+    tempdir_case_insensitive = 0;  // default: case-sensitive
+    const char *slash = strrchr(tempdir_path, '/');
+    if (!slash) return;
+    size_t dirname_len = (size_t)(slash - tempdir_path);
+    const char *basename = slash + 1;
+    size_t basename_len = strlen(basename);
+    if (!basename_len) return;
+    char upper_basename[PATH_MAX];
+    if (basename_len >= sizeof(upper_basename)) return;
+    for (size_t i = 0; i < basename_len; i++) upper_basename[i] = (char)toupper((unsigned char)basename[i]);
+    upper_basename[basename_len] = '\0';
+    if (strcmp(upper_basename, basename) == 0) return;  // already all-uppercase, cannot distinguish
+    char upper_path[PATH_MAX];
+    if (dirname_len + 1 + basename_len + 1 > sizeof(upper_path)) return;
+    memcpy(upper_path, tempdir_path, dirname_len);
+    upper_path[dirname_len] = '/';
+    memcpy(upper_path + dirname_len + 1, upper_basename, basename_len + 1);
+    struct stat st;
+    if (stat(upper_path, &st) == 0) tempdir_case_insensitive = 1;
 }
 
 static char*
@@ -1818,6 +1846,66 @@ finish_remote_data(Window *w, size_t item_idx) {
 
 #define mi ds.items[mime_item_idx]
 
+static char*
+lowercase_copy(const char *s) {
+    size_t len = strlen(s);
+    char *ans = malloc(len + 1);
+    if (!ans) return NULL;
+    for (size_t i = 0; i < len; i++) ans[i] = (char)tolower((unsigned char)s[i]);
+    ans[len] = '\0';
+    return ans;
+}
+
+static bool
+has_lowercase_conflict(const char *lower_name, char **seen_lower, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(lower_name, seen_lower[i]) == 0) return true;
+    }
+    return false;
+}
+
+static void
+uniqify_dir_entries_for_case_insensitive_fs(DragRemoteItem *children, size_t count) {
+    if (!count) return;
+    char **seen_lower = calloc(count, sizeof(char*));
+    if (!seen_lower) return;
+    size_t seen_count = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (!children[i].dir_entry_name) continue;
+        const char *orig_name = children[i].dir_entry_name;
+        char *lower = lowercase_copy(orig_name);
+        if (!lower) continue;
+        if (!has_lowercase_conflict(lower, seen_lower, seen_count)) {
+            seen_lower[seen_count++] = lower;
+            continue;
+        }
+        free(lower);
+        bool renamed = false;
+        for (int q = 1; q <= 1000; q++) {
+            size_t buflen = 26 + strlen(orig_name);  // "case-conflict-" + 10 digits + "-" + name + null
+            char *new_name = malloc(buflen);
+            if (!new_name) break;
+            snprintf(new_name, buflen, "case-conflict-%d-%s", q, orig_name);
+            lower = lowercase_copy(new_name);
+            if (!lower) { free(new_name); break; }
+            if (!has_lowercase_conflict(lower, seen_lower, seen_count)) {
+                free(children[i].dir_entry_name);
+                children[i].dir_entry_name = new_name;
+                seen_lower[seen_count++] = lower;
+                renamed = true;
+                break;
+            }
+            free(lower); free(new_name);
+        }
+        if (!renamed) {
+            lower = lowercase_copy(children[i].dir_entry_name);
+            if (lower) seen_lower[seen_count++] = lower;
+        }
+    }
+    for (size_t i = 0; i < seen_count; i++) free(seen_lower[i]);
+    free(seen_lower);
+}
+
 static void
 populate_dir_entries(Window *w, DragRemoteItem *ri) {
     size_t num = count_occurrences((char*)ri->data, ri->data_sz, 0) + 1;
@@ -1836,6 +1924,8 @@ populate_dir_entries(Window *w, DragRemoteItem *ri) {
         }
         ptr = p ? p + 1 : end;
     }
+    if (tempdir_case_insensitive == 1)
+        uniqify_dir_entries_for_case_insensitive_fs(ri->children, ri->children_sz);
 }
 
 static void
@@ -1914,6 +2004,7 @@ toplevel_data_for_drag(
         mi.base_dir_for_remote_items = mktempdir_in_cache("dnd-drag-", &fd);
         if (!mi.base_dir_for_remote_items) abrt(errno);
         mi.base_dir_fd_plus_one = fd + 1;
+        detect_tempdir_case_sensitivity(mi.base_dir_for_remote_items);
     }
     if (uri_item_idx >= mi.num_remote_items) abrt(EINVAL);
     DragRemoteItem *ri = mi.remote_items + uri_item_idx;
