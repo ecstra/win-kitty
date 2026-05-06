@@ -11,6 +11,10 @@
 #include "safe-wrappers.h"
 #include "iqsort.h"
 #include "png-reader.h"
+#define NAME lower_str_set
+#define KEY_TY char*
+#define KEY_DTOR_FN free
+#include "kitty-verstable.h"
 #include <ctype.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -1856,27 +1860,18 @@ lowercase_copy(const char *s) {
     return ans;
 }
 
-static bool
-has_lowercase_conflict(const char *lower_name, char **seen_lower, size_t count) {
-    for (size_t i = 0; i < count; i++) {
-        if (strcmp(lower_name, seen_lower[i]) == 0) return true;
-    }
-    return false;
-}
-
 static void
 uniqify_dir_entries_for_case_insensitive_fs(DragRemoteItem *children, size_t count) {
     if (!count) return;
-    char **seen_lower = calloc(count, sizeof(char*));
-    if (!seen_lower) return;
-    size_t seen_count = 0;
+    lower_str_set seen;
+    vt_init(&seen);
     for (size_t i = 0; i < count; i++) {
         if (!children[i].dir_entry_name) continue;
         const char *orig_name = children[i].dir_entry_name;
         char *lower = lowercase_copy(orig_name);
         if (!lower) continue;
-        if (!has_lowercase_conflict(lower, seen_lower, seen_count)) {
-            seen_lower[seen_count++] = lower;
+        if (vt_is_end(vt_get(&seen, lower))) {
+            if (vt_is_end(vt_insert(&seen, lower))) { free(lower); continue; }  // OOM, skip tracking this entry
             continue;
         }
         free(lower);
@@ -1888,10 +1883,10 @@ uniqify_dir_entries_for_case_insensitive_fs(DragRemoteItem *children, size_t cou
             snprintf(new_name, buflen, "case-conflict-%d-%s", q, orig_name);
             lower = lowercase_copy(new_name);
             if (!lower) { free(new_name); break; }
-            if (!has_lowercase_conflict(lower, seen_lower, seen_count)) {
+            if (vt_is_end(vt_get(&seen, lower))) {
                 free(children[i].dir_entry_name);
                 children[i].dir_entry_name = new_name;
-                seen_lower[seen_count++] = lower;
+                if (vt_is_end(vt_insert(&seen, lower))) { free(lower); break; }  // OOM
                 renamed = true;
                 break;
             }
@@ -1899,11 +1894,12 @@ uniqify_dir_entries_for_case_insensitive_fs(DragRemoteItem *children, size_t cou
         }
         if (!renamed) {
             lower = lowercase_copy(children[i].dir_entry_name);
-            if (lower) seen_lower[seen_count++] = lower;
+            if (lower) {
+                if (vt_is_end(vt_insert(&seen, lower))) free(lower);  // OOM
+            }
         }
     }
-    for (size_t i = 0; i < seen_count; i++) free(seen_lower[i]);
-    free(seen_lower);
+    vt_cleanup(&seen);
 }
 
 static void
