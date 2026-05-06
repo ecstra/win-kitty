@@ -168,6 +168,7 @@ func (dnd *dnd) run_loop() (err error) {
 	if dnd.lp, err = loop.New(); err != nil {
 		return err
 	}
+	dnd.lp.MouseTrackingMode(loop.BUTTONS_AND_DRAG_MOUSE_TRACKING)
 	dnd.reset_drop()
 
 	dnd.lp.OnInitialize = func() (string, error) {
