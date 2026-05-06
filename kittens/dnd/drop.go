@@ -112,7 +112,7 @@ type remote_dir_entry struct {
 const case_conflict_template = "case-conflict-%d-%s"
 
 func uniqify_child_names(names []string, is_case_sensitive_filesystem bool) []string {
-	if is_case_sensitive_filesystem {
+	if !is_case_sensitive_filesystem {
 		seen := utils.NewSet[string](len(names))
 		for i, x := range names {
 			name := x
@@ -349,7 +349,7 @@ func (d *remote_dir_entry) add_remote_data(data []byte, output_buf []byte, has_m
 					handle := new_dir_handle(f)
 					defer handle.unref()
 					s := utils.NewSeparatorScanner("", "\x00")
-					for _, name := range uniqify_child_names(s.Split(dest.String()), !is_case_sensitive_filesystem) {
+					for _, name := range uniqify_child_names(s.Split(dest.String()), is_case_sensitive_filesystem) {
 						d.children = append(d.children, &remote_dir_entry{name: name, base_dir: handle.newref()})
 					}
 				}
