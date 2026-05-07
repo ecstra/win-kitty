@@ -9,6 +9,14 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+Drag and drop for terminal programs [0.47]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+kitty now has a new :doc:`/kittens/dnd` kitten that allows you to seamlessly
+drag and drop files between kitty and any GUI program like the OS file manager
+or a webapp. It even works over SSH! It is powered by a new :doc:`protocol
+</dnd-protocol>` allowing the use of drag and drop from any TUI program.
+
 Mousing [0.46]
 ~~~~~~~~~~~~~~~
 
@@ -167,6 +175,8 @@ Detailed list of changes
 
 0.47.0 [future]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- A new :doc:`Drag and drop kitten </kittens/dnd>` to allow drag and drop of files from your shell to any GUI program even across SSH (:iss:`9984`)
 
 - A new option :opt:`palette_generate` to automatically generate the 256 color palette from the first 16 colors (:pull:`9426`)
 
