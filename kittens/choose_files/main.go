@@ -903,6 +903,10 @@ func main(_ *cli.Command, opts *Options, args []string) (rc int, err error) {
 				m = string(b)
 			}
 			os.Stdout.Write(utils.UnsafeStringToBytes(m))
+			if tty.IsTerminal(os.Stdout.Fd()) && opts.OutputFormat == "text" {
+				// Avoid zsh's silly no trailing newline marker
+				os.Stdout.WriteString("\n")
+			}
 			if opts.WriteOutputTo != "" {
 				os.WriteFile(opts.WriteOutputTo, utils.UnsafeStringToBytes(m), 0600)
 			}

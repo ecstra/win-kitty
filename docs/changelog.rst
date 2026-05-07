@@ -262,6 +262,8 @@ Detailed list of changes
 
 - Linux: Workaround bug in Nvidia drivers that caused color corruption when resuming after suspend (:iss:`9844`)
 
+- choose-files kitten: Output a trailing newline when writing to a tty in text format (:iss:`9982`)
+
 
 0.46.2 [2026-03-21]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
