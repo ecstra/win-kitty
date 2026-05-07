@@ -204,9 +204,9 @@ Detailed list of changes
 
 - Fix thickness of diagonal lines in box drawing characters not the same as horizontal/vertical lines (:iss:`9719`)
 
-- Graphics protocol: Fix crash when handling invalid PNG image with direct transmission
+- Graphics protocol: Fix crash when handling invalid PNG image with direct transmission (:cve:`2026-33633`)
 
-- Graphics protocol: Fix crash when handling invalid offset values in graphics compose commands
+- Graphics protocol: Fix crash when handling invalid offset values in graphics compose commands (:cve:`2026-33642`)
 
 - X11: Fix a regression in the previous release that caused an occasional crash on input device removal (:iss:`9723`)
 
@@ -238,7 +238,7 @@ Detailed list of changes
 
 - Password input in kittens: hide the cursor and display a blinking 🔒 at the end of typed characters to make it visually clear the user is entering a password
 
-- edit-in-kitty: Ignore environment variables as some editors execute code present in env vars. Similarly ignore conf file specifications for colors.
+- edit-in-kitty: Ignore environment variables as some editors execute code present in env vars. Similarly ignore conf file specifications for colors (:cve:`2026-42851`)
 
 - Command palette :sc:`command_palette`: nicer grouping of aliases and combined actions (:pull:`9819`)
 
@@ -273,6 +273,8 @@ Detailed list of changes
 - Linux: Workaround bug in Nvidia drivers that caused color corruption when resuming after suspend (:iss:`9844`)
 
 - choose-files kitten: Output a trailing newline when writing to a tty in text format (:iss:`9982`)
+
+- ssh kitten: Sanitize user controlled data in error messages that might leak to shell (:cve:`2026-42850`)
 
 
 0.46.2 [2026-03-21]
