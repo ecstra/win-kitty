@@ -4148,6 +4148,7 @@ static void schedule_drag_finish_timer(void);
 static GLFWid drag_finish_window_id = 0;
 static GLFWDragOperationType drag_finish_action = 0;
 static NSTimer *drag_finish_timer = nil;
+#define DRAG_FINISH_TIMEOUT_SECONDS 2.0
 
 @implementation GLFWDraggingSource
 - (NSDragOperation)draggingSession:(NSDraggingSession*)session
@@ -4250,7 +4251,7 @@ schedule_drag_finish_timer(void) {
         [drag_finish_timer invalidate];
         drag_finish_timer = nil;
     }
-    drag_finish_timer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:NO block:^(NSTimer *t UNUSED) {
+    drag_finish_timer = [NSTimer scheduledTimerWithTimeInterval:DRAG_FINISH_TIMEOUT_SECONDS repeats:NO block:^(NSTimer *t UNUSED) {
         drag_finish_timer = nil;
         fire_drag_finished();
     }];
