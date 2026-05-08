@@ -13,6 +13,7 @@ from .child import Child
 from .cli import parse_args
 from .cli_stub import LaunchCLIOptions
 from .clipboard import set_clipboard_string, set_primary_selection
+from .constants import is_wayland
 from .fast_data_types import add_timer, get_boss, get_options, get_os_window_title, patch_color_profiles
 from .options.utils import env as parse_env
 from .tabs import Tab, TabManager
@@ -358,6 +359,12 @@ choices=normal,fullscreen,maximized,minimized
 The initial state for the newly created OS Window.
 
 
+--os-window-position
+The position, for example :code:`10x20`, on screen at which to place the newly
+created OS Window. This may or may not work depending on the policies of the
+desktop environment/window manager. It never works on Wayland.
+
+
 --logo
 completion=type:file ext:png group:"PNG images" relative:conf
 Path to a PNG image to use as the logo for the newly created window. See
@@ -455,6 +462,13 @@ def layer_shell_config_from_panel_opts(panel_opts: Iterable[str]) -> LayerShellC
     return layer_shell_config(opts)
 
 
+def parse_os_window_position(position: str) -> tuple[int | None, int | None]:
+    if not position or is_wayland():
+        return None, None
+    x, _, y = position.lower().partition('x')
+    return int(x), int(y)
+
+
 def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, next_to: Window | None, add_to_session: str) -> Tab:
 
     def create_tab(tm: TabManager | None = None) -> Tab:
@@ -462,11 +476,13 @@ def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, n
             if opts.type == 'os-panel':
                 oswid = boss.add_os_panel(layer_shell_config_from_panel_opts(opts.os_panel), opts.os_window_class, opts.os_window_name)
             else:
+                x, y = parse_os_window_position(opts.os_window_position)
                 oswid = boss.add_os_window(
                     wclass=opts.os_window_class,
                     wname=opts.os_window_name,
                     window_state=opts.os_window_state,
-                    override_title=opts.os_window_title or None)
+                    override_title=opts.os_window_title or None,
+                    x=x, y=y)
             tm = boss.os_window_map[oswid]
         tab = tm.new_tab(empty_tab=True, location=opts.location)
         if opts.tab_title:
@@ -871,7 +887,7 @@ def clone_safe_opts() -> frozenset[str]:
     return frozenset((
         'window_title', 'tab_title', 'type', 'keep_focus', 'cwd', 'var', 'hold',
         'location', 'os_window_class', 'os_window_name', 'os_window_title', 'os_window_state',
-        'logo', 'logo_position', 'logo_alpha', 'spacing', 'next_to', 'hold_after_ssh'
+        'os_window_position', 'logo', 'logo_position', 'logo_alpha', 'spacing', 'next_to', 'hold_after_ssh'
     ))
 
 

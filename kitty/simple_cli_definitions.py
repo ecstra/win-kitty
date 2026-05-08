@@ -490,7 +490,8 @@ specified in the session file gets overriden.
 
 
 --position
-The position, for example 10x20, on screen at which to place the first kitty OS Window.
+The position, for example 10x20, on screen at which to place the first kitty OS Window
+created by this invocation.
 This may or may not work depending on the policies of the desktop
 environment/window manager. It never works on Wayland.
 See also :opt:`remember_window_position` to have kitty automatically try
