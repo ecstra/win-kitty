@@ -289,7 +289,8 @@ def _run_app(opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (),
                 if cached_workarea and glfw_get_monitor_workarea() == tuple(cached_workarea):
                     pos_x, pos_y = cached_values.get('window-pos', (None, None))
             if args.position:
-                pos_x, pos_y = map(int, args.position.lower().partition('x')[::2])
+                from .launch import parse_os_window_position
+                pos_x, pos_y = parse_os_window_position(args.position)
         startup_session_error: tuple[Exception, str] | None = None
         try:
             startup_sessions = tuple(create_sessions(opts, args, default_session=opts.startup_session))

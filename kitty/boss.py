@@ -956,9 +956,8 @@ class Boss:
                 args.session = ''
             if not os.path.isabs(args.directory):
                 args.directory = os.path.join(data['cwd'], args.directory)
-            pos_x, pos_y = None, None
-            if args.position and not is_wayland():
-                pos_x, pos_y = map(int, args.position.lower().partition('x')[::2])
+            from .launch import parse_os_window_position
+            pos_x, pos_y = (None, None) if is_wayland() else parse_os_window_position(args.position)
             from .child import process_env
             clean_env = process_env(data['environ'])
             focused_os_window = os_window_id = 0
