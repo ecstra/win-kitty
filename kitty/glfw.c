@@ -3079,6 +3079,7 @@ start_window_drag(Window *w, bool in_test_mode) {
         items[i].mime_type = w->drag_source.items[i].mime_type;
         items[i].optional_data = (char*)w->drag_source.items[i].optional_data;
         items[i].data_size = w->drag_source.items[i].data_size;
+        items[i].is_remote_client = w->drag_source.is_remote_client;
     }
     size_t num_images = 0;
     for (size_t i = 0; i < arraysz(w->drag_source.images); i++) if (w->drag_source.images[i].data) num_images++;

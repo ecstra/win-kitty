@@ -1827,6 +1827,7 @@ typedef struct GLFWDragSourceItem {
     // Can be on null to provide data when the drag is started should be used only when the data is relatively small
     const char *optional_data;
     size_t data_size;
+    bool is_remote_client;
 } GLFWDragSourceItem;
 
 typedef struct GLFWDragEvent {
