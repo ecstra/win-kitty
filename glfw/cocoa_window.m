@@ -4141,6 +4141,14 @@ void _glfwCocoaPostEmptyEvent(void) {
 }
 
 // Drag source implementation {{{
+
+// Forward declarations for drag-finish helpers used in GLFWDraggingSource methods
+static void fire_drag_finished(void);
+static void schedule_drag_finish_timer(void);
+static GLFWid drag_finish_window_id = 0;
+static GLFWDragOperationType drag_finish_action = 0;
+static NSTimer *drag_finish_timer = nil;
+
 @implementation GLFWDraggingSource
 - (NSDragOperation)draggingSession:(NSDraggingSession*)session
                    sourceOperationMaskForDraggingContext:(NSDraggingContext)context
@@ -4200,12 +4208,53 @@ void _glfwCocoaPostEmptyEvent(void) {
                 ev.type = GLFW_DRAG_DROPPED; break;
         }
         _glfwInputDragSourceRequest(window, &ev);
-        if (operation == NSDragOperationNone) _glfwFreeDragSourceData();
+        if (ev.type == GLFW_DRAG_DROPPED) {
+            drag_finish_window_id = _glfw.drag.window_id;
+            drag_finish_action = ev.action;
+            if (operation == NSDragOperationNone || !file_promise_providers || [file_promise_providers count] == 0) {
+                fire_drag_finished();
+            } else {
+                schedule_drag_finish_timer();
+            }
+        } else {
+            if (operation == NSDragOperationNone) _glfwFreeDragSourceData();
+        }
     }
 }
 @end
 
 static NSMutableArray<GLFWFilePromiseProviderDelegate*> *file_promise_providers = nil;
+
+static void
+fire_drag_finished(void) {
+    if (drag_finish_timer) {
+        [drag_finish_timer invalidate];
+        drag_finish_timer = nil;
+    }
+    if (!drag_finish_window_id) return;
+    GLFWid wid = drag_finish_window_id;
+    GLFWDragOperationType action = drag_finish_action;
+    drag_finish_window_id = 0;
+    drag_finish_action = 0;
+    _GLFWwindow *window = _glfwWindowForId(wid);
+    if (window) {
+        GLFWDragEvent ev = {.type=GLFW_DRAG_FINSHED, .action=action};
+        _glfwInputDragSourceRequest(window, &ev);
+    }
+    _glfwFreeDragSourceData();
+}
+
+static void
+schedule_drag_finish_timer(void) {
+    if (drag_finish_timer) {
+        [drag_finish_timer invalidate];
+        drag_finish_timer = nil;
+    }
+    drag_finish_timer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:NO block:^(NSTimer *t UNUSED) {
+        drag_finish_timer = nil;
+        fire_drag_finished();
+    }];
+}
 
 static int
 set_image_for_dragging_item(NSDraggingItem *draggingItem, const GLFWimage *thumbnail, NSWindow *window) {
@@ -4386,6 +4435,13 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
         completion_handler = nil;
     }
     [file_promise_providers removeObject:self];
+    if (drag_finish_window_id) {
+        if (!file_promise_providers || [file_promise_providers count] == 0) {
+            fire_drag_finished();
+        } else {
+            schedule_drag_finish_timer();
+        }
+    }
 }
 
 - (void)end_transfer:(int)errorCode {
@@ -4500,6 +4556,12 @@ _glfwPlatformCancelDrag(_GLFWwindow* window UNUSED) {@autoreleasepool{
 
 void
 _glfwPlatformFreeDragSourceData(void) {
+    if (drag_finish_timer) {
+        [drag_finish_timer invalidate];
+        drag_finish_timer = nil;
+    }
+    drag_finish_window_id = 0;
+    drag_finish_action = 0;
     if (_glfw.ns.drag_session) [_glfw.ns.drag_session release];
     _glfw.ns.drag_session = nil;
     if (_glfw.ns.drag_view) [_glfw.ns.drag_view release];
