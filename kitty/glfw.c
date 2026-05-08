@@ -3077,9 +3077,18 @@ start_window_drag(Window *w, bool in_test_mode) {
     if (!items) return ENOMEM;
     for (size_t i = 0; i < w->drag_source.num_mimes; i++) {
         items[i].mime_type = w->drag_source.items[i].mime_type;
+        items[i].is_remote_client = w->drag_source.is_remote_client;
         items[i].optional_data = (char*)w->drag_source.items[i].optional_data;
         items[i].data_size = w->drag_source.items[i].data_size;
-        items[i].is_remote_client = w->drag_source.is_remote_client;
+#ifndef __APPLE__
+        if (w->drag_source.is_remote_client && w->drag_source.items[i].is_uri_list) {
+            // On platforms other than macOS we treat the request for data for
+            // this MIME type as a trigger to start remote download. On macOS
+            // requests for individual items from this list will come in.
+            items[i].optional_data = NULL;
+            items[i].data_size = 0;
+        }
+#endif
     }
     size_t num_images = 0;
     for (size_t i = 0; i < arraysz(w->drag_source.images); i++) if (w->drag_source.images[i].data) num_images++;

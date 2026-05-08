@@ -417,8 +417,12 @@ func (d *drop_status) reset() {
 
 func (d *drop_dest) reset() {
 	if d.dest != nil && d.dest != os.Stdout {
-		d.dest.Close()
-		d.dest = nil
+		if d.close_on_finish {
+			d.dest.Close()
+			d.dest = nil
+		} else {
+			d.dest.(*bufferWriteCloser).Reset()
+		}
 	}
 	d.completed = false
 	d.close_on_finish = false
@@ -768,7 +772,6 @@ func (dnd *dnd) on_drop_data(cmd DC) error {
 		if err := dest.finish(); err != nil {
 			return err
 		}
-		dest.completed = true
 		if mime == "text/uri-list" {
 			b := dest.dest.(*bufferWriteCloser)
 			var err error
