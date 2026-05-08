@@ -4258,6 +4258,73 @@ set_image_for_dragging_item(NSDraggingItem *draggingItem, const GLFWimage *thumb
     return 0;
 }
 
+static int
+add_drag_item(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dragItems, NSDraggingItem* dragItem, const GLFWimage *thumbnail) {
+    if (dragItems.count == 0 && thumbnail && thumbnail->pixels) {
+        int err = set_image_for_dragging_item(dragItem, thumbnail, window->ns.object);
+        if (err) return err;
+    } else {
+        [dragItem setDraggingFrame:NSMakeRect(0, 0, 32, 32) contents:nil];
+    }
+    [dragItems addObject:dragItem];
+    return 0;
+}
+
+static int
+add_uri_list_drag_items(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dragItems, const char *uri_list, size_t uri_list_sz, bool use_promises, const GLFWimage *thumbnail) {
+    NSString *input = [[[NSString alloc] initWithBytes:uri_list length:uri_list_sz encoding:NSUTF8StringEncoding] autorelease];
+    NSArray *lines = [input componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    id dragItem; int count = 0; char buf[256];
+    for (NSString *rawLine in lines) {
+        NSString *line = [rawLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if (line.length == 0 || [line hasPrefix:@"#"]) continue;
+        NSURL *url = [NSURL URLWithString:line];
+        if (use_promises && [[url scheme] caseInsensitiveCompare:@"file"] == NSOrderedSame) {
+            NSString *extension = [url pathExtension];
+            UTType *type = [UTType typeWithFilenameExtension:extension];
+            if (!type) type = UTTypeItem;
+            snprintf(buf, sizeof(buf), "text/uri-list:%d", count);
+            GLFWFilePromiseProviderDelegate* delegate = [[[GLFWFilePromiseProviderDelegate alloc]
+                initWithWindow:window mimeType:buf instanceId:_glfw.drag.instance_id] autorelease];
+            NSFilePromiseProvider *provider = [[[NSFilePromiseProvider alloc]
+                initWithFileType:type.identifier delegate:delegate] autorelease];
+            // Store the delegate in the provider's user info so it's retained
+            provider.userInfo = delegate;
+            dragItem = provider;
+        } else dragItem = [[[NSDraggingItem alloc] initWithPasteboardWriter:url] autorelease];
+        int err = add_drag_item(window, dragItems, dragItem, thumbnail);
+        if (err) return err;
+        count++;
+    }
+    return 0;
+}
+
+static int
+add_drag_items(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dragItems, GLFWDragSourceItem *mime_item, const GLFWimage *thumbnail) {
+    if (strcmp(mime_item->mime_type, "text/uri-list") == 0 && mime_item->optional_data && mime_item->data_size) {
+        return add_uri_list_drag_items(window, dragItems, mime_item->optional_data, mime_item->data_size, mime_item->is_remote_client, thumbnail);
+    }
+    NSString* utiString = mime_to_uti(mime_item->mime_type);
+    id w;
+    if (mime_item->optional_data) {
+        NSPasteboardItem *pbItem = [[[NSPasteboardItem alloc] init] autorelease];
+        NSData *data = [NSData dataWithBytes:mime_item->optional_data length:mime_item->data_size];
+        [pbItem setData:data forType:utiString];
+        w = pbItem;
+    } else {
+        // Create file promise provider with our delegate
+        GLFWFilePromiseProviderDelegate* delegate = [[[GLFWFilePromiseProviderDelegate alloc]
+            initWithWindow:window mimeType:mime_item->mime_type instanceId:_glfw.drag.instance_id] autorelease];
+        NSFilePromiseProvider *provider = [[[NSFilePromiseProvider alloc]
+            initWithFileType:utiString delegate:delegate] autorelease];
+        // Store the delegate in the provider's user info so it's retained
+        provider.userInfo = delegate;
+        w = provider;
+    }
+    NSDraggingItem* dragItem = [[[NSDraggingItem alloc] initWithPasteboardWriter:w] autorelease];
+    return add_drag_item(window, dragItems, dragItem, thumbnail);
+}
+
 
 int
 _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autoreleasepool{
@@ -4292,32 +4359,8 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
     GLFWContentView *v = window->ns.view;
     NSMutableArray<NSDraggingItem*>* dragItems = [[[NSMutableArray alloc] init] autorelease];
     for (size_t i = 0; i < _glfw.drag.item_count; i++) {
-        NSString* utiString = mime_to_uti(_glfw.drag.items[i].mime_type);
-        id w;
-        if (_glfw.drag.items[i].optional_data) {
-            NSPasteboardItem *pbItem = [[[NSPasteboardItem alloc] init] autorelease];
-            NSData *data = [NSData dataWithBytes:_glfw.drag.items[i].optional_data length:_glfw.drag.items[i].data_size];
-            [pbItem setData:data forType:utiString];
-            w = pbItem;
-        } else {
-            // Create file promise provider with our delegate
-            GLFWFilePromiseProviderDelegate* delegate = [[[GLFWFilePromiseProviderDelegate alloc]
-                initWithWindow:window mimeType:_glfw.drag.items[i].mime_type instanceId:_glfw.drag.instance_id] autorelease];
-            NSFilePromiseProvider *provider = [[[NSFilePromiseProvider alloc]
-                initWithFileType:utiString delegate:delegate] autorelease];
-            // Store the delegate in the provider's user info so it's retained
-            provider.userInfo = delegate;
-            w = provider;
-        }
-        NSDraggingItem* dragItem = [[[NSDraggingItem alloc] initWithPasteboardWriter:w] autorelease];
-
-        if (i == 0 && thumbnail && thumbnail->pixels) {
-            int err = set_image_for_dragging_item(dragItem, thumbnail, window->ns.object);
-            if (err) return err;
-        } else {
-            [dragItem setDraggingFrame:NSMakeRect(0, 0, 32, 32) contents:nil];
-        }
-        [dragItems addObject:dragItem];
+        int err = add_drag_items(window, dragItems, _glfw.drag.items + i, thumbnail);
+        if (err) return err;
     }
 
     NSDraggingSession *s = [v beginDraggingSessionWithItems:dragItems event:event source:[v draggingSource]];
