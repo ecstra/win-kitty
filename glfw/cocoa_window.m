@@ -4148,6 +4148,7 @@ static void schedule_drag_finish_timer(void);
 static GLFWid drag_finish_window_id = 0;
 static GLFWDragOperationType drag_finish_action = 0;
 static NSTimer *drag_finish_timer = nil;
+static NSMutableArray<GLFWFilePromiseProviderDelegate*> *file_promise_providers = nil;
 #define DRAG_FINISH_TIMEOUT_SECONDS 2.0
 
 @implementation GLFWDraggingSource
@@ -4224,7 +4225,6 @@ static NSTimer *drag_finish_timer = nil;
 }
 @end
 
-static NSMutableArray<GLFWFilePromiseProviderDelegate*> *file_promise_providers = nil;
 
 static void
 fire_drag_finished(void) {
@@ -4456,6 +4456,10 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (!window) { [self end_transfer:EINVAL]; return; }
     bool keep_going = true;
+    if (drag_finish_timer) {
+        [drag_finish_timer invalidate];
+        drag_finish_timer = nil;
+    }
     while (keep_going) {
         GLFWDragEvent ev = {.type=GLFW_DRAG_DATA_REQUEST, .mime_type=mimeType};
         _glfwInputDragSourceRequest(window, &ev);
