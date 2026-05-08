@@ -471,6 +471,8 @@ class Boss:
         opts_for_size: Options | None = None,
         startup_id: str | None = None,
         override_title: str | None = None,
+        x: int | None = None,
+        y: int | None = None,
     ) -> int:
         if os_window_id is None:
             size_data = get_os_window_sizing_data(opts_for_size or get_options(), startup_session)
@@ -483,7 +485,7 @@ class Boss:
                 os_window_id = create_os_window(
                         initial_window_size_func(size_data, self.cached_values),
                         pre_show_callback,
-                        wtitle or appname, wname, wclass, wstate, disallow_override_title=bool(wtitle))
+                        wtitle or appname, wname, wclass, wstate, disallow_override_title=bool(wtitle), x=x, y=y)
         else:
             wname = self.args.name or self.args.cls or appname
             wclass = self.args.cls or appname
@@ -954,6 +956,9 @@ class Boss:
                 args.session = ''
             if not os.path.isabs(args.directory):
                 args.directory = os.path.join(data['cwd'], args.directory)
+            pos_x, pos_y = None, None
+            if args.position and not is_wayland():
+                pos_x, pos_y = map(int, args.position.lower().partition('x')[::2])
             from .child import process_env
             clean_env = process_env(data['environ'])
             focused_os_window = os_window_id = 0
@@ -970,7 +975,7 @@ class Boss:
                 wstate = args.start_as if args.start_as and args.start_as != 'normal' else None
                 os_window_id = self.add_os_window(
                     session, wclass=args.cls, wname=args.name, opts_for_size=opts, startup_id=startup_id,
-                    override_title=args.title or None, window_state=wstate)
+                    override_title=args.title or None, window_state=wstate, x=pos_x, y=pos_y)
                 if session.focus_os_window:
                     focused_os_window = os_window_id
                 if opts.background_opacity != get_options().background_opacity:
