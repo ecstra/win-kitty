@@ -1452,6 +1452,56 @@ expand_png_data(Window *w, size_t idx) {
 
 static size_t last_total_image_size = 0;
 
+static char**
+parse_uri_list(Window *w, char *data, const ssize_t sz, size_t *num_uris_out) {
+    *num_uris_out = 0;
+    // First pass: count non-comment, non-empty lines
+    size_t count = 0;
+    char *p = data;
+    while (p - data <= sz) {
+        char *eol = p + strcspn(p, "\r\n");
+        char saved = *eol; *eol = '\0';
+        char *end = eol;
+        while (end > p && (end[-1] == ' ' || end[-1] == '\t')) end--;
+        char saved_end = *end; *end = '\0';
+        if (*p && *p != '#') count++;
+        *end = saved_end;
+        *eol = saved;
+        if (saved == '\0') break;
+        p = eol + 1;
+        while (*p == '\r' || *p == '\n') p++;
+    }
+
+    char **result = calloc((count + 1), sizeof(const char*));
+    if (!result) { cancel_drag(w, ENOMEM, "out of memory parsing uri list"); return NULL; }
+
+    // Second pass: fill in decoded URI strings
+    size_t idx = 0;
+    p = data;
+    while (p - data < sz && idx < count) {
+        char *eol = p + strcspn(p, "\r\n");
+        char saved = *eol; *eol = '\0';
+        char *end = eol;
+        while (end > p && (end[-1] == ' ' || end[-1] == '\t')) end--;
+        *end = '\0';
+        if (*p && *p != '#') {
+            char *decoded = strdup(p);
+            if (!decoded) {
+                for (size_t k = 0; k < idx; k++) free((char*)result[k]);
+                free(result); cancel_drag(w, ENOMEM, "out of memory parsing uri list"); return NULL;
+            }
+            result[idx++] = decoded;
+        }
+        *eol = saved;
+        if (saved == '\0') break;
+        p = eol + 1;
+        while (*p == '\r' || *p == '\n') p++;
+    }
+    *num_uris_out = idx;
+    return result;
+}
+
+
 void
 drag_start(Window *w) {
     if (ds.state != DRAG_SOURCE_BEING_BUILT) abrt(EINVAL, "cannot start drag as drag source is not being built");
@@ -1530,6 +1580,13 @@ drag_start(Window *w) {
         // Free images and optional_data but keep the items array for later
         // data requests from the drop target
         for (size_t i = 0; i < ds.num_mimes; i++) {
+            if (ds.is_remote_client && ds.items[i].is_uri_list) {
+                if (ds.items[i].optional_data && ds.items[i].data_size) {
+                    ds.items[i].uri_list = parse_uri_list(
+                            w, (char*)ds.items[i].optional_data, ds.items[i].data_size, &ds.items[i].num_uris);
+                    if (!ds.items[i].uri_list) return;
+                } else abrt(EINVAL, "remote client must pre-send text/uri-list data");
+            }
             free(ds.items[i].optional_data);
             ds.items[i].optional_data = NULL;
             ds.items[i].data_size = 0;
@@ -1637,11 +1694,16 @@ drag_get_data(Window *w, const char *mime_type, size_t *sz, int *err_code) {
             // No fd yet, request data from the client
             if (!ds.items[i].data_requested_from_client) {
                 char buf[128];
-                ds.items[i].requested_remote_files = ds.is_remote_client && ds.items[i].is_uri_list;
-                int header_sz = snprintf(buf, sizeof(buf), "\x1b]%d;t=e:x=%d:y=%zu:Y=%d",
-                        DND_CODE, DRAG_NOTIFY_FINISHED + 2, i, ds.items[i].requested_remote_files);
-                queue_payload_to_child(w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_sz, NULL, 0, false);
                 ds.items[i].data_requested_from_client = true;
+                ds.items[i].requested_remote_files = ds.is_remote_client && ds.items[i].is_uri_list;
+                if (ds.items[i].requested_remote_files) {
+                    // TODO: send remote file requests
+                } else {
+                    int header_sz = snprintf(buf, sizeof(buf), "\x1b]%d;t=e:x=%d:y=%zu:Y=%d",
+                        DND_CODE, DRAG_NOTIFY_FINISHED + 2, i, ds.items[i].requested_remote_files);
+                    queue_payload_to_child(
+                        w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_sz, NULL, 0, false);
+                }
             }
             *err_code = EAGAIN;
             return NULL;
@@ -1752,73 +1814,6 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
     }
 }
 
-static char**
-parse_uri_list(Window *w, int fd, size_t *num_uris_out) {
-    *num_uris_out = 0;
-    // Determine file size and read all data
-    off_t file_size = lseek(fd, 0, SEEK_END);
-    if (file_size < 0) { cancel_drag(w, EIO, "failed to read cached uri-list data"); return NULL; }
-    if (lseek(fd, 0, SEEK_SET) < 0) { cancel_drag(w, EIO, "failed to read cached uri-list data"); return NULL; }
-    RAII_ALLOC(char, buf, malloc((size_t)file_size + 1));
-    if (!buf) { cancel_drag(w, ENOMEM, "out of memory processing uri list data"); return NULL; }
-    size_t total = 0;
-    while (total < (size_t)file_size) {
-        ssize_t n = read(fd, buf + total, (size_t)file_size - total);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            cancel_drag(w, EIO, "failed to read cached uri-list data"); return NULL;
-        }
-        if (n == 0) break;
-        total += (size_t)n;
-    }
-    buf[total] = '\0';
-
-    // First pass: count non-comment, non-empty lines
-    size_t count = 0;
-    char *p = buf;
-    while (*p) {
-        char *eol = p + strcspn(p, "\r\n");
-        char saved = *eol; *eol = '\0';
-        char *end = eol;
-        while (end > p && (end[-1] == ' ' || end[-1] == '\t')) end--;
-        char saved_end = *end; *end = '\0';
-        if (*p && *p != '#') count++;
-        *end = saved_end;
-        *eol = saved;
-        if (saved == '\0') break;
-        p = eol + 1;
-        while (*p == '\r' || *p == '\n') p++;
-    }
-
-    char **result = calloc((count + 1), sizeof(const char*));
-    if (!result) { cancel_drag(w, ENOMEM, "out of memory parsing uri list"); return NULL; }
-
-    // Second pass: fill in decoded URI strings
-    size_t idx = 0;
-    p = buf;
-    while (*p && idx < count) {
-        char *eol = p + strcspn(p, "\r\n");
-        char saved = *eol; *eol = '\0';
-        char *end = eol;
-        while (end > p && (end[-1] == ' ' || end[-1] == '\t')) end--;
-        *end = '\0';
-        if (*p && *p != '#') {
-            char *decoded = strdup(p);
-            if (!decoded) {
-                for (size_t k = 0; k < idx; k++) free((char*)result[k]);
-                free(result); cancel_drag(w, ENOMEM, "out of memory parsing uri list"); return NULL;
-            }
-            result[idx++] = decoded;
-        }
-        *eol = saved;
-        if (saved == '\0') break;
-        p = eol + 1;
-        while (*p == '\r' || *p == '\n') p++;
-    }
-    *num_uris_out = idx;
-    return result;
-}
-
 static int
 write_all(int fd, const void *buf, size_t sz) {
     size_t pos = 0; const char *p = buf;
@@ -1832,6 +1827,11 @@ write_all(int fd, const void *buf, size_t sz) {
 
 static void
 finish_remote_data(Window *w, size_t item_idx) {
+    if (!ds.items[item_idx].fd_plus_one) {
+        int fd = open_item_tmpfile();
+        if (fd < 0) abrt(EIO, "failed to open temp file to store modified uri list");
+        ds.items[item_idx].fd_plus_one = fd + 1;
+    }
     const int fd = ds.items[item_idx].fd_plus_one - 1;
     ds.items[item_idx].requested_remote_files = false;
     if (safe_ftruncate(fd, 0) != 0) abrt(errno, "error updating uri list after all remote data received");
@@ -2109,11 +2109,7 @@ drag_remote_file_data(
             item_idx = i; break;
         }
     }
-    if (item_idx == ds.num_mimes || ds.items[item_idx].fd_plus_one == 0) abrt(EINVAL, "drag source remote file item index out of bounds");
-    if (ds.items[item_idx].uri_list == NULL) {
-        ds.items[item_idx].uri_list = parse_uri_list(w, ds.items[item_idx].fd_plus_one-1, &ds.items[item_idx].num_uris);
-        if (!ds.items[item_idx].uri_list) return;
-    }
+    if (item_idx == ds.num_mimes) abrt(EINVAL, "drag source remote file item index out of bounds");
     if (X < 0) abrt(EINVAL, "drag source remote item X cannot be negative");
     if (!x && !y && !Y) { finish_remote_data(w, item_idx); return; }
     if (!Y) toplevel_data_for_drag(w, item_idx, x - 1, X, has_more, payload, payload_sz);
@@ -2294,18 +2290,26 @@ dnd_test_force_drag_dropped(PyObject *self UNUSED, PyObject *args) {
     Window *w = window_for_window_id((id_type)window_id);
     if (!w) { PyErr_SetString(PyExc_ValueError, "Window not found"); return NULL; }
     // Simulate what drag_start does on success, without calling start_window_drag
+#define ds w->drag_source
     for (size_t i = 0; i < w->drag_source.num_mimes; i++) {
-        free(w->drag_source.items[i].optional_data);
-        w->drag_source.items[i].optional_data = NULL;
-        w->drag_source.items[i].data_size = 0;
-        w->drag_source.items[i].data_capacity = 0;
-        w->drag_source.items[i].data_decode_initialized = false;
+        if (ds.is_remote_client && ds.items[i].is_uri_list) {
+            if (ds.items[i].optional_data && ds.items[i].data_size) {
+                ds.items[i].uri_list = parse_uri_list(
+                        w, (char*)ds.items[i].optional_data, ds.items[i].data_size, &ds.items[i].num_uris);
+            }
+        }
+        free(ds.items[i].optional_data);
+        ds.items[i].optional_data = NULL;
+        ds.items[i].data_size = 0;
+        ds.items[i].data_capacity = 0;
+        ds.items[i].data_decode_initialized = false;
     }
     for (size_t i = 0; i < arraysz(w->drag_source.images); i++) {
-        if (w->drag_source.images[i].data) free(w->drag_source.images[i].data);
-        zero_at_ptr(w->drag_source.images + i);
+        if (ds.images[i].data) free(w->drag_source.images[i].data);
+        zero_at_ptr(ds.images + i);
     }
-    w->drag_source.state = DRAG_SOURCE_DROPPED;
+    ds.state = DRAG_SOURCE_DROPPED;
+#undef ds
     Py_RETURN_NONE;
 }
 

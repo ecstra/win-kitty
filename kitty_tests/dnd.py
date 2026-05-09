@@ -2340,18 +2340,13 @@ class TestDnDProtocol(BaseTest):
         # Register with a different machine_id to make is_remote_client=True
         parse_bytes(screen, _osc(f'{DND_CODE};t=o:x=1;different-machine-id'))
         parse_bytes(screen, client_drag_offer_mimes(operations, mimes, client_id=client_id))
-        cap.consume()
-        dnd_test_force_drag_dropped(cap.window_id)
-        # Find the index of text/uri-list
         mime_list = mimes.split()
         uri_idx = mime_list.index('text/uri-list')
-        dnd_test_request_drag_data(cap.window_id, uri_idx)
-        # Send the uri-list data
-        b64 = standard_b64encode(uri_list_data).decode()
-        parse_bytes(screen, client_drag_send_data(uri_idx, b64, client_id=client_id))
-        # End of data
-        parse_bytes(screen, client_drag_send_data(uri_idx, '', client_id=client_id))
+        b64 = standard_b64encode(uri_list_data).decode().rstrip('=')
+        parse_bytes(screen, client_drag_pre_send(uri_idx, b64, client_id=client_id))
         cap.consume()
+        dnd_test_force_drag_dropped(cap.window_id)
+        dnd_test_request_drag_data(cap.window_id, uri_idx)
 
     def test_remote_drag_single_file(self) -> None:
         """Transfer a single regular file via t=k."""
@@ -2780,7 +2775,7 @@ class TestDnDProtocol(BaseTest):
     def test_remote_drag_dos_present_data_cap_on_directory(self) -> None:
         """Directory listing data exceeding PRESENT_DATA_CAP triggers EMFILE error."""
         uri_list = b'file:///home/user/dir\r\n'
-        with dnd_test_window(present_data_cap=20) as (screen, cap):
+        with dnd_test_window(present_data_cap=100) as (screen, cap):
             self._setup_remote_drag(screen, cap, uri_list)
             # Send a directory listing that will exceed the cap
             big_listing = b'\x00'.join([f'file{i}.txt'.encode() for i in range(100)])
