@@ -384,13 +384,18 @@ with ``t=E ; EINVAL`` and abort the drag.
 Dragging to remote machines
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To support dragging files to remote machines, when requesting the data for the
-``text/uri-list`` MIME type, terminal emulators can add the ``Y=1`` key.
-Terminals can examine the :ref:`machine_id` sent with the enable drag offers
-``t=o`` escape code to decide whether to use ``Y=1`` or not. On
-receipt of this key, the client should first send the ``text/uri-list`` as
-normal and then a series of responses for every ``file://`` URL type in the
-list of the form::
+To support dragging to remote machines, first of all clients **must** pre-send
+the data for the ``text/uri-list`` MIME type. Then, terminals can
+examine the :ref:`machine_id` sent with the enable drag offers
+``t=o`` escape code to decide whether to request data for ``file://`` entries
+from the URI list. To request data for a particular entry, terminals send an
+escape code of the form::
+
+    OSC _dnd_code ; t=k:x=idx ; base64 encoded file data ST
+
+Here ``idx`` is the one based index into the list of entries in the
+``text/uri-list`` MIME type. Then the client can respond with the data
+for that entry with an escape code of the form::
 
     OSC _dnd_code ; t=k:x=idx:m=0 or 1 ; base64 encoded file data ST
     OSC _dnd_code ; t=k:x=idx:X=1:m=0 or 1 ; base64 encoded symlink target ST
@@ -400,11 +405,9 @@ These represent possibly chunked data for files, symlinks and directories, as
 denoted by the ``X`` key. As above, end of data for an individual entry is
 indicated by an escape code with ``m=0`` and no payload. ``idx`` is the one
 based index into the list of entries in the ``text/uri-list`` MIME type.
-Only regular files, symlinks and directories should be sent.
-
-Terminals should write the transmitted data into a temporary directory
-and replace the entries in the ``text/uri-list`` data with the transmitted
-files/directories.
+Only regular files, symlinks and directories should be sent. Terminals may send
+multiple requests before the data for the first request is received. Client
+programs should queue the requests and handle them in FIFO order.
 
 Every directory must be transmitted with ``X=handle``. The payload
 is a null separated list of regular files, directories and symlinks in the
@@ -416,13 +419,10 @@ adding ``Y=parent-handle:y=num`` to the escape codes above. Here
 is the one based index into the list of entries in the directory. Thus, the
 set of keys ``x, y, Y`` uniquely determine an entry.
 
-Once all data is transmitted, the client informs the terminal emulator of
+Once all data for a dirctory is transmitted, the client informs the terminal emulator of
 completion with::
 
-    OSC _dnd_code ; t=k ; ST
-
-At this point, the terminal should send the modified data for ``text/uri-list``
-to the drop destination.
+    OSC _dnd_code ; t=k:Y=handle ; ST
 
 If any error occurs in the client while reading the data, it can inform
 the terminal using::
@@ -435,10 +435,10 @@ Terminals are free to impose resource limits on how much data they accept,
 if a limit is breached or some errors occurs, they can abort the drag and
 inform the client of it with::
 
-    OSC _dnd_code ; t=E ; POSIX error name ST
+    OSC _dnd_code ; t=E ; POSIX error name:optional description ST
 
-The error code for too many resources is ``EMFILE`` for IO errors is ``EIO``
-and so on.
+The error code for too many resources is ``EMFILE``,
+for IO errors is ``EIO`` and so on.
 
 Detecting support for this protocol
 -------------------------------------
