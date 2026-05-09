@@ -1517,7 +1517,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'E')
-            self.ae(events[0]['payload'].strip(), b'EINVAL')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_drag_pre_send_data_moderate_chunk(self) -> None:
         """Pre-sending a moderate chunk of data succeeds without triggering size cap."""
@@ -1539,7 +1539,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'E')
-            self.ae(events[0]['payload'].strip(), b'EINVAL')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_drag_add_image_rgba_valid(self) -> None:
         """Adding a valid RGBA image succeeds without error."""
@@ -1572,7 +1572,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'E')
-            self.ae(events[0]['payload'].strip(), b'EINVAL')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_drag_add_image_invalid_dimensions_returns_einval(self) -> None:
         """Adding an image with zero or negative dimensions returns EINVAL."""
@@ -1585,7 +1585,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'E')
-            self.ae(events[0]['payload'].strip(), b'EINVAL')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_drag_add_image_without_offer_returns_einval(self) -> None:
         """Adding an image without a prior drag offer returns EINVAL."""
@@ -1596,7 +1596,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'E')
-            self.ae(events[0]['payload'].strip(), b'EINVAL')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_drag_add_too_many_images_returns_error(self) -> None:
         """Adding more than the maximum number of images returns an error."""
@@ -1625,7 +1625,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'E')
-            self.ae(events[0]['payload'].strip(), b'EINVAL')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_drag_free_offer_cleans_up(self) -> None:
         """Sending t=O cleans up a partially built drag offer."""
@@ -1645,7 +1645,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'E')
-            self.ae(events[0]['payload'].strip(), b'EINVAL')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_drag_cancel_from_client(self) -> None:
         """Client can cancel a drag via t=E:y=-1."""
@@ -1660,7 +1660,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'E')
-            self.ae(events[0]['payload'].strip(), b'EINVAL')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_drag_second_offer_replaces_first(self) -> None:
         """A second offer with operations replaces the first one."""
@@ -1831,7 +1831,8 @@ class TestDnDProtocol(BaseTest):
         events = self._get_events(cap)
         self.assertEqual(len(events), 1, events)
         self.ae(events[0]['type'], 'E')
-        self.ae(events[0]['payload'].strip(), code.encode())
+        payload = events[0]['payload'].strip()
+        self.ae(payload.partition(b':')[0], code.encode())
 
     def test_drag_pre_send_multiple_mimes(self) -> None:
         """Pre-sent data can be provided for multiple different MIME types."""

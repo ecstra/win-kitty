@@ -1289,22 +1289,24 @@ drag_free_offer(Window *w) {
 }
 
 static void
-drag_send_error(Window *w, int error_code) {
-    char buf[128];
-    const char *e = get_errno_name(error_code);
+drag_send_error(Window *w, int error_code, const char *details) {
+    char buf[128], details_buf[1024];
+    int n;
+    if (details && details[0]) n = snprintf(details_buf, sizeof(details_buf), "%s:%s", get_errno_name(error_code), details);
+    else n = snprintf(details_buf, sizeof(details_buf), "%s", get_errno_name(error_code));
     int header_size = snprintf(buf, sizeof(buf), "\x1b]%d;t=E", DND_CODE);
     queue_payload_to_child(
-        w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_size, e, strlen(e), false);
+        w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_size, details_buf, n, false);
 }
 
 static void
-cancel_drag(Window *w, int error_code) {
-    if (error_code) drag_send_error(w, error_code);
+cancel_drag(Window *w, int error_code, const char *details) {
+    if (error_code) drag_send_error(w, error_code, details);
     if (global_state.drag_source.is_active && global_state.drag_source.from_window == w->id) cancel_current_drag_source();
     drag_free_offer(w);
 }
 
-#define abrt(code) { cancel_drag(w, code); return; }
+#define abrt(code, details) { cancel_drag(w, code, details); return; }
 
 void
 drag_start_offerring(Window *w, const char *client_machine_id, size_t sz) {
@@ -1320,15 +1322,15 @@ drag_stop_offerring(Window *w) {
 
 void
 drag_add_mimes(Window *w, int allowed_operations, uint32_t client_id, const char *data, size_t sz, bool has_more) {
-    if (!ds.can_offer) abrt(EINVAL);
+    if (!ds.can_offer) abrt(EINVAL, "cannot add drag source mimes as not offerring drag");
     if (allowed_operations && !ds.allowed_operations) ds.allowed_operations = allowed_operations;
-    if (!ds.allowed_operations || ds.state > DRAG_SOURCE_BEING_BUILT) abrt(EINVAL);
+    if (!ds.allowed_operations || ds.state > DRAG_SOURCE_BEING_BUILT) abrt(EINVAL, !ds.allowed_operations ? "cannot add drag source mimes as allowed operations are not set" : "cannot add drag source mimes as drag source is not being built");
     ds.state = DRAG_SOURCE_BEING_BUILT;
     ds.client_id = client_id;
     size_t new_sz = ds.bufsz + sz;
-    if (new_sz > MIME_LIST_SIZE_CAP) abrt(EFBIG);
+    if (new_sz > MIME_LIST_SIZE_CAP) abrt(EFBIG, "drag source mimes size too large");
     char *tmp = realloc(ds.mimes_buf, ds.bufsz + sz + 1);
-    if (!tmp) abrt(ENOMEM);
+    if (!tmp) abrt(ENOMEM, "out of mmeory adding drag source mimes");
     ds.mimes_buf = tmp;
     memcpy(ds.mimes_buf + ds.bufsz, data, sz);
     ds.bufsz = new_sz;
@@ -1341,7 +1343,7 @@ drag_add_mimes(Window *w, int allowed_operations, uint32_t client_id, const char
             rough_count++;
         }
         ds.items = calloc(rough_count + 2, sizeof(ds.items[0]));
-        if (!ds.items) abrt(ENOMEM);
+        if (!ds.items) abrt(ENOMEM, "out of mmeory adding drag source mimes");
         char *p = ds.mimes_buf, *end = ds.mimes_buf + ds.bufsz;
         ds.num_mimes = 0;
         while (p < end) {
@@ -1358,8 +1360,9 @@ drag_add_mimes(Window *w, int allowed_operations, uint32_t client_id, const char
 
 void
 drag_add_pre_sent_data(Window *w, unsigned idx, const uint8_t *payload, size_t sz) {
-    if (ds.state != DRAG_SOURCE_BEING_BUILT || idx >= ds.num_mimes) abrt(EINVAL);
-    if (sz + ds.pre_sent_total_sz > PRESENT_DATA_CAP) abrt(EFBIG);
+    if (ds.state != DRAG_SOURCE_BEING_BUILT || idx >= ds.num_mimes) abrt(EINVAL, idx >= ds.num_mimes ?
+            "pre-sent data item idx too large" : "drag source not being currently built, cannot add pre-sent data");
+    if (sz + ds.pre_sent_total_sz > PRESENT_DATA_CAP) abrt(EFBIG, "too much pre-sent data");
     ds.pre_sent_total_sz += sz;
 #define item ds.items[idx]
     if (!item.data_decode_initialized) {
@@ -1369,12 +1372,12 @@ drag_add_pre_sent_data(Window *w, unsigned idx, const uint8_t *payload, size_t s
     if (item.data_capacity < sz + item.data_size) {
         size_t newcap = MAX(item.data_capacity * 2, sz + item.data_size);
         uint8_t *tmp = realloc(item.optional_data, newcap);
-        if (!tmp) abrt(ENOMEM);
+        if (!tmp) abrt(ENOMEM, "");
         item.optional_data = tmp;
         item.data_capacity = newcap;
     }
     size_t outlen = item.data_capacity - item.data_size;
-    if (!base64_decode_stream(&item.base64_state, payload, sz, item.optional_data + item.data_size, &outlen)) abrt(EINVAL);
+    if (!base64_decode_stream(&item.base64_state, payload, sz, item.optional_data + item.data_size, &outlen)) abrt(EINVAL, "error while decoding base64 pre-sent data");
     item.data_size += outlen;
 #undef item
 }
@@ -1383,13 +1386,13 @@ drag_add_pre_sent_data(Window *w, unsigned idx, const uint8_t *payload, size_t s
 
 void
 drag_add_image(Window *w, unsigned idx, int fmt, int width, int height, int opacity, const uint8_t *payload, size_t sz) {
-    if (ds.state != DRAG_SOURCE_BEING_BUILT) abrt(EINVAL);
-    if (idx + 1 >= arraysz(ds.images)) abrt(EFBIG);
-    if (ds.images_sent_total_sz + sz > PRESENT_DATA_CAP) abrt(EFBIG);
+    if (ds.state != DRAG_SOURCE_BEING_BUILT) abrt(EINVAL, "cannot add drag thumbnail as drag source not currently being built");
+    if (idx + 1 >= arraysz(ds.images)) abrt(EFBIG, "too many drag thumbnails");
+    if (ds.images_sent_total_sz + sz > PRESENT_DATA_CAP) abrt(EFBIG, "drag thumbnails too large");
     ds.images_sent_total_sz += sz;
     if (!img.started) {
-        if (fmt != 0 && fmt != 24 && fmt != 32 && fmt != 100) abrt(EINVAL);
-        if (fmt != 0 && (width < 1 || height < 1)) abrt(EINVAL);
+        if (fmt != 0 && fmt != 24 && fmt != 32 && fmt != 100) abrt(EINVAL, "unknown drag thumbnail format");
+        if (fmt != 0 && (width < 1 || height < 1)) abrt(EINVAL, "invalid drag thumbnail image dimensions");
         img.started = true;
         img.width = width; img.height = height;
         img.fmt = fmt;
@@ -1399,12 +1402,12 @@ drag_add_image(Window *w, unsigned idx, int fmt, int width, int height, int opac
     if (img.capacity < MAX(32u, sz + img.sz)) {
         size_t newcap = MAX(img.capacity * 2, MAX(32u, sz + img.sz));
         uint8_t *tmp = realloc(img.data, newcap);
-        if (!tmp) abrt(ENOMEM);
+        if (!tmp) abrt(ENOMEM, "out of memory processing drag thumbnails");
         img.data = tmp;
         img.capacity = newcap;
     }
     size_t outlen = img.capacity - img.sz;
-    if (!base64_decode_stream(&img.base64_state, payload, sz, img.data + img.sz, &outlen)) abrt(EINVAL);
+    if (!base64_decode_stream(&img.base64_state, payload, sz, img.data + img.sz, &outlen)) abrt(EINVAL, "could not base64 decode drag thumbnail data");
     img.sz += outlen;
 }
 
@@ -1416,11 +1419,11 @@ drag_change_image(Window *w, unsigned idx) {
 
 static bool
 expand_rgb_data(Window *w, size_t idx) {
-#define fail(code) { cancel_drag(w, code); return false; }
-    if (img.sz != (size_t)img.width * (size_t)img.height * 3) fail(EINVAL);
+#define fail(code, details) { cancel_drag(w, code, details); return false; }
+    if (img.sz != (size_t)img.width * (size_t)img.height * 3) fail(EINVAL, "drag thumbnail RGB data not correct size");
     const size_t sz = (size_t)img.width * (size_t)img.height * 4u;
     RAII_ALLOC(uint8_t, expanded, malloc(sz));
-    if (!expanded) fail(ENOMEM);
+    if (!expanded) fail(ENOMEM, "out of memory processing drag thumbnail RGB data");
     memset(expanded, 0xff, sz);
     for (int r = 0; r < img.height; r++) {
         uint8_t *src_row = img.data + r * img.width * 3, *dest_row = expanded + r * img.width * 4;
@@ -1449,7 +1452,7 @@ static size_t last_total_image_size = 0;
 
 void
 drag_start(Window *w) {
-    if (ds.state != DRAG_SOURCE_BEING_BUILT) abrt(EINVAL);
+    if (ds.state != DRAG_SOURCE_BEING_BUILT) abrt(EINVAL, "cannot start drag as drag source is not being built");
     size_t total_size = 0;
     for (size_t idx = 0; idx < arraysz(ds.images); idx++) {
         if (img.sz) {
@@ -1482,11 +1485,11 @@ drag_start(Window *w) {
                         cp, cp->overridden.default_bg, cp->configured.default_bg).rgb | (((uint32_t)bg_alpha) << 24);
                     // Add a null terminator for draw_window_title
                     uint8_t *txt = realloc(img.data, img.sz + 1);
-                    if (!txt) { abrt(ENOMEM); return; }
+                    if (!txt) { abrt(ENOMEM, "out of memory processing text based drag thumbnail"); return; }
                     img.data = txt; txt[img.sz] = '\0';
                     const size_t max_width = (size_t)screen->cell_size.width * screen->columns;
                     uint8_t *render_buf = malloc(max_width * render_height * 4);
-                    if (!render_buf) { abrt(ENOMEM); return; }
+                    if (!render_buf) { abrt(ENOMEM, "out of memory processing text based drag thumbnail"); return; }
                     size_t actual_width = max_width;
                     bool ok = draw_window_title(adjusted_font_sz, ydpi, (const char*)img.data,
                                                fg_color, bg_color, render_buf,
@@ -1512,14 +1515,15 @@ drag_start(Window *w) {
                 } break;
             }
             total_size += img.sz;
-            if (total_size > 2 * PRESENT_DATA_CAP) abrt(EFBIG);
-            if (img.sz != (size_t)img.width * (size_t)img.height * 4u) abrt(EINVAL);
+            if (total_size > 2 * PRESENT_DATA_CAP) abrt(EFBIG, "too large a drag thumbnail");
+            if (img.sz != (size_t)img.width * (size_t)img.height * 4u) abrt(EINVAL, "drag thumbnail size incorrect");
         }
     }
     last_total_image_size = total_size;
     int err = start_window_drag(w, dnd_is_test_mode());
     if (err != 0) {
-        abrt(err);
+        if (err == EPERM) abrt(err, "permission to start drag denied, this can happen if the user has already released the drag or if the mouse has moved out of the window");
+        abrt(err, "failed to start drag in OS");
     } else {
         // Free images and optional_data but keep the items array for later
         // data requests from the drop target
@@ -1535,7 +1539,7 @@ drag_start(Window *w) {
             zero_at_ptr(ds.images + i);
         }
         ds.state = DRAG_SOURCE_STARTED;
-        drag_send_error(w, 0);  // send OK
+        drag_send_error(w, 0, "");  // send OK
     }
 }
 
@@ -1673,7 +1677,7 @@ open_item_tmpfile(void) {
 void
 drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *payload, size_t payload_sz) {
     if ((ds.state < DRAG_SOURCE_STARTED) || idx >= ds.num_mimes || !ds.items) {
-        abrt(EINVAL);
+        abrt(EINVAL, ds.state < DRAG_SOURCE_STARTED ? "cannot process drag source item data as drag has not been started" : "cannot process drag source item data as item index is out of bounds");
         return;
     }
 
@@ -1687,7 +1691,7 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
         ds.items[idx].data_decode_initialized = false;
         if (!dnd_is_test_mode()) {
             int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
-            if (ret) cancel_drag(w, ret);
+            if (ret) cancel_drag(w, ret, "could not notify OS that drag source item data is available");
         }
         return;
     }
@@ -1699,7 +1703,7 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
             if (!ds.items[idx].requested_remote_files) {
                 if (!dnd_is_test_mode()) {
                     int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
-                    if (ret) cancel_drag(w, ret);
+                    if (ret) cancel_drag(w, ret, "could not notify OS that drag source item data is available");
                 }
             }
         }
@@ -1709,7 +1713,7 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
     // Open temp file if not yet open
     if (!ds.items[idx].fd_plus_one) {
         int fd = open_item_tmpfile();
-        if (fd < 0) { cancel_drag(w, EIO); return; }
+        if (fd < 0) { cancel_drag(w, EIO, "failed to open temporary file to store drag source item data"); return; }
         ds.items[idx].fd_plus_one = fd + 1;
         ds.items[idx].data_decode_initialized = true;
         ds.items[idx].data_size = 0;     // read position for pread
@@ -1720,17 +1724,17 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
     // Decode and write payload data
     if (payload_sz > 0) {
         RAII_ALLOC(uint8_t, decoded, malloc(payload_sz));
-        if (!decoded) { cancel_drag(w, ENOMEM); return; }
+        if (!decoded) { cancel_drag(w, ENOMEM, "out of memory processing drag source item data"); return; }
         size_t outlen = payload_sz;
         if (!base64_decode_stream(&ds.items[idx].base64_state, payload, payload_sz, decoded, &outlen)) {
-            cancel_drag(w, EINVAL);
+            cancel_drag(w, EINVAL, "failed to base64 decode drag source item data");
             return;
         }
         size_t written = 0;
         while (written < outlen) {
             ssize_t n = safe_write(ds.items[idx].fd_plus_one - 1, decoded + written, outlen - written);
             if (n < 0) {
-                cancel_drag(w, EIO);
+                cancel_drag(w, EIO, "failed to write drag source item data to temp file");
                 return;
             }
             written += (size_t)n;
@@ -1740,7 +1744,7 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
         if (!ds.items[idx].requested_remote_files) {
             if (!dnd_is_test_mode()) {
                 int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
-                if (ret) cancel_drag(w, ret);
+                if (ret) cancel_drag(w, ret, "could not notify OS that drag source item data is available");
             }
         }
     }
@@ -1751,16 +1755,16 @@ parse_uri_list(Window *w, int fd, size_t *num_uris_out) {
     *num_uris_out = 0;
     // Determine file size and read all data
     off_t file_size = lseek(fd, 0, SEEK_END);
-    if (file_size < 0) { cancel_drag(w, EIO); return NULL; }
-    if (lseek(fd, 0, SEEK_SET) < 0) { cancel_drag(w, EIO); return NULL; }
+    if (file_size < 0) { cancel_drag(w, EIO, "failed to read cached uri-list data"); return NULL; }
+    if (lseek(fd, 0, SEEK_SET) < 0) { cancel_drag(w, EIO, "failed to read cached uri-list data"); return NULL; }
     RAII_ALLOC(char, buf, malloc((size_t)file_size + 1));
-    if (!buf) { cancel_drag(w, ENOMEM); return NULL; }
+    if (!buf) { cancel_drag(w, ENOMEM, "out of memory processing uri list data"); return NULL; }
     size_t total = 0;
     while (total < (size_t)file_size) {
         ssize_t n = read(fd, buf + total, (size_t)file_size - total);
         if (n < 0) {
             if (errno == EINTR) continue;
-            cancel_drag(w, EIO); return NULL;
+            cancel_drag(w, EIO, "failed to read cached uri-list data"); return NULL;
         }
         if (n == 0) break;
         total += (size_t)n;
@@ -1785,7 +1789,7 @@ parse_uri_list(Window *w, int fd, size_t *num_uris_out) {
     }
 
     char **result = calloc((count + 1), sizeof(const char*));
-    if (!result) { cancel_drag(w, ENOMEM); return NULL; }
+    if (!result) { cancel_drag(w, ENOMEM, "out of memory parsing uri list"); return NULL; }
 
     // Second pass: fill in decoded URI strings
     size_t idx = 0;
@@ -1800,7 +1804,7 @@ parse_uri_list(Window *w, int fd, size_t *num_uris_out) {
             char *decoded = strdup(p);
             if (!decoded) {
                 for (size_t k = 0; k < idx; k++) free((char*)result[k]);
-                free(result); cancel_drag(w, ENOMEM); return NULL;
+                free(result); cancel_drag(w, ENOMEM, "out of memory parsing uri list"); return NULL;
             }
             result[idx++] = decoded;
         }
@@ -1828,15 +1832,15 @@ static void
 finish_remote_data(Window *w, size_t item_idx) {
     const int fd = ds.items[item_idx].fd_plus_one - 1;
     ds.items[item_idx].requested_remote_files = false;
-    if (safe_ftruncate(fd, 0) != 0) abrt(errno);
-    if (lseek(fd, 0, SEEK_SET) == -1) abrt(errno);
+    if (safe_ftruncate(fd, 0) != 0) abrt(errno, "error updating uri list after all remote data received");
+    if (lseek(fd, 0, SEEK_SET) == -1) abrt(errno, "error updating uri list after all remote data received");
     size_t new_size = 0;
     for (size_t i = 0; i < ds.items[item_idx].num_uris; i++) {
         int ret = write_all(fd, ds.items[item_idx].uri_list[i], strlen(ds.items[item_idx].uri_list[i]));
         new_size += strlen(ds.items[item_idx].uri_list[i]);
         free((char*)ds.items[item_idx].uri_list[i]); ds.items[item_idx].uri_list[i] = NULL;
-        if (ret) abrt(ret);
-        if ((ret = write_all(fd, "\r\n", 2))) abrt(ret);
+        if (ret) abrt(ret, "error updating uri list after all remote data received");
+        if ((ret = write_all(fd, "\r\n", 2))) abrt(ret, "error updating uri list after all remote data received");
         new_size += 2;
     }
     free(ds.items[item_idx].uri_list); ds.items[item_idx].uri_list = NULL; ds.items[item_idx].num_uris = 0;
@@ -1845,7 +1849,7 @@ finish_remote_data(Window *w, size_t item_idx) {
     ds.items[item_idx].data_capacity = new_size;
     ds.items[item_idx].data_size = 0;
     int ret = dnd_is_test_mode() ? 0 : notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[item_idx].mime_type);
-    if (ret) abrt(ret);
+    if (ret) abrt(ret, "could not notify OS that drag source item data is available");
 }
 
 #define mi ds.items[mime_item_idx]
@@ -1906,7 +1910,7 @@ static void
 populate_dir_entries(Window *w, DragRemoteItem *ri) {
     size_t num = count_occurrences((char*)ri->data, ri->data_sz, 0) + 1;
     ri->children = calloc(num + 1, sizeof(ri->children[0]));
-    if (!ri->children) abrt(ENOMEM);
+    if (!ri->children) abrt(ENOMEM, "out of memory processing drag source item directory entries");
     ri->children_sz = 0;
     const char *ptr = (char*)ri->data;
     const char *end = (char*)ri->data + ri->data_sz;
@@ -1915,7 +1919,7 @@ populate_dir_entries(Window *w, DragRemoteItem *ri) {
         size_t len = p ? (size_t)(p - ptr) : (size_t)(end - ptr);
         if (len > 0) {
             char *name = strndup(ptr, len);
-            if (!name) abrt(ENOMEM);
+            if (!name) abrt(ENOMEM, "out of memory processing drag source item directory entries");
             ri->children[ri->children_sz++].dir_entry_name = name;
         }
         ptr = p ? p + 1 : end;
@@ -1927,37 +1931,37 @@ populate_dir_entries(Window *w, DragRemoteItem *ri) {
 static void
 add_payload(Window *w, DragRemoteItem *ri, bool has_more, const uint8_t *payload, size_t payload_sz, int dirfd) {
     if (payload_sz && payload) {
-        if (payload_sz > 4096) abrt(EINVAL);
+        if (payload_sz > 4096) abrt(EINVAL, "drag source item data chunk too large");
         switch (ri->type) {
             case 0: {
                 if (!ri->fd_plus_one) {
                     int fd = safe_openat(dirfd, ri->dir_entry_name, O_CREAT | O_WRONLY, file_permissions);
-                    if (fd < 0) abrt(errno);
+                    if (fd < 0) abrt(errno, "could not open drag source item data file");
                     ri->fd_plus_one = fd + 1;
                 }
                 uint8_t buf[4096];
                 size_t outlen = sizeof(buf);
-                if (!base64_decode_stream(&ri->base64_state, payload, payload_sz, buf, &outlen)) abrt(EINVAL);
+                if (!base64_decode_stream(&ri->base64_state, payload, payload_sz, buf, &outlen)) abrt(EINVAL, "could not base64 decode drag source item data");
                 ds.total_remote_data_size += outlen;
-                if (outlen && write_all(ri->fd_plus_one-1, buf, outlen) < 0) abrt(errno);
+                if (outlen && write_all(ri->fd_plus_one-1, buf, outlen) < 0) abrt(errno, "could not write drag source item data to file");
             } break;
             default: {
                 if (ri->data_sz + payload_sz > ri->data_capacity) {
                     size_t cap = MAX(ri->data_capacity * 2, ri->data_sz + payload_sz + 4096);
-                    if (cap > PRESENT_DATA_CAP) abrt(EMFILE);
+                    if (cap > PRESENT_DATA_CAP) abrt(EMFILE, "too much drag source item data");
                     uint8_t *tmp = realloc(ri->data, cap);
-                    if (!tmp) abrt(ENOMEM);
+                    if (!tmp) abrt(ENOMEM, "out of memory processing drag source item data");
                     ri->data = tmp;
                     ri->data_capacity = cap;
                 }
                 size_t outlen = ri->data_capacity - ri->data_sz;
-                if (!base64_decode_stream(&ri->base64_state, payload, payload_sz, ri->data + ri->data_sz, &outlen)) abrt(EINVAL);
+                if (!base64_decode_stream(&ri->base64_state, payload, payload_sz, ri->data + ri->data_sz, &outlen)) abrt(EINVAL, "could not base64 decode drag source item data");
                 ds.total_remote_data_size += outlen;
                 ri->data_sz += outlen;
             } break;
         }
     }
-    if (ds.total_remote_data_size > REMOTE_DRAG_LIMIT) abrt(EMFILE);
+    if (ds.total_remote_data_size > REMOTE_DRAG_LIMIT) abrt(EMFILE, "too much drag source item data");
     if (!has_more && !payload_sz) {  // all data received
         switch (ri->type) {
             case 0:
@@ -1968,15 +1972,15 @@ add_payload(Window *w, DragRemoteItem *ri, bool has_more, const uint8_t *payload
                 // Ensure room for the null terminator needed by symlinkat
                 if (ri->data_sz >= ri->data_capacity) {
                     uint8_t *tmp = realloc(ri->data, ri->data_sz + 1);
-                    if (!tmp) abrt(ENOMEM);
+                    if (!tmp) abrt(ENOMEM, "out of memory processingdrag source symlink item");
                     ri->data = tmp;
                     ri->data_capacity = ri->data_sz + 1;
                 }
                 ri->data[ri->data_sz] = 0;
-                if (symlinkat((char*)ri->data, dirfd, ri->dir_entry_name) != 0) abrt(errno);
+                if (symlinkat((char*)ri->data, dirfd, ri->dir_entry_name) != 0) abrt(errno, "failed to create symlink for drag source item");
                 break;
             default:
-                if (mkdirat(dirfd, ri->dir_entry_name, dir_permissions) != 0 && errno != EEXIST) abrt(errno);
+                if (mkdirat(dirfd, ri->dir_entry_name, dir_permissions) != 0 && errno != EEXIST) abrt(errno, "failed to create directory for drag source item");
                 populate_dir_entries(w, ri);
                 break;
         }
@@ -1992,32 +1996,32 @@ toplevel_data_for_drag(
 ) {
     if (!mi.remote_items) {
         mi.remote_items = calloc(mi.num_uris, sizeof(mi.remote_items[0]));
-        if (!mi.remote_items) abrt(ENOMEM);
+        if (!mi.remote_items) abrt(ENOMEM, "out of memory processing drag source item");
         mi.num_remote_items = mi.num_uris;
     }
     if (!mi.base_dir_for_remote_items) {
         int fd;
         mi.base_dir_for_remote_items = mktempdir_in_cache("dnd-drag-", &fd);
-        if (!mi.base_dir_for_remote_items) abrt(errno);
+        if (!mi.base_dir_for_remote_items) abrt(errno, "failed to create temporary directory for drag source items");
         mi.base_dir_fd_plus_one = fd + 1;
         detect_tempdir_case_sensitivity(mi.base_dir_for_remote_items);
     }
-    if (uri_item_idx >= mi.num_remote_items) abrt(EINVAL);
+    if (uri_item_idx >= mi.num_remote_items) abrt(EINVAL, "out of bounds uri list item index for drag source");
     DragRemoteItem *ri = mi.remote_items + uri_item_idx;
     if (!ri->started) {
         ri->started = true;
         ri->type = item_type;
         base64_init_stream_decoder(&ri->base64_state);
-        if (uri_item_idx >= mi.num_uris) abrt(EINVAL);
+        if (uri_item_idx >= mi.num_uris) abrt(EINVAL, "out of bounds uri list item index for drag source");
         const char *uri = mi.uri_list[uri_item_idx];
         char *fname = sanitized_filename_from_url(uri);
-        if (!fname) abrt(EINVAL);
+        if (!fname) abrt(EINVAL, "could not sanitize filename for URI in drag source uri-list");
         ri->dir_entry_name = fname;
         char path[32];
         snprintf(path, sizeof(path), "%u", uri_item_idx);
-        if (mkdirat(mi.base_dir_fd_plus_one - 1, path, dir_permissions) != 0 && errno != EEXIST) abrt(errno);
+        if (mkdirat(mi.base_dir_fd_plus_one - 1, path, dir_permissions) != 0 && errno != EEXIST) abrt(errno, "failed to create directory for drag source item");
         int fd = safe_openat(mi.base_dir_fd_plus_one - 1, path, O_RDONLY | O_DIRECTORY, 0);
-        if (fd < 0) abrt(errno);
+        if (fd < 0) abrt(errno, "failed to create directory for drag source item");
         ri->top_level_parent_dir_fd_plus_one = fd + 1;
         free(mi.uri_list[uri_item_idx]);
         mi.uri_list[uri_item_idx] = as_file_url(mi.base_dir_for_remote_items, path, ri->dir_entry_name);
@@ -2046,7 +2050,7 @@ subdir_data_for_drag(
     Window *w, unsigned mime_item_idx, unsigned uri_item_idx, int handle, unsigned entry_num, unsigned item_type,
     bool has_more, const uint8_t *payload, size_t payload_sz
 ) {
-    if (!mi.remote_items || uri_item_idx >= mi.num_remote_items) abrt(EINVAL);
+    if (!mi.remote_items || uri_item_idx >= mi.num_remote_items) abrt(EINVAL, "drag source sub directory item uri list index out of range");
     DragRemoteItem *parent = NULL;
     if (mi.currently_open_subdir) {
         if (mi.currently_open_subdir->type == handle) parent = mi.currently_open_subdir;
@@ -2061,19 +2065,19 @@ subdir_data_for_drag(
     if (parent == NULL || !parent->fd_plus_one) {
         char path[PATH_MAX+1]; path[PATH_MAX] = 0;
         DragRemoteItem *root = mi.remote_items + uri_item_idx;
-        if (!root->dir_entry_name) abrt(EINVAL);
+        if (!root->dir_entry_name) abrt(EINVAL, "drag source sub directory parent dir does not exist");
         size_t pos = snprintf(path, PATH_MAX, "%s/%u/%s",
             mi.base_dir_for_remote_items, uri_item_idx, root->dir_entry_name);
         parent = find_by_handle(root, handle, path, &pos);
-        if (!parent) abrt(EINVAL);
+        if (!parent) abrt(EINVAL, "drag source sub directory parent dir handle does not exist");
         mi.currently_open_subdir = parent;
         if (!parent->fd_plus_one) {
             int fd = safe_open(path, O_DIRECTORY | O_RDONLY, 0);
-            if (fd < 0) abrt(errno);
+            if (fd < 0) abrt(errno, "drag source failed to create sub directory");
             parent->fd_plus_one = fd + 1;
         }
     }
-    if (entry_num >= parent->children_sz) abrt(EINVAL);
+    if (entry_num >= parent->children_sz) abrt(EINVAL, "drag source sub diretory index out of bounds");
     DragRemoteItem *ri = parent->children + entry_num;
     if (!ri->started) {
         ri->started = true;
@@ -2103,12 +2107,12 @@ drag_remote_file_data(
             item_idx = i; break;
         }
     }
-    if (item_idx == ds.num_mimes || ds.items[item_idx].fd_plus_one == 0) abrt(EINVAL);
+    if (item_idx == ds.num_mimes || ds.items[item_idx].fd_plus_one == 0) abrt(EINVAL, "drag source remote file item index out of bounds");
     if (ds.items[item_idx].uri_list == NULL) {
         ds.items[item_idx].uri_list = parse_uri_list(w, ds.items[item_idx].fd_plus_one-1, &ds.items[item_idx].num_uris);
         if (!ds.items[item_idx].uri_list) return;
     }
-    if (X < 0) abrt(EINVAL);
+    if (X < 0) abrt(EINVAL, "drag source remote item X cannot be negative");
     if (!x && !y && !Y) { finish_remote_data(w, item_idx); return; }
     if (!Y) toplevel_data_for_drag(w, item_idx, x - 1, X, has_more, payload, payload_sz);
     else subdir_data_for_drag(w, item_idx, x - 1, Y, y - 1, X, has_more, payload, payload_sz);
@@ -2328,7 +2332,7 @@ dnd_test_drag_finish(PyObject *self UNUSED, PyObject *args) {
     if (!w) { PyErr_SetString(PyExc_ValueError, "Window not found"); return NULL; }
     global_state.drag_source.was_canceled = canceled_by_user;
     if (!errcode) drag_notify(w, DRAG_NOTIFY_FINISHED);
-    cancel_drag(w, errcode);
+    cancel_drag(w, errcode, "");
     Py_RETURN_NONE;
 }
 

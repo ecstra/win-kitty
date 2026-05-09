@@ -117,11 +117,12 @@ The terminal must respond with a series of escape codes of the form::
 End of data is indicated by an empty payload and ``m=0``. If some error occurs while
 getting the data, the terminal must send an escape code of the form::
 
-    OSC _dnd_code ; t=R:x=idx ; POSIX error name ST
+    OSC _dnd_code ; t=R:x=idx ; POSIX error name:optional description ST
 
 Here ``POSIX error name`` is a POSIX symbolic error name such as ``ENOENT`` or
 ``EIO`` or the value ``EUNKNOWN`` for an unknown error. Unless otherwise noted,
-any error response means the drop is terminated.
+any error response means the drop is terminated. The description is optional
+and must consist only of :ref:`safe_utf8`.
 
 Once the client program finishes reading all the dropped data it needs, it must
 send an escape code of the form::
@@ -164,7 +165,7 @@ transmit the data as for a normal MIME data request, except it will have
 Similarly, error responses are as above, except for the addition of
 ``y=subidx``, for example::
 
-    OSC _dnd_code ; t=R:x=idx:y=subidx ; POSIX error name ST
+    OSC _dnd_code ; t=R:x=idx:y=subidx ; POSIX error name:optional desc ST
 
 Terminals must reply with ``ENOENT`` if the index is out of bounds.
 If the client does not first request the ``text/uri-list`` MIME type or that
@@ -224,7 +225,7 @@ to the client. The terminal will respond with an escape code of the forms ::
 
 In case of any errors, the terminal will respond with::
 
-    OSC _dnd_code ; t=R:Y=handle:x=num ; POSIX error name ST
+    OSC _dnd_code ; t=R:Y=handle:x=num ; POSIX error name:optional desc ST
 
 In the above, the ``Y=handle`` and ``x=num`` keys allow the client to know
 which directory entry the response concerns. The ``handle`` points to the
@@ -333,7 +334,7 @@ operation, it indicates the drag should be started by sending ``t=P:x=-1``. At
 this time if the user has already cancelled the drag or the terminal determines
 the drag operation is not allowed, it must respond with ``t=E ; EPERM``. If any
 other error occurs starting the drag operation, it must respond with the appropriate
-POSIX error name. If it determines that the image data after conversion to
+POSIX error name and optional error description. If it determines that the image data after conversion to
 display format is too large, it must respond with ``t=E ; EFBIG``. If the drag
 operation is successfully started, it must respond with ``t=E ; OK``.
 
@@ -366,10 +367,11 @@ index into the list of MIME types. The data should be chunked using the
 ``m`` key. End of data is denoted by ``m=0`` and an empty payload. If an error
 occurs the client should send::
 
-    OSC _dnd_code ; t=E:y=idx ; POSIX error name ST
+    OSC _dnd_code ; t=E:y=idx ; POSIX error name:optional description ST
 
 Where ``POSIX error name`` is a POSIX symbolic error name such as ``ENOENT``
-if the MIME type is not found or ``EIO`` if an IO error occurred and so on.
+if the MIME type is not found or ``EIO`` if an IO error occurred and so on. The
+description is optional and must contain only :ref:`safe_utf8`.
 
 If the client wants to cancel the full drag at any time, it should send:
 
@@ -425,7 +427,7 @@ to the drop destination.
 If any error occurs in the client while reading the data, it can inform
 the terminal using::
 
-    OSC _dnd_code ; t=E ; POSIX error name ST
+    OSC _dnd_code ; t=E ; POSIX error name:optional description ST
 
 The terminal must then abort the drag.
 
