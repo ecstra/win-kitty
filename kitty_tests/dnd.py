@@ -524,7 +524,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'R')
-            self.ae(events[0]['payload'].strip(), b'ENOENT')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'ENOENT')
 
     def test_data_error_propagation(self) -> None:
         """When data retrieval fails the client receives a t=R error code."""
@@ -541,7 +541,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'R')
-            self.ae(events[0]['payload'].strip(), b'EIO')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EIO')
 
     def test_data_eperm_error(self) -> None:
         """EPERM error is correctly forwarded to the client."""
@@ -556,7 +556,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'R')
-            self.ae(events[0]['payload'].strip(), b'EPERM')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EPERM')
 
     def test_large_data_chunking(self) -> None:
         """Data larger than the chunk limit is sent in multiple base64 chunks."""
@@ -764,7 +764,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'R')
-            self.assertIn(events[0]['payload'].strip(), [b'ENOENT', b'EPERM'])
+            self.assertIn(events[0]['payload'].strip().partition(b':')[0], [b'ENOENT', b'EPERM'])
 
     def test_uri_file_transfer_out_of_bounds(self) -> None:
         """URI file request with an index beyond the URI list returns ENOENT."""
@@ -801,7 +801,7 @@ class TestDnDProtocol(BaseTest):
                 events = self._get_events(cap)
                 self.assertEqual(len(events), 1, events)
                 self.ae(events[0]['type'], 'R')
-                self.ae(events[0]['payload'].strip(), b'EINVAL')
+                self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
         finally:
             os.unlink(fpath)
 
@@ -814,7 +814,7 @@ class TestDnDProtocol(BaseTest):
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'R')
-            self.ae(events[0]['payload'].strip(), b'EINVAL')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_uri_broken_symlink_returns_symlink_target(self) -> None:
         """A broken symlink in the URI list is transmitted as a symlink (X=1) with the target."""
@@ -1083,7 +1083,7 @@ class TestDnDProtocol(BaseTest):
                 events = self._get_events(cap)
                 self.assertEqual(len(events), 1)
                 self.ae(events[0]['type'], 'R')
-                self.ae(events[0]['payload'].strip(), b'EINVAL')
+                self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_dir_entry_out_of_bounds_returns_enoent(self) -> None:
         """Reading a directory entry with an out-of-range index returns ENOENT."""
@@ -1105,7 +1105,7 @@ class TestDnDProtocol(BaseTest):
                 events = self._get_events(cap)
                 self.assertEqual(len(events), 1)
                 self.ae(events[0]['type'], 'R')
-                self.ae(events[0]['payload'].strip(), b'ENOENT')
+                self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_dir_no_unique_identifier(self) -> None:
         """Directory listings should not contain a unique identifier prefix."""
@@ -2014,7 +2014,7 @@ class TestDnDProtocol(BaseTest):
             self.assertEqual(len(events), 1, events)
             self.ae(events[0]['type'], 'R')
             self.ae(events[0]['meta'].get('x'), '99')
-            self.ae(events[0]['payload'].strip(), b'ENOENT')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'ENOENT')
 
     def test_x_key_in_error_for_io_failure(self) -> None:
         """x= key is echoed in I/O error responses."""
@@ -2030,7 +2030,7 @@ class TestDnDProtocol(BaseTest):
             self.assertEqual(len(events), 1)
             self.ae(events[0]['type'], 'R')
             self.ae(events[0]['meta'].get('x'), '1')
-            self.ae(events[0]['payload'].strip(), b'EIO')
+            self.ae(events[0]['payload'].strip().partition(b':')[0], b'EIO')
 
     def test_fifo_order_with_different_indices(self) -> None:
         """Multiple requests with different x= values are served in FIFO order."""
@@ -2080,7 +2080,7 @@ class TestDnDProtocol(BaseTest):
             err_events = [e for e in events if e['type'] == 'R']
             self.assertEqual(len(err_events), 1, events)
             self.ae(err_events[0]['meta'].get('x'), '99')
-            self.ae(err_events[0]['payload'].strip(), b'ENOENT')
+            self.ae(err_events[0]['payload'].strip().partition(b':')[0], b'ENOENT')
 
             # Now serve request for index 1
             dnd_test_fake_drop_data(cap.window_id, 'text/plain', b'second request data')
@@ -2117,7 +2117,7 @@ class TestDnDProtocol(BaseTest):
             events = parse_escape_codes(raw)
             err_events = [e for e in events if e['type'] == 'R']
             self.assertTrue(err_events, 'expected EMFILE error')
-            self.ae(err_events[0]['payload'].strip(), b'EMFILE')
+            self.ae(err_events[0]['payload'].strip().partition(b':')[0], b'EMFILE')
 
     def test_xy_keys_in_uri_file_response(self) -> None:
         """x= and y= keys are echoed in URI file data responses."""
@@ -2241,7 +2241,7 @@ class TestDnDProtocol(BaseTest):
                 self.ae(events[0]['type'], 'R')
                 self.ae(events[0]['meta'].get('x'), '999')
                 self.ae(events[0]['meta'].get('Y'), str(handle_id))
-                self.ae(events[0]['payload'].strip(), b'ENOENT')
+                self.ae(events[0]['payload'].strip().partition(b':')[0], b'EINVAL')
 
     def test_mixed_request_types_processed_in_order(self) -> None:
         """Mixed MIME data and URI file requests are processed in FIFO order."""
@@ -2297,7 +2297,7 @@ class TestDnDProtocol(BaseTest):
             self.ae(err_events[1]['meta'].get('x'), '20')
             self.ae(err_events[2]['meta'].get('x'), '30')
             for ev in err_events:
-                self.ae(ev['payload'].strip(), b'ENOENT')
+                self.ae(ev['payload'].strip().partition(b':')[0], b'ENOENT')
 
     def test_no_r_key_in_responses(self) -> None:
         """Responses must not contain the old r= key."""

@@ -632,17 +632,19 @@ drop_append_request_keys(Window *w, char *buf, size_t bufsize) {
 }
 
 static void
-drop_send_error(Window *w, int error_code) {
-    char buf[128];
-    const char *e = get_errno_name(error_code);
+drop_send_error(Window *w, int error_code, const char *desc) {
+    char buf[128], details_buf[1024];
+    int n;
+    if (desc && desc[0]) n = snprintf(details_buf, sizeof(details_buf), "%s:%s", get_errno_name(error_code), desc);
+    else n = snprintf(details_buf, sizeof(details_buf), "%s:%s", get_errno_name(error_code), desc);
     int header_size = snprintf(buf, sizeof(buf), "\x1b]%d;t=R", DND_CODE);
     header_size += drop_append_request_keys(w, buf + header_size, sizeof(buf) - header_size);
-    queue_payload_to_child(w->id, w->drop.client_id, &w->drop.pending, buf, header_size, e, strlen(e), false);
+    queue_payload_to_child(w->id, w->drop.client_id, &w->drop.pending, buf, header_size, details_buf, n, false);
 }
 
 void
-drop_send_einval(Window *w) {
-    drop_send_error(w, EINVAL);
+drop_send_einval(Window *w, const char *desc) {
+    drop_send_error(w, EINVAL, desc);
 }
 
 /* Returns true if the request completed synchronously (error, no-op),
@@ -654,7 +656,7 @@ do_drop_request_data(Window *w, int32_t idx) {
     if (!osw) return true;
     /* idx is 1-based */
     if (idx < 1 || !w->drop.offerred_mimes || (size_t)idx > w->drop.num_offerred_mimes) {
-        drop_send_error(w, ENOENT);
+        drop_send_error(w, ENOENT, "drop data request index out of bounds");
         return true;
     }
     const char *mime = w->drop.offerred_mimes[idx - 1];
@@ -666,7 +668,7 @@ do_drop_request_data(Window *w, int32_t idx) {
 void
 drop_dispatch_data(Window *w, const char *mime, const char *data, ssize_t sz) {
     if (sz < 0) {
-        drop_send_error(w, -sz);
+        drop_send_error(w, -sz, "drop data request failed to read data");
         drop_pop_request(w);
         drop_process_queue(w);
     } else {
@@ -767,7 +769,7 @@ file_send_timer_callback(id_type timer_id UNUSED, void *x) {
     w->drop.file_send_timer = 0;
     if (monotonic() - w->drop.last_file_send_at > s_to_monotonic_t(FILE_SEND_TIMEOUT_SECONDS)) {
         drop_close_file_fd(w);
-        drop_send_error(w, EIO);
+        drop_send_error(w, EIO, "timed out waiting for child to read file data");
         drop_pop_request(w);
         drop_process_queue(w);
         return;
@@ -795,7 +797,7 @@ drop_send_file_chunks(Window *w) {
                 return;
             }
             drop_close_file_fd(w);
-            drop_send_error(w, EIO);
+            drop_send_error(w, EIO, "failed ot read from drop data file");
             drop_pop_request(w);
             drop_process_queue(w);
             return;
@@ -814,7 +816,7 @@ drop_send_file_chunks(Window *w) {
             /* Partial send: rewind file pointer and retry via timer */
             if (lseek(w->drop.file_fd_plus_one - 1, -(off_t)(((size_t)n) - sent), SEEK_CUR) < 0) {
                 drop_close_file_fd(w);
-                drop_send_error(w, EIO);
+                drop_send_error(w, EIO, "failed to seek() on drop data file");
                 drop_pop_request(w);
                 drop_process_queue(w);
                 return;
@@ -835,23 +837,23 @@ drop_send_file_data(Window *w, const char *path) {
     int fd = safe_open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK, 0);
     if (fd < 0) {
         switch (errno) {
-            case ENOENT: case ENOTDIR: drop_send_error(w, ENOENT); break;
-            case EACCES: case EPERM:   drop_send_error(w, EPERM); break;
-            default:                   drop_send_error(w, EIO); break;
+            case ENOENT: case ENOTDIR: drop_send_error(w, ENOENT, "drop data file does not exist"); break;
+            case EACCES: case EPERM:   drop_send_error(w, EPERM, "opening drop data file permission denied"); break;
+            default:                   drop_send_error(w, EIO, "failed to open drop data file"); break;
         }
         return true;
     }
     struct stat st;
     if (fstat(fd, &st) < 0) {
         switch (errno) {
-            case ENOENT: case ENOTDIR: drop_send_error(w, ENOENT); break;
-            case EACCES: case EPERM:   drop_send_error(w, EPERM); break;
-            default:                   drop_send_error(w, EIO); break;
+            case ENOENT: case ENOTDIR: drop_send_error(w, ENOENT, "failed to stat drop data file"); break;
+            case EACCES: case EPERM:   drop_send_error(w, EPERM, "failed to stat drop data file"); break;
+            default:                   drop_send_error(w, EIO, "failed to stat drop data file"); break;
         }
         safe_close(fd, __FILE__, __LINE__);
         return true;
     }
-    if (!S_ISREG(st.st_mode)) { drop_send_error(w, EINVAL); safe_close(fd, __FILE__, __LINE__); return true; }
+    if (!S_ISREG(st.st_mode)) { drop_send_error(w, EINVAL, "drop data file is not a regular file"); safe_close(fd, __FILE__, __LINE__); return true; }
     w->drop.file_fd_plus_one = fd + 1;
     w->drop.last_file_send_at = monotonic();
     drop_send_file_chunks(w);
@@ -891,9 +893,9 @@ drop_send_dir_listing(Window *w, const char *path) {
     DIR *dir = opendir(path);
     if (!dir) {
         switch (errno) {
-            case ENOENT: case ENOTDIR: drop_send_error(w, ENOENT); break;
-            case EACCES: case EPERM:   drop_send_error(w, EPERM); break;
-            default:                   drop_send_error(w, EIO); break;
+            case ENOENT: case ENOTDIR: drop_send_error(w, ENOENT, "drop data dir does not exist"); break;
+            case EACCES: case EPERM:   drop_send_error(w, EPERM, "drop data dir permission denied"); break;
+            default:                   drop_send_error(w, EIO, "drop data dir opening failed"); break;
         }
         return;
     }
@@ -901,7 +903,7 @@ drop_send_dir_listing(Window *w, const char *path) {
     /* Build null-separated payload: entry1\0entry2\0... */
     size_t payload_cap = 4096, payload_sz = 0;
     char *payload = malloc(payload_cap);
-    if (!payload) { closedir(dir); drop_send_error(w, EIO); return; }
+    if (!payload) { closedir(dir); drop_send_error(w, ENOMEM, "out of memory reading drop data dir"); return; }
 
 #define APPEND(s, n) do { \
     size_t _n = (size_t)(n); \
@@ -909,7 +911,7 @@ drop_send_dir_listing(Window *w, const char *path) {
     if (_need > payload_cap) { \
         while (payload_cap < _need) payload_cap *= 2; \
         char *_np = realloc(payload, payload_cap); \
-        if (!_np) { free(payload); closedir(dir); drop_send_error(w, EIO); return; } \
+        if (!_np) { free(payload); closedir(dir); drop_send_error(w, ENOMEM, "out of memory reading drop data dir"); return; } \
         payload = _np; \
     } \
     memcpy(payload + payload_sz, (s), _n); \
@@ -920,7 +922,7 @@ drop_send_dir_listing(Window *w, const char *path) {
     /* Collect directory entries */
     size_t ents_cap = 16, ents_num = 0;
     char **ents = malloc(sizeof(char *) * ents_cap);
-    if (!ents) { free(payload); closedir(dir); drop_send_error(w, EIO); return; }
+    if (!ents) { free(payload); closedir(dir); drop_send_error(w, ENOMEM, "out of memory reading directory contents"); return; }
 
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
@@ -946,7 +948,7 @@ drop_send_dir_listing(Window *w, const char *path) {
             if (!ne) {
                 for (size_t i = 0; i < ents_num; i++) free(ents[i]);
                 free(ents); free(payload); closedir(dir);
-                drop_send_error(w, EIO); return;
+                drop_send_error(w, ENOMEM, "out of memory reading drop data dir"); return;
             }
             ents = ne;
         }
@@ -954,7 +956,7 @@ drop_send_dir_listing(Window *w, const char *path) {
         if (!ents[ents_num]) {
             for (size_t i = 0; i < ents_num; i++) free(ents[i]);
             free(ents); free(payload); closedir(dir);
-            drop_send_error(w, EIO); return;
+            drop_send_error(w, ENOMEM, "out of memory reading drop data dir"); return;
         }
         ents_num++;
 
@@ -989,7 +991,7 @@ drop_send_dir_listing(Window *w, const char *path) {
 static void
 drop_send_symlink(Window *w, const char *path) {
     char target[PATH_MAX]; ssize_t tgtsz;
-    if ((tgtsz = readlink(path, target, sizeof(target)-1)) < 0) { drop_send_error(w, EIO); return; }
+    if ((tgtsz = readlink(path, target, sizeof(target)-1)) < 0) { drop_send_error(w, EIO, "failed to read symlink for drop data"); return; }
     char hdr[128];
     int hdr_sz = snprintf(hdr, sizeof(hdr), "\x1b]%d;t=r", DND_CODE);
     hdr_sz += drop_append_request_keys(w, hdr + hdr_sz, sizeof(hdr) - hdr_sz);
@@ -1003,20 +1005,20 @@ drop_send_symlink(Window *w, const char *path) {
 static bool
 do_drop_request_uri_data(Window *w, int32_t mime_idx, int32_t file_idx) {
     if (!w->drop.uri_list || !w->drop.uri_list_sz) {
-        drop_send_error(w, EINVAL); return true;
+        drop_send_error(w, EINVAL, "drop data uri list empty"); return true;
     }
     if (global_state.drag_source.from_window == w->id && w->drag_source.state != DRAG_SOURCE_NONE) {
-        drop_send_error(w, EPERM); return true;
+        drop_send_error(w, EPERM, "cannot drop into self window"); return true;
     }
 
     /* Verify mime_idx (1-based) points to text/uri-list */
     if (mime_idx < 1 || !w->drop.offerred_mimes || (size_t)mime_idx > w->drop.num_offerred_mimes ||
         strcmp(w->drop.offerred_mimes[mime_idx - 1], "text/uri-list") != 0) {
-        drop_send_error(w, EINVAL); return true;
+        drop_send_error(w, EINVAL, "drop data mime index out of bounds"); return true;
     }
 
     /* file_idx is 1-based, convert to 0-based for get_nth_file_url */
-    if (file_idx < 1) { drop_send_error(w, EINVAL); return true; }
+    if (file_idx < 1) { drop_send_error(w, EINVAL, "drop data file url index out of bounds"); return true; }
     int file_n = file_idx - 1;
 
     RAII_ALLOC(char, path, NULL);
@@ -1029,9 +1031,9 @@ do_drop_request_uri_data(Window *w, int32_t mime_idx, int32_t file_idx) {
     struct stat st;
     if (lstat(path, &st) < 0) {
         switch (errno) {
-            case ENOENT: case ENOTDIR: drop_send_error(w, ENOENT); break;
-            case EACCES: case EPERM:   drop_send_error(w, EPERM); break;
-            default:                   drop_send_error(w, EIO); break;
+            case ENOENT: case ENOTDIR: drop_send_error(w, ENOENT, "drop data file does not exist"); break;
+            case EACCES: case EPERM:   drop_send_error(w, EPERM, "permission denied for stat() on drop data file"); break;
+            default:                   drop_send_error(w, EIO, "stat() on drop data file failed"); break;
         }
         return true;
     }
@@ -1044,7 +1046,7 @@ do_drop_request_uri_data(Window *w, int32_t mime_idx, int32_t file_idx) {
     } else if (S_ISLNK(st.st_mode)) {
         drop_send_symlink(w, path);
     } else {
-        drop_send_error(w, EINVAL);
+        drop_send_error(w, EINVAL, "drop data file is neother a regular file, directory or symlink");
     }
     return sync;
 }
@@ -1055,10 +1057,10 @@ do_drop_request_uri_data(Window *w, int32_t mime_idx, int32_t file_idx) {
  * Returns true if completed synchronously, false if async file I/O started. */
 static bool
 do_drop_handle_dir_request(Window *w, uint32_t handle_id, int32_t entry_num) {
-    if (!handle_id) { drop_send_error(w, EINVAL); return true; }
+    if (!handle_id) { drop_send_error(w, EINVAL, "no parent directory handle specified"); return true; }
 
     DirHandle *h = drop_find_dir_handle(w, handle_id);
-    if (!h) { drop_send_error(w, EINVAL); return true; }
+    if (!h) { drop_send_error(w, EINVAL, "parent directory handle not found"); return true; }
 
     if (entry_num == 0) {
         /* Close the handle */
@@ -1070,19 +1072,19 @@ do_drop_handle_dir_request(Window *w, uint32_t handle_id, int32_t entry_num) {
 
     /* Read the entry at 1-based index */
     size_t eidx = (size_t)(entry_num - 1);
-    if (eidx >= h->num_entries) { drop_send_error(w, ENOENT); return true; }
+    if (eidx >= h->num_entries) { drop_send_error(w, EINVAL, "entry index out of bounds for parent directory"); return true; }
 
     char full[PATH_MAX];
     if (snprintf(full, sizeof(full), "%s/%s", h->path, h->entries[eidx]) >= (int)sizeof(full)) {
-        drop_send_error(w, EIO); return true;
+        drop_send_error(w, EIO, "drop data file path too long"); return true;
     }
 
     struct stat lst;
     if (lstat(full, &lst) < 0) {
         switch (errno) {
-            case ENOENT: case ENOTDIR: case ELOOP: drop_send_error(w, ENOENT); break;
-            case EACCES: case EPERM:               drop_send_error(w, EPERM); break;
-            default:                               drop_send_error(w, EIO); break;
+            case ENOENT: case ENOTDIR: case ELOOP: drop_send_error(w, ENOENT, "drop data entry does not exist"); break;
+            case EACCES: case EPERM:               drop_send_error(w, EPERM, "parmission denied while trying to stat() drop data entry"); break;
+            default:                               drop_send_error(w, EIO, "stt() failed on drop data entry"); break;
         }
         return true;
     }
@@ -1093,9 +1095,9 @@ do_drop_handle_dir_request(Window *w, uint32_t handle_id, int32_t entry_num) {
         ssize_t tlen = readlink(full, target, sizeof(target) - 1);
         if (tlen < 0) {
             switch (errno) {
-                case ENOENT: case ENOTDIR: drop_send_error(w, ENOENT); break;
-                case EACCES: case EPERM:   drop_send_error(w, EPERM); break;
-                default:                   drop_send_error(w, EIO); break;
+                case ENOENT: case ENOTDIR: drop_send_error(w, ENOENT, "readlink() failed on drop data entry"); break;
+                case EACCES: case EPERM:   drop_send_error(w, EPERM, "readlink() failed on drop data entry"); break;
+                default:                   drop_send_error(w, EIO, "readlink() failed on drop data entry"); break;
             }
             return true;
         }
@@ -1115,7 +1117,7 @@ do_drop_handle_dir_request(Window *w, uint32_t handle_id, int32_t entry_num) {
     } else if (S_ISREG(lst.st_mode)) {
         return drop_send_file_data(w, full);
     } else {
-        drop_send_error(w, EINVAL);
+        drop_send_error(w, EINVAL, "drop data entry is neither a regular file nor a directory");
         return true;
     }
 }
@@ -1204,7 +1206,7 @@ drop_enqueue_request(Window *w, int32_t cell_x, int32_t cell_y, int32_t pixel_y,
         w->drop.current_request_x = cell_x;
         w->drop.current_request_y = cell_y;
         w->drop.current_request_Y = pixel_y;
-        drop_send_error(w, EMFILE);
+        drop_send_error(w, EMFILE, "too many drop data requests");
         w->drop.current_request_x = saved_x;
         w->drop.current_request_y = saved_y;
         w->drop.current_request_Y = saved_Y;
