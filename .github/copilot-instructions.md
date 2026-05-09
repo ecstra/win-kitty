@@ -23,8 +23,7 @@ code.
 
 ## Test Procedures
 - To run the complete test suite, run `./test.py`
-- To run a specific test, run `./test.py test-name` t
-  `test-name` is the name of the test without the
+- To run a specific test, run `./test.py test_name` where `test_name` is the name of the test without the
   leading `test_` for Python tests and without the leading `Test` for Go tests.
 - Do not use go test or ./setup.py test to run tests
 
