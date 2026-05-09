@@ -41,6 +41,7 @@ static struct {PyObject *face, *descriptor;} builtin_nerd_font = {0};
 #define FcPatternAddInteger dynamically_loaded_fc_symbol.PatternAddInteger
 #define FcPatternCreate dynamically_loaded_fc_symbol.PatternCreate
 #define FcPatternGetBool dynamically_loaded_fc_symbol.PatternGetBool
+#define FcPatternGetMatrix dynamically_loaded_fc_symbol.PatternGetMatrix
 #define FcPatternAddCharSet dynamically_loaded_fc_symbol.PatternAddCharSet
 #define FcConfigAppFontAddFile dynamically_loaded_fc_symbol.ConfigAppFontAddFile
 
@@ -66,6 +67,7 @@ static struct {
     FcBool (*PatternAddInteger) (FcPattern *p, const char *object, int i);
     FcPattern * (*PatternCreate) (void);
     FcResult (*PatternGetBool) (const FcPattern *p, const char *object, int n, FcBool *b);
+    FcResult (*PatternGetMatrix) (const FcPattern *p, const char *object, int n, FcMatrix **m);
     FcBool (*PatternAddCharSet) (FcPattern *p, const char *object, const FcCharSet *c);
     FcBool (*ConfigAppFontAddFile) (FcConfig *config, const FcChar8 *file);
 } dynamically_loaded_fc_symbol = {0};
@@ -117,6 +119,7 @@ load_fontconfig_lib(void) {
         LOAD_FUNC(PatternAddInteger);
         LOAD_FUNC(PatternCreate);
         LOAD_FUNC(PatternGetBool);
+        LOAD_FUNC(PatternGetMatrix);
         LOAD_FUNC(PatternAddCharSet);
         LOAD_FUNC(ConfigAppFontAddFile);
 }
@@ -210,6 +213,13 @@ pattern_as_dict(FcPattern *pat) {
     B(FC_OUTLINE, outline);
     B(FC_COLOR, color);
     E(FC_SPACING, spacing, pyspacing);
+    {
+        FcMatrix *mtx = NULL;
+        if (FcPatternGetMatrix(pat, FC_MATRIX, 0, &mtx) == FcResultMatch && mtx) {
+            RAII_PyObject(t, Py_BuildValue("(dddd)", mtx->xx, mtx->xy, mtx->yx, mtx->yy));
+            if (!t || PyDict_SetItemString(ans, "matrix", t) != 0) return NULL;
+        }
+    }
 
     Py_INCREF(ans);
     return ans;
