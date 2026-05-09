@@ -1578,7 +1578,7 @@ drag_free_data(Window *w, const char *mime_type, const char* data, size_t sz) {
 const char*
 drag_get_data(Window *w, const char *mime_type, size_t *sz, int *err_code) {
     *err_code = ENOENT; *sz = 0;
-    if (!ds.items || ds.state < DRAG_SOURCE_DROPPED) return NULL;
+    if (!ds.items || ds.state < DRAG_SOURCE_STARTED) return NULL;
     for (size_t i = 0; i < ds.num_mimes; i++) {
         if (strcmp(ds.items[i].mime_type, mime_type) == 0) {
             if (ds.items[i].fd_plus_one < 0) {
@@ -1672,7 +1672,7 @@ open_item_tmpfile(void) {
 
 void
 drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *payload, size_t payload_sz) {
-    if ((ds.state < DRAG_SOURCE_DROPPED) || idx >= ds.num_mimes || !ds.items) {
+    if ((ds.state < DRAG_SOURCE_STARTED) || idx >= ds.num_mimes || !ds.items) {
         abrt(EINVAL);
         return;
     }
