@@ -977,8 +977,16 @@ class Boss:
                     override_title=args.title or None, window_state=wstate, x=pos_x, y=pos_y)
                 if session.focus_os_window:
                     focused_os_window = os_window_id
-                if opts.background_opacity != get_options().background_opacity:
+                global_opts = get_options()
+                if opts.background_opacity != global_opts.background_opacity:
                     self._set_os_window_background_opacity(os_window_id, opts.background_opacity)
+                if opts.background_image != global_opts.background_image:
+                    self.set_background_image(
+                        opts.background_image[0] if opts.background_image else None, (os_window_id,), False,
+                        layout=opts.background_image_layout,
+                        linear_interpolation=opts.background_image_linear,
+                        tint=opts.background_tint,
+                        tint_gaps=opts.background_tint_gaps)
                 if n := data.get('notify_on_os_window_death'):
                     self.os_window_death_actions[os_window_id] = partial(self.notify_on_os_window_death, n)
             if focused_os_window > 0:

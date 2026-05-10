@@ -1440,6 +1440,8 @@ pyset_background_image(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
             if (bgimage) {
                 if (!configured) {  // configured means we use the zero index global image
                     os_window->background_image.override = bgimage;
+                    os_window->background_image.layout = layout;
+                    os_window->background_image.has_layout = true;
                     bgimage->refcnt++;
                 }
             } else if (is_increment) {
