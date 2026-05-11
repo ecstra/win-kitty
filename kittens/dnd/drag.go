@@ -476,7 +476,7 @@ func (dnd *dnd) next_remote_item() (err error) {
 }
 
 func (dnd *dnd) on_drag_remote_data_request(idx int) (err error) {
-	ds := dnd.drag_sources["text/uri_list"]
+	ds := dnd.drag_sources["text/uri-list"]
 	if ds == nil || len(ds.uri_list) < 1 {
 		dnd.finish_drag("EINVAL")
 		return fmt.Errorf("terminal asked for drag data from URI list but no list present")
