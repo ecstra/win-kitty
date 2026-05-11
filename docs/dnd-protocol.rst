@@ -391,7 +391,7 @@ examine the :ref:`machine_id` sent with the enable drag offers
 from the URI list. To request data for a particular entry, terminals send an
 escape code of the form::
 
-    OSC _dnd_code ; t=k:x=idx ; base64 encoded file data ST
+    OSC _dnd_code ; t=k:x=idx ST
 
 Here ``idx`` is the one based index into the list of entries in the
 ``text/uri-list`` MIME type. Then the client can respond with the data

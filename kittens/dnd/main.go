@@ -31,6 +31,7 @@ type uri_list_item struct {
 	path, uri, human_name string
 	file                  *os.File
 	metadata              os.FileInfo
+	was_sent              bool
 }
 
 type drag_source struct {
@@ -105,7 +106,7 @@ func (dnd *dnd) send_test_response(payload string) {
 }
 
 func (dnd *dnd) has_exit_on(event string) bool {
-	for _, e := range strings.Split(dnd.opts.ExitOn, ",") {
+	for e := range strings.SplitSeq(dnd.opts.ExitOn, ",") {
 		if strings.TrimSpace(e) == event {
 			return true
 		}
@@ -276,7 +277,9 @@ func (dnd *dnd) run_loop() (err error) {
 		case 'E':
 			return dnd.on_drag_error(cmd)
 		case 'e':
-			return dnd.on_drag_event(cmd.X, cmd.Y, cmd.Operation, cmd.Yp)
+			return dnd.on_drag_event(cmd.X, cmd.Y, cmd.Operation)
+		case 'k':
+			return dnd.on_drag_remote_data_request(cmd.X - 1)
 		}
 		return nil
 	}

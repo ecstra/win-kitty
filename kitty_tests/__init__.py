@@ -426,7 +426,7 @@ class PTY:
         if isinstance(data, str):
             data = data.encode('utf-8')
         if self.log_data_flow:
-            print('t -> c:', data)
+            print('t -> c:', bytes(data))
         self.write_buf += data
         if flush:
             self.process_input_from_child(0)
