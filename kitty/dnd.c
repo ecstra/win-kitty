@@ -1638,6 +1638,30 @@ drag_free_data(Window *w, const char *mime_type, const char* data, size_t sz) {
     return 0;
 }
 
+static bool
+is_file_url(const char *url) {
+    return url != NULL && strlen(url) > sizeof("file://")-1 && memcmp(url, "file://", sizeof("file://")-1) == 0;
+}
+
+static bool
+request_remote_files(Window *w, size_t i) {
+#define mi ds.items[i]
+    char buf[128];
+    mi.remote_items = calloc(mi.num_uris, sizeof(mi.remote_items[0]));
+    if (!mi.remote_items) return false;
+    mi.num_remote_items = mi.num_uris;
+    for (size_t k = 0; k < mi.num_remote_items; k++) {
+        if (is_file_url(mi.uri_list[k])) {
+            int header_sz = snprintf(buf, sizeof(buf), "\x1b]%d;t=k:x=%zu", DND_CODE, k + 1);
+            queue_payload_to_child(
+                w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_sz, NULL, 0, false);
+            mi.remote_items[k].waiting_for_completion = true;
+        }
+    }
+    return true;
+#undef mi
+}
+
 const char*
 drag_get_data(Window *w, const char *mime_type, size_t *sz, int *err_code) {
     *err_code = ENOENT; *sz = 0;
@@ -1693,14 +1717,14 @@ drag_get_data(Window *w, const char *mime_type, size_t *sz, int *err_code) {
             }
             // No fd yet, request data from the client
             if (!ds.items[i].data_requested_from_client) {
-                char buf[128];
                 ds.items[i].data_requested_from_client = true;
                 ds.items[i].requested_remote_files = ds.is_remote_client && ds.items[i].is_uri_list;
                 if (ds.items[i].requested_remote_files) {
-                    // TODO: send remote file requests
+                    if (!request_remote_files(w, i)) { *err_code = ENOMEM; return NULL; }
                 } else {
-                    int header_sz = snprintf(buf, sizeof(buf), "\x1b]%d;t=e:x=%d:y=%zu:Y=%d",
-                        DND_CODE, DRAG_NOTIFY_FINISHED + 2, i, ds.items[i].requested_remote_files);
+                    char buf[128];
+                    int header_sz = snprintf(buf, sizeof(buf),
+                            "\x1b]%d;t=e:x=%d:y=%zu", DND_CODE, DRAG_NOTIFY_FINISHED + 2, i);
                     queue_payload_to_child(
                         w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_sz, NULL, 0, false);
                 }
@@ -1919,10 +1943,12 @@ populate_dir_entries(Window *w, DragRemoteItem *ri) {
     while (ptr < end) {
         const char *p = memchr(ptr, 0, (size_t)(end - ptr));
         size_t len = p ? (size_t)(p - ptr) : (size_t)(end - ptr);
+        DragRemoteItem *child = ri->children + ri->children_sz++;
+        child->parent = ri;
         if (len > 0) {
             char *name = strndup(ptr, len);
             if (!name) abrt(ENOMEM, "out of memory processing drag source item directory entries");
-            ri->children[ri->children_sz++].dir_entry_name = name;
+            child->dir_entry_name = name;
         }
         ptr = p ? p + 1 : end;
     }
@@ -1996,11 +2022,6 @@ toplevel_data_for_drag(
     Window *w, unsigned mime_item_idx, unsigned uri_item_idx, unsigned item_type,
     bool has_more, const uint8_t *payload, size_t payload_sz
 ) {
-    if (!mi.remote_items) {
-        mi.remote_items = calloc(mi.num_uris, sizeof(mi.remote_items[0]));
-        if (!mi.remote_items) abrt(ENOMEM, "out of memory processing drag source item");
-        mi.num_remote_items = mi.num_uris;
-    }
     if (!mi.base_dir_for_remote_items) {
         int fd;
         mi.base_dir_for_remote_items = mktempdir_in_cache("dnd-drag-", &fd);
@@ -2050,10 +2071,10 @@ find_by_handle(DragRemoteItem *parent, int handle, char *path_to_parent, size_t 
 static void
 subdir_data_for_drag(
     Window *w, unsigned mime_item_idx, unsigned uri_item_idx, int handle, unsigned entry_num, unsigned item_type,
-    bool has_more, const uint8_t *payload, size_t payload_sz
+    bool has_more, const uint8_t *payload, size_t payload_sz, DragRemoteItem **ri
 ) {
     if (!mi.remote_items || uri_item_idx >= mi.num_remote_items) abrt(EINVAL, "drag source sub directory item uri list index out of range");
-    DragRemoteItem *parent = NULL;
+    DragRemoteItem *parent = NULL; *ri = NULL;
     if (mi.currently_open_subdir) {
         if (mi.currently_open_subdir->type == handle) parent = mi.currently_open_subdir;
         else {
@@ -2080,15 +2101,14 @@ subdir_data_for_drag(
         }
     }
     if (entry_num >= parent->children_sz) abrt(EINVAL, "drag source sub diretory index out of bounds");
-    DragRemoteItem *ri = parent->children + entry_num;
-    if (!ri->started) {
-        ri->started = true;
-        ri->type = item_type;
-        base64_init_stream_decoder(&ri->base64_state);
+    *ri = parent->children + entry_num;
+    if (!(*ri)->started) {
+        (*ri)->started = true;
+        (*ri)->type = item_type;
+        base64_init_stream_decoder(&(*ri)->base64_state);
     }
-    add_payload(w, ri, has_more, payload, payload_sz, parent->fd_plus_one - 1);
+    add_payload(w, *ri, has_more, payload, payload_sz, parent->fd_plus_one - 1);
 }
-#undef mi
 
 void
 drag_offer_start_to_child(Window *w, int32_t cell_x, int32_t cell_y, int32_t pixel_x, int32_t pixel_y) {
@@ -2099,25 +2119,69 @@ drag_offer_start_to_child(Window *w, int32_t cell_x, int32_t cell_y, int32_t pix
         w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_size, NULL, 0, false);
 }
 
+static void
+finish_remote_data_if_all_items_received(Window *w, unsigned mime_item_idx) {
+    for (size_t i = 0; i < mi.num_remote_items; i++) {
+        if (mi.remote_items[i].waiting_for_completion && !mi.remote_items[i].completed) return;
+    }
+    finish_remote_data(w, mime_item_idx);
+}
+
+static bool
+all_children_complete(DragRemoteItem *parent) {
+    for (size_t i = 0; i < parent->children_sz; i++) {
+        if (!parent->children[i].completed) return false;
+    }
+    return true;
+}
+
 void
 drag_remote_file_data(
     Window *w, int32_t x, int32_t y, int32_t X, int32_t Y, bool has_more, const uint8_t *payload, size_t payload_sz
 ) {
-    size_t item_idx = ds.num_mimes;
+    size_t mime_item_idx = ds.num_mimes;
     for (size_t i = 0; i < ds.num_mimes; i++) {
         if (ds.items[i].requested_remote_files) {
-            item_idx = i; break;
+            mime_item_idx = i; break;
         }
     }
-    if (item_idx == ds.num_mimes) abrt(EINVAL, "drag source remote file item index out of bounds");
-    if (X < 0) abrt(EINVAL, "drag source remote item X cannot be negative");
-    if (!x && !y && !Y) { finish_remote_data(w, item_idx); return; }
-    if (!Y) toplevel_data_for_drag(w, item_idx, x - 1, X, has_more, payload, payload_sz);
-    else subdir_data_for_drag(w, item_idx, x - 1, Y, y - 1, X, has_more, payload, payload_sz);
+    if (mime_item_idx == ds.num_mimes) abrt(EINVAL, "drag source no text/uri-list MIME entry data was requested");
+    if (x < 1) abrt(EINVAL, "drag source remote item x index cannot be less than 1");
+    const bool all_data_received = !payload_sz && !has_more;
+    const unsigned uri_item_idx = x - 1;
+    if (uri_item_idx >= mi.num_remote_items) abrt(EINVAL, "drag source uri list index out of bounds");
+    DragRemoteItem *ri;
+    if (!Y) {
+        toplevel_data_for_drag(w, mime_item_idx, uri_item_idx, X, has_more, payload, payload_sz);
+        if (all_data_received) {
+            ri = mi.remote_items + uri_item_idx;
+            if (ri->waiting_for_completion && all_children_complete(ri)) {
+                ri->completed = true;
+                finish_remote_data_if_all_items_received(w, mime_item_idx);
+            }
+        }
+    } else {
+        if (y < 1) abrt(EINVAL, "drag source remote item y index cannot be less than 1");
+        subdir_data_for_drag(w, mime_item_idx, x - 1, Y, y - 1, X, has_more, payload, payload_sz, &ri);
+        if (all_data_received && ri && all_children_complete(ri)) {
+            ri->completed = true;
+            while (1) {
+                ri = ri->parent;
+                if (ri) {
+                    if (all_children_complete(ri)) ri->completed = true;
+                    else break;
+                } else {
+                    finish_remote_data_if_all_items_received(w, mime_item_idx);
+                    break;
+                }
+            }
+        }
+    }
 }
 #undef img
 #undef abrt
 #undef ds
+#undef mi
 // }}}
 
 // DnD testing infrastructure {{{
@@ -2316,8 +2380,7 @@ dnd_test_force_drag_dropped(PyObject *self UNUSED, PyObject *args) {
 static PyObject *
 dnd_test_request_drag_data(PyObject *self UNUSED, PyObject *args) {
     // Simulate what drag_get_data does initially: find the MIME item at the
-    // given index, set requested_remote_files if appropriate, and return the
-    // escape code that would be sent to the client.
+    // given index, set requested_remote_files if appropriate.
     unsigned long long window_id;
     unsigned idx;
     if (!PyArg_ParseTuple(args, "KI", &window_id, &idx)) return NULL;
@@ -2327,6 +2390,7 @@ dnd_test_request_drag_data(PyObject *self UNUSED, PyObject *args) {
         PyErr_SetString(PyExc_ValueError, "Invalid state or index"); return NULL;
     }
     w->drag_source.items[idx].requested_remote_files = w->drag_source.is_remote_client && w->drag_source.items[idx].is_uri_list;
+    if (w->drag_source.items[idx].requested_remote_files) request_remote_files(w, idx);
     Py_RETURN_NONE;
 }
 
@@ -2423,6 +2487,19 @@ dnd_test_probe_state(PyObject *self UNUSED, PyObject *args) {
     }
     if (strcmp(q, "drag_thumbnail_size") == 0) {
         return PyLong_FromSize_t(last_total_image_size);
+    }
+    if (strcmp(q, "drag_remote_data_complete") == 0) {
+        for (size_t idx = 0; idx < w->drag_source.num_mimes; idx++) {
+#define mi w->drag_source.items[idx]
+            if (mi.is_uri_list && mi.requested_remote_files) {
+                for (size_t i = 0; i < mi.num_remote_items; i++) {
+                    if (mi.remote_items[i].waiting_for_completion && !mi.remote_items[i].completed)
+                        return PyUnicode_FromString(mi.remote_items[i].dir_entry_name);
+                }
+            }
+#undef mi
+        }
+        Py_RETURN_NONE;
     }
     Py_RETURN_NONE;
 }

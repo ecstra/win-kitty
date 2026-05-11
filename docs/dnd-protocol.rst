@@ -419,11 +419,6 @@ adding ``Y=parent-handle:y=num`` to the escape codes above. Here
 is the one based index into the list of entries in the directory. Thus, the
 set of keys ``x, y, Y`` uniquely determine an entry.
 
-Once all data for a dirctory is transmitted, the client informs the terminal emulator of
-completion with::
-
-    OSC _dnd_code ; t=k:Y=handle ; ST
-
 If any error occurs in the client while reading the data, it can inform
 the terminal using::
 

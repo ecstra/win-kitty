@@ -253,7 +253,8 @@ typedef struct DragRemoteItem {
     size_t children_sz;
     char *dir_entry_name;
     base64_state base64_state;
-    bool started;
+    bool started, waiting_for_completion, completed;
+    struct DragRemoteItem *parent;
 } DragRemoteItem;
 
 typedef struct Window {
