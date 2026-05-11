@@ -1458,7 +1458,7 @@ parse_uri_list(Window *w, char *data, const ssize_t sz, size_t *num_uris_out) {
     // First pass: count non-comment, non-empty lines
     size_t count = 0;
     char *p = data;
-    while (p - data <= sz) {
+    while (p - data < sz) {
         char *eol = p + strcspn(p, "\r\n");
         char saved = *eol; *eol = '\0';
         char *end = eol;
