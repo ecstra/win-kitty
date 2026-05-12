@@ -332,11 +332,8 @@ func (dnd *dnd) on_send_done(id loop.IdType) (err error) {
 		}
 	}
 	if id == dnd.drag_status.remote_item_write_id {
-		if dnd.drag_status.current_remote_file != nil {
-			err = dnd.send_next_file_chunk()
-		} else {
-			err = dnd.next_remote_item()
-		}
+		dnd.drag_status.remote_item_write_id = 0
+		err = dnd.send_next_file_chunk()
 	}
 	return
 }
