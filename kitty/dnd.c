@@ -2154,7 +2154,7 @@ drag_remote_file_data(
             mime_item_idx = i; break;
         }
     }
-    if (mime_item_idx == ds.num_mimes) abrt(EINVAL, "drag source no text/uri-list MIME entry data was requested");
+    if (mime_item_idx == ds.num_mimes) abrt(EINVAL, "drag source no remote data was requested");
     if (x < 1) abrt(EINVAL, "drag source remote item x index cannot be less than 1");
     const bool all_data_received = !payload_sz && !has_more;
     const unsigned uri_item_idx = x - 1;

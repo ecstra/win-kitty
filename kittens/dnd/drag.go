@@ -392,7 +392,9 @@ func (dnd *dnd) send_remote_dir(path string, idx_in_uri_list, parent_dir_handle,
 		names = append(names, entry.Name())
 	}
 	payload := utils.UnsafeStringToBytes(strings.Join(names, "\x00"))
-	dnd.send_remote_item_payload(parent_dir_handle, idx, idx_in_uri_list, handle, payload)
+	if len(payload) > 0 {
+		dnd.send_remote_item_payload(parent_dir_handle, idx, idx_in_uri_list, handle, payload)
+	}
 	dnd.drag_status.remote_item_write_id = dnd.send_remote_item_payload(parent_dir_handle, idx, idx_in_uri_list, handle, nil)
 	return
 }
@@ -403,7 +405,9 @@ func (dnd *dnd) send_remote_symlink(path string, idx_in_uri_list, parent_dir_han
 		dnd.finish_drag("EIO")
 		return err
 	}
-	dnd.send_remote_item_payload(parent_dir_handle, idx, idx_in_uri_list, 1, utils.UnsafeStringToBytes(target))
+	if len(target) > 0 {
+		dnd.send_remote_item_payload(parent_dir_handle, idx, idx_in_uri_list, 1, utils.UnsafeStringToBytes(target))
+	}
 	dnd.drag_status.remote_item_write_id = dnd.send_remote_item_payload(parent_dir_handle, idx, idx_in_uri_list, 1, nil)
 	return
 }
