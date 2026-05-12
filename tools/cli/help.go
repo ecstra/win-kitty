@@ -131,7 +131,9 @@ func ShowHelpInPager(text string) {
 	pager.Stdin = strings.NewReader(text)
 	pager.Stdout = os.Stdout
 	pager.Stderr = os.Stderr
-	_ = pager.Run()
+	if err := pager.Run(); err != nil {
+		os.Stdout.WriteString(text)
+	}
 }
 
 func getDeterministicTimestamp() time.Time {
