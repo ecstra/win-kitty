@@ -61,9 +61,9 @@ def create_fs(base, include_toplevel_working_symlink=True):
     w(4096 * 3 + 113, 'some-image.png')
     w(0, 'd1', 'f1')
     w(0, 'd1', 'f2')
-    w(0, 'd1', 'sd', 'f1')
-    w(0, 'd1', 'sd', 'ssd', 'f1')
-    os.symlink('../moose', join('d1', 'sd', 'ssd', 's1'))
+    w(0, 'd1', 'sd', 'f11')
+    w(0, 'd1', 'sd', 'ssd', 'f111')
+    os.symlink('../moose', join('d1', 'sd', 'ssd', 's11'))
 
 
 class TestDnDKitten(BaseTest):
@@ -388,20 +388,21 @@ class TestDnDKitten(BaseTest):
     def read_drag_data(self, mime, timeout=10):
         # self.pty.log_data_flow = True
         ans = b''
-        st = time.monotonic()
-        while time.monotonic() - st < timeout:
+        end_time = time.monotonic() + timeout
+        while time.monotonic() <= end_time:
             try:
                 chunk = dnd_test_drag_get_data(self.capture.window_id, mime)
                 if not chunk:
-                    break
+                    return ans
                 ans += chunk
             except OSError as err:
                 if err.errno == errno.EAGAIN:
-                    self.pty.process_input_from_child(timeout=st + timeout - time.monotonic())
+                    self.pty.process_input_from_child(timeout=end_time - time.monotonic())
                     continue
                 chunk = ans = b''
                 raise
-        return ans
+        chunk = ans = b''
+        raise TimeoutError(f'timed out waiting for data from drag_get_data for {mime}')
 
     def dnd_kitten_drag(self, remote_client, img_drop_path):
         # self.pty.log_data_flow = True

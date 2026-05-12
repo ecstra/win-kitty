@@ -1643,6 +1643,12 @@ is_file_url(const char *url) {
     return url != NULL && strlen(url) > sizeof("file://")-1 && memcmp(url, "file://", sizeof("file://")-1) == 0;
 }
 
+const char*
+my_basename(const char *path) {
+    const char *base = strrchr(path, '/'); // Change to '\\' for Windows
+    return base ? base + 1 : path;
+}
+
 static bool
 request_remote_files(Window *w, size_t i) {
 #define mi ds.items[i]
@@ -1656,6 +1662,7 @@ request_remote_files(Window *w, size_t i) {
             queue_payload_to_child(
                 w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_sz, NULL, 0, false);
             mi.remote_items[k].waiting_for_completion = true;
+            mi.remote_items[k].dir_entry_name = strdup(my_basename(mi.uri_list[k]));
         }
     }
     return true;
@@ -2122,7 +2129,9 @@ drag_offer_start_to_child(Window *w, int32_t cell_x, int32_t cell_y, int32_t pix
 static void
 finish_remote_data_if_all_items_received(Window *w, unsigned mime_item_idx) {
     for (size_t i = 0; i < mi.num_remote_items; i++) {
-        if (mi.remote_items[i].waiting_for_completion && !mi.remote_items[i].completed) return;
+        if (mi.remote_items[i].waiting_for_completion && !mi.remote_items[i].completed) {
+            return;
+        }
     }
     finish_remote_data(w, mime_item_idx);
 }
@@ -2494,7 +2503,7 @@ dnd_test_probe_state(PyObject *self UNUSED, PyObject *args) {
             if (mi.is_uri_list && mi.requested_remote_files) {
                 for (size_t i = 0; i < mi.num_remote_items; i++) {
                     if (mi.remote_items[i].waiting_for_completion && !mi.remote_items[i].completed)
-                        return PyUnicode_FromString(mi.remote_items[i].dir_entry_name);
+                        return PyUnicode_FromString(mi.remote_items[i].dir_entry_name ? mi.remote_items[i].dir_entry_name : "");
                 }
             }
 #undef mi
