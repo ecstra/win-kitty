@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # License: GPLv3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
-import errno
+import errno, time
 import fnmatch
 import itertools
 import os
@@ -384,10 +384,11 @@ class TestDnDKitten(BaseTest):
         self.exit_kitten()
         self.img_drag_data = None
 
-    def read_drag_data(self, mime):
+    def read_drag_data(self, mime, timeout=10):
         # self.pty.log_data_flow = True
         ans = b''
-        while True:
+        st = time.monotonic()
+        while time.monotonic() - st < timeout:
             try:
                 chunk = dnd_test_drag_get_data(self.capture.window_id, mime)
                 if not chunk:
@@ -395,7 +396,7 @@ class TestDnDKitten(BaseTest):
                 ans += chunk
             except OSError as err:
                 if err.errno == errno.EAGAIN:
-                    self.pty.process_input_from_child()
+                    self.pty.process_input_from_child(timeout=st + timeout - time.monotonic())
                     continue
                 chunk = ans = b''
                 raise
