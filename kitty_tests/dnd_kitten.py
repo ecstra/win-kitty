@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # License: GPLv3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
-import errno, time
+import errno
 import fnmatch
 import itertools
 import os
@@ -9,6 +9,7 @@ import random
 import shutil
 import stat
 import tempfile
+import time
 import uuid
 from base64 import standard_b64encode
 from functools import partial
