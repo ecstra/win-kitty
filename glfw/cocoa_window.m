@@ -4351,12 +4351,21 @@ add_uri_list_drag_items(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dr
 
 static int
 add_drag_items(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dragItems, GLFWDragSourceItem *mime_item, const GLFWimage *thumbnail) {
+    // URI list items get added directly to the clipboard for use by native apps since macOS does not support
+    // the text/uri-list MIME type, however this type remains as a private
+    // kitty type to enable kitty to kitty DnD for remote clients.
+    bool is_uri_list = false;
     if (strcmp(mime_item->mime_type, "text/uri-list") == 0 && mime_item->optional_data && mime_item->data_size) {
-        return add_uri_list_drag_items(window, dragItems, mime_item->optional_data, mime_item->data_size, mime_item->is_remote_client, thumbnail);
+        is_uri_list = true;
+        int err = add_uri_list_drag_items(window, dragItems, mime_item->optional_data, mime_item->data_size, mime_item->is_remote_client, thumbnail);
+        if (err != 0) return err;
     }
     NSString* utiString = mime_to_uti(mime_item->mime_type);
     id w;
-    if (mime_item->optional_data) {
+    // remote client URI list must be set a file promise so that the kitty drag
+    // source code receives a request for it and can then fetch the remote
+    // files.
+    if (mime_item->optional_data && !(is_uri_list && mime_item->is_remote_client)) {
         NSPasteboardItem *pbItem = [[[NSPasteboardItem alloc] init] autorelease];
         NSData *data = [NSData dataWithBytes:mime_item->optional_data length:mime_item->data_size];
         [pbItem setData:data forType:utiString];
