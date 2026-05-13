@@ -4462,7 +4462,11 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
 - (bool)is_mimetype:(const char*)q { return strcmp(q, mimeType) == 0; }
 
 - (void)promised_data_ready:(const char*)path sz:(size_t)sz type:(int)type {
-    (void)sz;
+    if (drag_finish_timer) {
+        [drag_finish_timer invalidate];
+        drag_finish_timer = nil;
+    }
+    if (path == NULL) return;  // progress update
     if (file_handle) [file_handle release];
     file_handle = nil;
     NSFileManager *fileManager = [NSFileManager defaultManager];
