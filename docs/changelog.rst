@@ -276,6 +276,8 @@ Detailed list of changes
 
 - ssh kitten: Sanitize user controlled data in error messages that might leak to shell (:cve:`2026-42850`)
 
+- Linux: Respect the fontconfig matrix setting commonly used for fake slant with fonts that do not have italic variants (:pull:`9990`)
+
 
 0.46.2 [2026-03-21]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
