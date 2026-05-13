@@ -4462,19 +4462,95 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
 - (bool)is_mimetype:(const char*)q { return strcmp(q, mimeType) == 0; }
 
 - (void)promised_data_ready:(const char*)path sz:(size_t)sz type:(int)type {
+    (void)sz;
     if (file_handle) [file_handle release];
     file_handle = nil;
-    // TODO: erase file at file_url
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    // Erase the empty placeholder file created by writePromiseToURL:
+    [fileManager removeItemAtURL:file_url error:nil];
+    NSError *error = nil;
+    NSURL *srcURL = [NSURL fileURLWithPath:@(path)];
     switch (type) {
         case 0:
             // Create a hard link to path at file_url
+            if (![fileManager linkItemAtURL:srcURL toURL:file_url error:&error]) {
+                [self end_transfer_with_error:error];
+                return;
+            }
             break;
-        case 1:
+        case 1: {
             // Create a symlink to the same destination as the symlink at path
-        default:
-            // copy the directory at path to file_url recursively using hard
-            // links for files.
+            NSString *linkDest = [fileManager destinationOfSymbolicLinkAtPath:@(path) error:&error];
+            if (!linkDest) {
+                [self end_transfer_with_error:error];
+                return;
+            }
+            if (![fileManager createSymbolicLinkAtPath:file_url.path withDestinationPath:linkDest error:&error]) {
+                [self end_transfer_with_error:error];
+                return;
+            }
             break;
+        }
+        default: {
+            // Copy the directory at path to file_url recursively using hard links for files
+            if (![fileManager createDirectoryAtURL:file_url withIntermediateDirectories:YES attributes:nil error:&error]) {
+                [self end_transfer_with_error:error];
+                return;
+            }
+            NSString *srcPath = srcURL.path;
+            NSString *dstPath = file_url.path;
+            __block NSError *enumError = nil;
+            NSDirectoryEnumerator<NSURL*> *enumerator = [fileManager
+                enumeratorAtURL:srcURL
+                includingPropertiesForKeys:@[NSURLIsDirectoryKey, NSURLIsSymbolicLinkKey]
+                options:0
+                errorHandler:^BOOL(NSURL *url, NSError *err) {
+                    (void)url;
+                    enumError = err;
+                    return NO;
+                }];
+            for (NSURL *itemURL in enumerator) {
+                NSString *itemPath = itemURL.path;
+                if (itemPath.length <= srcPath.length) continue;
+                NSString *relativePath = [itemPath substringFromIndex:srcPath.length + 1];
+                NSURL *destURL = [NSURL fileURLWithPath:[dstPath stringByAppendingPathComponent:relativePath]];
+                NSNumber *isSymlink = nil, *isDirectory = nil;
+                if (![itemURL getResourceValue:&isSymlink forKey:NSURLIsSymbolicLinkKey error:&error]) {
+                    [self end_transfer_with_error:error];
+                    return;
+                }
+                if (![itemURL getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&error]) {
+                    [self end_transfer_with_error:error];
+                    return;
+                }
+                if ([isSymlink boolValue]) {
+                    NSString *linkDest = [fileManager destinationOfSymbolicLinkAtPath:itemPath error:&error];
+                    if (!linkDest) {
+                        [self end_transfer_with_error:error];
+                        return;
+                    }
+                    if (![fileManager createSymbolicLinkAtPath:destURL.path withDestinationPath:linkDest error:&error]) {
+                        [self end_transfer_with_error:error];
+                        return;
+                    }
+                } else if ([isDirectory boolValue]) {
+                    if (![fileManager createDirectoryAtURL:destURL withIntermediateDirectories:YES attributes:nil error:&error]) {
+                        [self end_transfer_with_error:error];
+                        return;
+                    }
+                } else {
+                    if (![fileManager linkItemAtURL:itemURL toURL:destURL error:&error]) {
+                        [self end_transfer_with_error:error];
+                        return;
+                    }
+                }
+            }
+            if (enumError) {
+                [self end_transfer_with_error:enumError];
+                return;
+            }
+            break;
+        }
     }
     [self end_transfer:0];
 }
