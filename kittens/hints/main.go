@@ -200,10 +200,12 @@ func main(_ *cli.Command, o *Options, args []string) (rc int, err error) {
 		if hint == "" {
 			hint = " "
 		}
-		if len(mark_text) <= len(hint) {
+		hint_runes := len(hint)
+		runes := []rune(mark_text)
+		if len(runes) <= hint_runes {
 			mark_text = ""
 		} else {
-			replaced_text := mark_text[:len(hint)]
+			replaced_text := string(runes[:hint_runes])
 			replaced_text = strings.ReplaceAll(replaced_text, "\r", "\n")
 			if strings.Contains(replaced_text, "\n") {
 				buf := strings.Builder{}
@@ -224,7 +226,7 @@ func main(_ *cli.Command, o *Options, args []string) (rc int, err error) {
 				}
 				hint = buf.String()
 			}
-			mark_text = mark_text[len(hint):]
+			mark_text = string(runes[hint_runes:])
 		}
 		ans := hint_style(hint) + text_style(mark_text)
 		return fmt.Sprintf("\x1b]8;;mark:%d\a%s\x1b]8;;\a", m.Index, ans)
