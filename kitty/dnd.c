@@ -1835,7 +1835,7 @@ open_item_tmpfile(void) {
 
 static int
 notify_drag_data_ready_to_read(const char *mime_type) {
-    return notify_drag_data_ready(global_state.drag_source.from_os_window, mime_type, NULL, 0, 0);
+    return notify_drag_data_ready(global_state.drag_source.from_os_window, mime_type, NULL, 0, -1);
 }
 
 

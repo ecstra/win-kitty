@@ -4614,7 +4614,7 @@ _glfwPlatformChangeDragImage(const GLFWimage *thumbnail) {
 }
 
 int
-_glfwPlatformDragDataReady(const char *mime_type) {
+_glfwPlatformDragDataReady(const char *mime_type, const char *data UNUSED, size_t sz UNUSED, int type UNUSED) {
     // Find the pending request for this MIME type
     for (size_t i = 0; i < _glfw.x11.drag.pending_count; i++) {
         if (_glfw.x11.drag.pending_requests[i].inflight &&

@@ -840,7 +840,7 @@ void _glfwPlatformCancelDrag(_GLFWwindow* window);
 void _glfwFreeDragSourceData(void);
 void _glfwPlatformFreeDragSourceData(void);
 void _glfwInputDragSourceRequest(_GLFWwindow* window, GLFWDragEvent *ev);
-int _glfwPlatformDragDataReady(const char *mime_type);
+int _glfwPlatformDragDataReady(const char *mime_type, const char *data, size_t sz, int type);
 int _glfwPlatformChangeDragImage(const GLFWimage *thumbnail);
 
 

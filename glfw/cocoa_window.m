@@ -878,6 +878,7 @@ static void _glfwUpdateNotchCover(_GLFWwindow*);
 
 - (instancetype)initWithWindow:(_GLFWwindow*)initWindow mimeType:(const char*)mime instanceId:(GLFWid)iid;
 - (void)request_drag_data;
+- (void)promised_data_ready:(const char*)data sz:(size_t)sz type:(int)type;
 - (void)end_transfer:(int)errorCode;
 - (void)end_transfer_with_error:(NSError*)err;
 - (bool)is_mimetype:(const char*)mime_type;
@@ -4460,6 +4461,24 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
 
 - (bool)is_mimetype:(const char*)q { return strcmp(q, mimeType) == 0; }
 
+- (void)promised_data_ready:(const char*)path sz:(size_t)sz type:(int)type {
+    if (file_handle) [file_handle release];
+    file_handle = nil;
+    // TODO: erase file at file_url
+    switch (type) {
+        case 0:
+            // Create a hard link to path at file_url
+            break;
+        case 1:
+            // Create a symlink to the same destination as the symlink at path
+        default:
+            // copy the directory at path to file_url recursively using hard
+            // links for files.
+            break;
+    }
+    [self end_transfer:0];
+}
+
 - (void)request_drag_data {
     if (instanceId != _glfw.drag.instance_id) { [self end_transfer:EINVAL]; return; }
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
@@ -4506,6 +4525,8 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
 
 - (void)dealloc {
     free(mimeType); mimeType = NULL;
+    if (file_handle) [file_handle release];
+    file_handle = nil;
     if (file_url) [file_url release];
     file_url = nil;
     [self end_transfer:EINVAL];
@@ -4602,11 +4623,15 @@ _glfwPlatformChangeDragImage(const GLFWimage *thumbnail) {@autoreleasepool{
     return 0;
 }}
 
+
 int
-_glfwPlatformDragDataReady(const char *mime_type) {
+_glfwPlatformDragDataReady(const char *mime_type, const char *data, size_t sz, int type) {
     if (!file_promise_providers) return 0;
     for (GLFWFilePromiseProviderDelegate *d in file_promise_providers) {
-        if ([d is_mimetype:mime_type]) [d request_drag_data];
+        if ([d is_mimetype:mime_type]) {
+            if (type == -1) [d request_drag_data];
+            else [d promised_data_ready:data sz:sz type:type];
+        }
     }
     return 0;
 }
