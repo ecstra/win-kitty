@@ -33,6 +33,8 @@ static size_t REMOTE_DRAG_LIMIT = DEFAULT_REMOTE_DRAG_LIMIT;
 static PyObject *g_dnd_test_write_func = NULL;
 static const unsigned file_permissions = 0644;
 static const unsigned dir_permissions = 0755;
+#define startwith_literal(x, literal) (x != NULL && strlen(x) >= sizeof(literal)-1 && memcmp(x, literal, sizeof(literal)-1) == 0)
+
 
 // Utils {{{
 // In test mode, this callable is invoked instead of schedule_write_to_child_if_possible.
@@ -1268,11 +1270,6 @@ drag_free_offer(Window *w) {
                 free(ds.items[i].remote_items); ds.items[i].remote_items = NULL;
                 ds.items[i].num_remote_items = 0;
             }
-            if (ds.items[i].base_dir_fd_plus_one) {
-                rmtree_best_effort(".", ds.items[i].base_dir_fd_plus_one - 1);
-                ds.items[i].base_dir_fd_plus_one = 0;
-            }
-            free(ds.items[i].base_dir_for_remote_items); ds.items[i].base_dir_for_remote_items = NULL;
         }
         free(ds.items);
         ds.items = NULL;
@@ -1288,6 +1285,19 @@ drag_free_offer(Window *w) {
     ds.state = DRAG_SOURCE_NONE;
     ds.pre_sent_total_sz = 0;
     ds.images_sent_total_sz = 0;
+    if (ds.base_dir_fd_plus_one) {
+        rmtree_best_effort(".", ds.base_dir_fd_plus_one - 1);
+        ds.base_dir_fd_plus_one = 0;
+    }
+    free(ds.base_dir_for_remote_items); ds.base_dir_for_remote_items = NULL;
+    if (ds.file_promises) {
+        for (size_t i = 0; i < ds.file_promises_count; i++) {
+            drag_free_remote_item(&ds.file_promises[i].ri);
+        }
+        free(ds.file_promises);
+        ds.file_promises = NULL;
+    }
+    ds.file_promises_count = 0; ds.file_promises_capacity = 0;
 }
 
 static void
@@ -1639,30 +1649,65 @@ drag_free_data(Window *w, const char *mime_type, const char* data, size_t sz) {
 }
 
 static bool
-is_file_url(const char *url) {
-    return url != NULL && strlen(url) > sizeof("file://")-1 && memcmp(url, "file://", sizeof("file://")-1) == 0;
+is_file_url(const char *url) { return startwith_literal(url, "file://"); }
+
+static void
+request_remote_file(Window *w, DragRemoteItem *ri, const char *url, size_t idx_in_uri_list) {
+    char buf[128];
+    int header_sz = snprintf(buf, sizeof(buf), "\x1b]%d;t=k:x=%zu", DND_CODE, idx_in_uri_list + 1);
+    ri->dir_entry_name = sanitized_filename_from_url(url);
+    if (ri->dir_entry_name) {
+        queue_payload_to_child(w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_sz, NULL, 0, false);
+        ri->waiting_for_completion = true;
+    }
 }
 
-const char*
-my_basename(const char *path) {
-    const char *base = strrchr(path, '/'); // Change to '\\' for Windows
-    return base ? base + 1 : path;
+static int
+notify_drag_data_received(Window *w, size_t uri_item_idx, const char *basename, int type) {
+    char mime_type[128], path[4096];
+    snprintf(mime_type, sizeof(mime_type), "kitty-internal/uri-list-item-%zu", uri_item_idx);
+    int sz = snprintf(path, sizeof(path), "%s/%zu/%s", ds.base_dir_for_remote_items, uri_item_idx, basename);
+    return notify_drag_data_ready(global_state.drag_source.from_os_window, mime_type, path, sz, type);
+}
+
+static const char*
+request_file_promise(Window *w, size_t idx_in_uri_list, const char *url, int *err_code) {
+    for (size_t i = 0; i < w->drag_source.file_promises_count; i++) {
+        if (w->drag_source.file_promises[i].uri_item_idx == idx_in_uri_list) {
+            const DragRemoteItem *ri = &w->drag_source.file_promises[i].ri;
+            if (ri->completed) {
+                notify_drag_data_received(w, idx_in_uri_list, ri->dir_entry_name, ri->type);
+                *err_code = 0;
+            }
+            *err_code = EAGAIN;
+            return NULL;
+        }
+    }
+    if (w->drag_source.file_promises_count + 1 >= w->drag_source.file_promises_capacity) {
+        size_t cap = MAX(w->drag_source.file_promises_count + 1, MAX(16u, 2u * w->drag_source.file_promises_capacity));
+        void *p = realloc(w->drag_source.file_promises, sizeof(w->drag_source.file_promises[0]) * cap);
+        if (!p) { *err_code = ENOMEM; return NULL; }
+        w->drag_source.file_promises = p;
+        w->drag_source.file_promises_capacity = cap;
+    }
+    char *fname = sanitized_filename_from_url(url);
+    if (!fname) { *err_code = EINVAL; return NULL; }
+    w->drag_source.file_promises[w->drag_source.file_promises_count].uri_item_idx = idx_in_uri_list;
+    w->drag_source.file_promises[w->drag_source.file_promises_count++].ri = (DragRemoteItem){.dir_entry_name = fname};
+
+    *err_code = EAGAIN;
+    return NULL;
 }
 
 static bool
 request_remote_files(Window *w, size_t i) {
 #define mi ds.items[i]
-    char buf[128];
     mi.remote_items = calloc(mi.num_uris, sizeof(mi.remote_items[0]));
     if (!mi.remote_items) return false;
     mi.num_remote_items = mi.num_uris;
     for (size_t k = 0; k < mi.num_remote_items; k++) {
         if (is_file_url(mi.uri_list[k])) {
-            int header_sz = snprintf(buf, sizeof(buf), "\x1b]%d;t=k:x=%zu", DND_CODE, k + 1);
-            queue_payload_to_child(
-                w->id, w->drag_source.client_id, &w->drag_source.pending, buf, header_sz, NULL, 0, false);
-            mi.remote_items[k].waiting_for_completion = true;
-            mi.remote_items[k].dir_entry_name = strdup(my_basename(mi.uri_list[k]));
+            request_remote_file(w, mi.remote_items + k, mi.uri_list[k], k);
         }
     }
     return true;
@@ -1670,9 +1715,28 @@ request_remote_files(Window *w, size_t i) {
 }
 
 const char*
+drag_get_file_promise_data(Window *w, size_t idx_in_uri_list, size_t *sz, int *err_code) {
+    *err_code = ENOENT; *sz = 0;
+    for (size_t i = 0; i < ds.num_mimes; i++) {
+        if (strcmp(ds.items[i].mime_type, "text/uri-list") == 0) {
+            if ((unsigned)idx_in_uri_list >= ds.items[i].num_uris) break;
+            const char *url = ds.items[i].uri_list[idx_in_uri_list];
+            if (!is_file_url(url)) break;
+            return request_file_promise(w, idx_in_uri_list, url, err_code);
+        }
+    }
+    return NULL;
+}
+
+const char*
 drag_get_data(Window *w, const char *mime_type, size_t *sz, int *err_code) {
     *err_code = ENOENT; *sz = 0;
     if (!ds.items || ds.state < DRAG_SOURCE_STARTED) return NULL;
+    if (startwith_literal(mime_type, "kitty-internal/uri-list-item-")) {
+        // request for a single file:// URL from text/uri-list used by macOS backend file promise providers
+        int idx_in_uri_list = atoi(mime_type + sizeof("kitty-internal/uri-list-item-")-1);
+        return drag_get_file_promise_data(w, idx_in_uri_list, sz, err_code);
+    }
     for (size_t i = 0; i < ds.num_mimes; i++) {
         if (strcmp(ds.items[i].mime_type, mime_type) == 0) {
             if (ds.items[i].fd_plus_one < 0) {
@@ -1769,6 +1833,12 @@ open_item_tmpfile(void) {
     return fd;
 }
 
+static int
+notify_drag_data_ready_to_read(const char *mime_type) {
+    return notify_drag_data_ready(global_state.drag_source.from_os_window, mime_type, NULL, 0, 0);
+}
+
+
 void
 drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *payload, size_t payload_sz) {
     if ((ds.state < DRAG_SOURCE_STARTED) || idx >= ds.num_mimes || !ds.items) {
@@ -1785,7 +1855,7 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
         ds.items[idx].fd_plus_one = -err;
         ds.items[idx].data_decode_initialized = false;
         if (!dnd_is_test_mode()) {
-            int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
+            int ret = notify_drag_data_ready_to_read(ds.items[idx].mime_type);
             if (ret) cancel_drag(w, ret, "could not notify OS that drag source item data is available");
         }
         return;
@@ -1797,7 +1867,7 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
         if (ds.items[idx].fd_plus_one > 0) {
             if (!ds.items[idx].requested_remote_files) {
                 if (!dnd_is_test_mode()) {
-                    int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
+                    int ret = notify_drag_data_ready_to_read(ds.items[idx].mime_type);
                     if (ret) cancel_drag(w, ret, "could not notify OS that drag source item data is available");
                 }
             }
@@ -1838,7 +1908,7 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
         // Notify as soon as any data is available
         if (!ds.items[idx].requested_remote_files) {
             if (!dnd_is_test_mode()) {
-                int ret = notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[idx].mime_type);
+                int ret = notify_drag_data_ready_to_read(ds.items[idx].mime_type);
                 if (ret) cancel_drag(w, ret, "could not notify OS that drag source item data is available");
             }
         }
@@ -1881,7 +1951,7 @@ finish_remote_data(Window *w, size_t item_idx) {
     // fields so drag_get_data returns the full new content starting from the beginning.
     ds.items[item_idx].data_capacity = new_size;
     ds.items[item_idx].data_size = 0;
-    int ret = dnd_is_test_mode() ? 0 : notify_drag_data_ready(global_state.drag_source.from_os_window, ds.items[item_idx].mime_type);
+    int ret = dnd_is_test_mode() ? 0 : notify_drag_data_ready_to_read(ds.items[item_idx].mime_type);
     if (ret) abrt(ret, "could not notify OS that drag source item data is available");
 }
 
@@ -2024,20 +2094,25 @@ add_payload(Window *w, DragRemoteItem *ri, bool has_more, const uint8_t *payload
 
 }
 
+static int
+ensure_base_dir_for_drag(Window *w) {
+    if (!ds.base_dir_for_remote_items) {
+        int fd;
+        ds.base_dir_for_remote_items = mktempdir_in_cache("dnd-drag-", &fd);
+        if (!ds.base_dir_for_remote_items) return errno;
+        ds.base_dir_fd_plus_one = fd + 1;
+        detect_tempdir_case_sensitivity(ds.base_dir_for_remote_items);
+    }
+    return 0;
+}
+
 static void
 toplevel_data_for_drag(
-    Window *w, unsigned mime_item_idx, unsigned uri_item_idx, unsigned item_type,
+    Window *w, DragRemoteItem *ri, unsigned mime_item_idx, unsigned uri_item_idx, unsigned item_type,
     bool has_more, const uint8_t *payload, size_t payload_sz
 ) {
-    if (!mi.base_dir_for_remote_items) {
-        int fd;
-        mi.base_dir_for_remote_items = mktempdir_in_cache("dnd-drag-", &fd);
-        if (!mi.base_dir_for_remote_items) abrt(errno, "failed to create temporary directory for drag source items");
-        mi.base_dir_fd_plus_one = fd + 1;
-        detect_tempdir_case_sensitivity(mi.base_dir_for_remote_items);
-    }
-    if (uri_item_idx >= mi.num_remote_items) abrt(EINVAL, "out of bounds uri list item index for drag source");
-    DragRemoteItem *ri = mi.remote_items + uri_item_idx;
+    int errcode;
+    if ((errcode = ensure_base_dir_for_drag(w)) != 0) abrt(errcode, "failed to create temporary directory for drag source items");
     if (!ri->started) {
         ri->started = true;
         ri->type = item_type;
@@ -2049,12 +2124,14 @@ toplevel_data_for_drag(
         ri->dir_entry_name = fname;
         char path[32];
         snprintf(path, sizeof(path), "%u", uri_item_idx);
-        if (mkdirat(mi.base_dir_fd_plus_one - 1, path, dir_permissions) != 0 && errno != EEXIST) abrt(errno, "failed to create directory for drag source item");
-        int fd = safe_openat(mi.base_dir_fd_plus_one - 1, path, O_RDONLY | O_DIRECTORY, 0);
+        if (mkdirat(ds.base_dir_fd_plus_one - 1, path, dir_permissions) != 0 && errno != EEXIST) abrt(errno, "failed to create directory for drag source item");
+        int fd = safe_openat(ds.base_dir_fd_plus_one - 1, path, O_RDONLY | O_DIRECTORY, 0);
         if (fd < 0) abrt(errno, "failed to create directory for drag source item");
         ri->top_level_parent_dir_fd_plus_one = fd + 1;
-        free(mi.uri_list[uri_item_idx]);
-        mi.uri_list[uri_item_idx] = as_file_url(mi.base_dir_for_remote_items, path, ri->dir_entry_name);
+        if (!ds.file_promises) {
+            free(mi.uri_list[uri_item_idx]);
+            mi.uri_list[uri_item_idx] = as_file_url(ds.base_dir_for_remote_items, path, ri->dir_entry_name);
+        }
     }
     add_payload(w, ri, has_more, payload, payload_sz, ri->top_level_parent_dir_fd_plus_one - 1);
 }
@@ -2097,7 +2174,7 @@ subdir_data_for_drag(
         DragRemoteItem *root = mi.remote_items + uri_item_idx;
         if (!root->dir_entry_name) abrt(EINVAL, "drag source sub directory parent dir does not exist");
         size_t pos = snprintf(path, PATH_MAX, "%s/%u/%s",
-            mi.base_dir_for_remote_items, uri_item_idx, root->dir_entry_name);
+            ds.base_dir_for_remote_items, uri_item_idx, root->dir_entry_name);
         parent = find_by_handle(root, handle, path, &pos);
         if (!parent) abrt(EINVAL, "drag source sub directory parent dir handle does not exist");
         mi.currently_open_subdir = parent;
@@ -2144,43 +2221,60 @@ all_children_complete(DragRemoteItem *parent) {
     return true;
 }
 
+static void
+finish_file_promise(Window *w, size_t uri_item_idx, DragRemoteItem *ri) {
+    notify_drag_data_received(w, uri_item_idx, ri->dir_entry_name, ri->type);
+}
+
 void
 drag_remote_file_data(
     Window *w, int32_t x, int32_t y, int32_t X, int32_t Y, bool has_more, const uint8_t *payload, size_t payload_sz
 ) {
-    size_t mime_item_idx = ds.num_mimes;
+    if (x < 1) abrt(EINVAL, "drag source remote item x index cannot be less than 1");
+    size_t mime_item_idx = ds.num_mimes + 1;
     for (size_t i = 0; i < ds.num_mimes; i++) {
-        if (ds.items[i].requested_remote_files) {
+        if ((ds.file_promises && ds.items[i].is_uri_list) || (!ds.file_promises && ds.items[i].is_uri_list)) {
             mime_item_idx = i; break;
         }
     }
-    if (mime_item_idx == ds.num_mimes) abrt(EINVAL, "drag source no remote data was requested");
-    if (x < 1) abrt(EINVAL, "drag source remote item x index cannot be less than 1");
+    if (mime_item_idx == ds.num_mimes + 1) abrt(EINVAL, ds.file_promises ? "drag source file promise no uri list present" : "drag source no remote data was requested");
     const bool all_data_received = !payload_sz && !has_more;
-    const unsigned uri_item_idx = x - 1;
-    if (uri_item_idx >= mi.num_remote_items) abrt(EINVAL, "drag source uri list index out of bounds");
     DragRemoteItem *ri;
-    if (!Y) {
-        toplevel_data_for_drag(w, mime_item_idx, uri_item_idx, X, has_more, payload, payload_sz);
-        if (all_data_received) {
-            ri = mi.remote_items + uri_item_idx;
-            if (ri->waiting_for_completion && all_children_complete(ri)) {
-                ri->completed = true;
-                finish_remote_data_if_all_items_received(w, mime_item_idx);
+    const unsigned uri_item_idx = x - 1;
+    if (ds.file_promises) {
+        size_t promise_item_idx = ds.file_promises_count + 1;
+        for (size_t i = 0; i < ds.file_promises_count; i++) {
+            if (ds.file_promises[i].uri_item_idx == uri_item_idx) {
+                promise_item_idx = i;
+                break;
             }
+        }
+        if (promise_item_idx == ds.file_promises_count + 1) abrt(EINVAL, "drag source file promise uri list index out of bounds");
+        ri = &ds.file_promises[promise_item_idx].ri;
+    } else {
+        if (uri_item_idx >= mi.num_remote_items) abrt(EINVAL, "drag source uri list index out of bounds");
+        ri = mi.remote_items + uri_item_idx;
+    }
+    if (!Y) {
+        toplevel_data_for_drag(w, ri, mime_item_idx, uri_item_idx, X, has_more, payload, payload_sz);
+        if (all_data_received && all_children_complete(ri)) {
+            ri->completed = true;
+            if (ds.file_promises) finish_file_promise(w, uri_item_idx, ri);
+            else if (ri->waiting_for_completion) finish_remote_data_if_all_items_received(w, mime_item_idx);
         }
     } else {
         if (y < 1) abrt(EINVAL, "drag source remote item y index cannot be less than 1");
-        subdir_data_for_drag(w, mime_item_idx, x - 1, Y, y - 1, X, has_more, payload, payload_sz, &ri);
+        subdir_data_for_drag(w, mime_item_idx, uri_item_idx, Y, y - 1, X, has_more, payload, payload_sz, &ri);
         if (all_data_received && ri && all_children_complete(ri)) {
             ri->completed = true;
             while (1) {
-                ri = ri->parent;
-                if (ri) {
+                if (ri->parent) {
+                    ri = ri->parent;
                     if (all_children_complete(ri)) ri->completed = true;
                     else break;
                 } else {
-                    finish_remote_data_if_all_items_received(w, mime_item_idx);
+                    if (ds.file_promises) finish_file_promise(w, uri_item_idx, ri);
+                    else finish_remote_data_if_all_items_received(w, mime_item_idx);
                     break;
                 }
             }

@@ -329,7 +329,6 @@ typedef struct Window {
             char** uri_list; size_t num_uris;
             DragRemoteItem *remote_items; size_t num_remote_items;
             DragRemoteItem *currently_open_subdir;
-            char *base_dir_for_remote_items; int base_dir_fd_plus_one;
         } *items;
         struct {
             int width, height, fmt, opacity; uint8_t *data; size_t sz, capacity; bool started; base64_state base64_state;
@@ -340,6 +339,10 @@ typedef struct Window {
         DragSourceState state;
         PendingData pending;
         uint32_t client_id;
+        char *base_dir_for_remote_items;
+        int base_dir_fd_plus_one;
+        struct { size_t uri_item_idx; DragRemoteItem ri; } *file_promises;
+        size_t file_promises_count, file_promises_capacity;
     } drag_source;
 } Window;
 
@@ -640,5 +643,5 @@ void request_drop_data(OSWindow *w, id_type wid, const char* mime);
 void cancel_current_drag_source(void);
 bool change_drag_image(int idx);
 int start_window_drag(Window *w, bool in_test_mode);
-int notify_drag_data_ready(id_type os_window_id, const char *mime_type);
+int notify_drag_data_ready(id_type os_window_id, const char *mime_type, const char *data, size_t data_sz, int type);
 BackgroundImage* background_image_for_os_window(OSWindow *w);

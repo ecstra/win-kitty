@@ -1828,6 +1828,7 @@ typedef struct GLFWDragSourceItem {
     const char *optional_data;
     size_t data_size;
     bool is_remote_client;
+    int type;  // used for file promises type of entry 0 = regular, 1 = symlink, 2 = directory
 } GLFWDragSourceItem;
 
 typedef struct GLFWDragEvent {
