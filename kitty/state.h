@@ -423,7 +423,9 @@ typedef struct OSWindow {
     struct {
         size_t global_bg_images_idx;
         BackgroundImage *override;
+        BackgroundImageLayout layout;
         bool no_image;
+        bool has_layout;
     } background_image;
     struct {
         uint32_t framebuffer_id, attached_texture_generation;

@@ -1537,14 +1537,15 @@ static void
 draw_bg_image(OSWindow *os_window, Tab *tab) {
     BackgroundImage *bg = background_image_for_os_window(os_window);
     if (!bg) return;
+    BackgroundImageLayout layout = os_window->background_image.has_layout ? os_window->background_image.layout : OPT(background_image_layout);
     BackgroundImageRenderSettings s = {
         .os_window.width = os_window->viewport_width, .os_window.height = os_window->viewport_height,
-        .instance_id = bg->id, .layout=OPT(background_image_layout),
+        .instance_id = bg->id, .layout=layout,
         .linear=OPT(background_image_linear), .bgcolor=OPT(background), .opacity=effective_os_window_alpha(os_window),
     };
     GLfloat iwidth = bg->width, iheight = bg->height;
     GLfloat vwidth = s.os_window.width, vheight = s.os_window.height;
-    if (CENTER_SCALED == OPT(background_image_layout)) {
+    if (CENTER_SCALED == layout) {
         GLfloat ifrac = iwidth / iheight;
         if (ifrac > (vwidth / vheight)) {
             iheight = vheight;
@@ -1556,7 +1557,7 @@ draw_bg_image(OSWindow *os_window, Tab *tab) {
     }
     GLfloat tiled = 0.f;;
     GLfloat left = -1.0, top = 1.0, right = 1.0, bottom = -1.0;
-    switch (OPT(background_image_layout)) {
+    switch (layout) {
         case TILING: case MIRRORED: case CLAMPED:
             tiled = 1.f; break;
         case SCALED:
