@@ -1254,8 +1254,17 @@ drag_free_remote_item(DragRemoteItem *x) {
     zero_at_ptr(x);
 }
 
+static void
+delete_basedir_for_remote_items(Window *w) {
+    if (ds.base_dir_fd_plus_one) {
+        rmtree_best_effort(".", ds.base_dir_fd_plus_one - 1);
+        ds.base_dir_fd_plus_one = 0;
+    }
+    free(ds.base_dir_for_remote_items); ds.base_dir_for_remote_items = NULL;
+}
+
 void
-drag_free_offer(Window *w) {
+drag_free_offer(Window *w, bool remove_remote_items) {
     free(ds.mimes_buf); ds.mimes_buf = NULL; ds.bufsz = 0;
     if (ds.items) {
         for (size_t i=0; i < ds.num_mimes; i++) {
@@ -1285,11 +1294,6 @@ drag_free_offer(Window *w) {
     ds.state = DRAG_SOURCE_NONE;
     ds.pre_sent_total_sz = 0;
     ds.images_sent_total_sz = 0;
-    if (ds.base_dir_fd_plus_one) {
-        rmtree_best_effort(".", ds.base_dir_fd_plus_one - 1);
-        ds.base_dir_fd_plus_one = 0;
-    }
-    free(ds.base_dir_for_remote_items); ds.base_dir_for_remote_items = NULL;
     if (ds.file_promises) {
         for (size_t i = 0; i < ds.file_promises_count; i++) {
             drag_free_remote_item(&ds.file_promises[i].ri);
@@ -1298,6 +1302,7 @@ drag_free_offer(Window *w) {
         ds.file_promises = NULL;
     }
     ds.file_promises_count = 0; ds.file_promises_capacity = 0;
+    if (remove_remote_items) delete_basedir_for_remote_items(w);
 }
 
 static void
@@ -1315,7 +1320,7 @@ static void
 cancel_drag(Window *w, int error_code, const char *details) {
     if (error_code) drag_send_error(w, error_code, details);
     if (global_state.drag_source.is_active && global_state.drag_source.from_window == w->id) cancel_current_drag_source();
-    drag_free_offer(w);
+    if (error_code) drag_free_offer(w, true);
 }
 
 #define abrt(code, details) { cancel_drag(w, code, details); return; }
@@ -1328,7 +1333,7 @@ drag_start_offerring(Window *w, const char *client_machine_id, size_t sz) {
 
 void
 drag_stop_offerring(Window *w) {
-    drag_free_offer(w);
+    drag_free_offer(w, true);
     ds.can_offer = false; ds.is_remote_client = false;
 }
 
@@ -1515,6 +1520,7 @@ parse_uri_list(Window *w, char *data, const ssize_t sz, size_t *num_uris_out) {
 void
 drag_start(Window *w) {
     if (ds.state != DRAG_SOURCE_BEING_BUILT) abrt(EINVAL, "cannot start drag as drag source is not being built");
+    delete_basedir_for_remote_items(w);
     size_t total_size = 0;
     for (size_t idx = 0; idx < arraysz(ds.images); idx++) {
         if (img.sz) {
@@ -1638,7 +1644,7 @@ drag_notify(Window *w, DragNotifyType type) {
             sz += snprintf(buf + sz, sizeof(buf) - sz, ":y=%d", global_state.drag_source.was_canceled ? 1 : 0); break;
     }
     queue_payload_to_child(w->id, w->drag_source.client_id, &w->drag_source.pending, buf, sz, NULL, 0, false);
-    if (type == DRAG_NOTIFY_FINISHED) drag_free_offer(w);
+    if (type == DRAG_NOTIFY_FINISHED) drag_free_offer(w, false);
 }
 
 int
@@ -2304,7 +2310,7 @@ static void
 destroy_fake_window_contents(Window *w) {
     // Free window resources without touching GPU objects (none allocated for fake windows).
     drop_free_data(w);
-    drag_free_offer(w);
+    drag_free_offer(w, false);
     free(w->pending_clicks.clicks); zero_at_ptr(&w->pending_clicks);
     free(w->buffered_keys.key_data); zero_at_ptr(&w->buffered_keys);
     Py_CLEAR(w->render_data.screen);

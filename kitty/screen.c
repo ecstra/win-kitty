@@ -1573,7 +1573,7 @@ screen_handle_dnd_command(Screen *self, const DnDCommand *cmd_, const uint8_t *p
         } break;
         case 'E': {
             if (cmd->cell_y == -1) {
-                drag_free_offer(w);
+                drag_free_offer(w, true);
                 if (global_state.drag_source.is_active && global_state.drag_source.from_window == w->id) {
                     cancel_current_drag_source();
                 }
