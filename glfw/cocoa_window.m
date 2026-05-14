@@ -4362,7 +4362,7 @@ static int
 add_uri_list_drag_items(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dragItems, const char *uri_list, size_t uri_list_sz, bool use_promises, const GLFWimage *thumbnail) {
     NSString *input = [[[NSString alloc] initWithBytes:uri_list length:uri_list_sz encoding:NSUTF8StringEncoding] autorelease];
     NSArray *lines = [input componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-    id dragItem; int count = 0; char buf[256];
+    NSDraggingItem *dragItem; int count = 0; char buf[256];
     for (NSString *rawLine in lines) {
         NSString *line = [rawLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         if (line.length == 0 || [line hasPrefix:@"#"]) continue;
@@ -4378,7 +4378,7 @@ add_uri_list_drag_items(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dr
                 initWithFileType:type.identifier delegate:delegate] autorelease];
             // Store the delegate in the provider's user info so it's retained
             provider.userInfo = delegate;
-            dragItem = provider;
+            dragItem = [[[NSDraggingItem alloc] initWithPasteboardWriter:provider] autorelease];
         } else dragItem = [[[NSDraggingItem alloc] initWithPasteboardWriter:url] autorelease];
         int err = add_drag_item(window, dragItems, dragItem, thumbnail);
         if (err) return err;
@@ -4631,7 +4631,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
         windowId = initWindow ? initWindow->id : 0;
         mimeType = _glfw_strdup(mime);
         instanceId = instance_id;
-        if (file_promise_providers == nil) file_promise_providers = [NSMutableArray array];
+        if (file_promise_providers == nil) file_promise_providers = [[NSMutableArray alloc] init];
         [file_promise_providers addObject:self];
     }
     return self;
