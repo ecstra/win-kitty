@@ -193,7 +193,7 @@ set_currently_hovered_window(id_type window_id, int modifiers) {
             if (sz > 0) {
                 mouse_event_buf[sz] = 0;
                 write_escape_code_to_child(left_window->render_data.screen, ESC_CSI, mouse_event_buf);
-                debug("Sent mouse leave event to window: %llu\n", left_window->id);
+                debug("Sent mouse leave event to window: %llu currently hovering: %llu\n", left_window->id, window_id);
             }
         }
         if (window_id && OPT(focus_follows_mouse).on_cross && global_state.callback_os_window && global_state.callback_os_window->num_tabs) {
@@ -867,7 +867,10 @@ HANDLER(handle_button_event) {
 
     if (button == GLFW_MOUSE_BUTTON_LEFT && osw->suppress_left_mouse_release) {
         osw->suppress_left_mouse_release = false;
-        if (is_release) return;
+        if (is_release) {
+            zero_at_ptr(&w->drag_source.initial_left_press);
+            return;
+        }
     }
 
     if (handle_scrollbar_mouse(w, button, is_release ? RELEASE : PRESS, modifiers)) return;
@@ -895,7 +898,7 @@ HANDLER(handle_button_event) {
             zero_at_ptr(&w->drag_source.initial_left_press);
         } else {
             w->drag_source.initial_left_press.x = w->mouse_pos.global_x;
-            w->drag_source.initial_left_press.y = w->mouse_pos.global_x;
+            w->drag_source.initial_left_press.y = w->mouse_pos.global_y;
             w->drag_source.initial_left_press.at = monotonic();
         }
     }
@@ -958,8 +961,10 @@ handle_tab_bar_mouse(int button, int modifiers, int action) {
 static bool
 mouse_in_region(Region *r) {
     if (r->left == r->right) return false;
-    if (global_state.callback_os_window->mouse_y < r->top || global_state.callback_os_window->mouse_y >= r->bottom) return false;
-    if (global_state.callback_os_window->mouse_x < r->left || global_state.callback_os_window->mouse_x >= r->right) return false;
+    OSWindow *w = global_state.callback_os_window;
+    if (!w) return false;
+    if (w->mouse_y < r->top || w->mouse_y >= r->bottom) return false;
+    if (w->mouse_x < r->left || w->mouse_x >= r->right) return false;
     return true;
 }
 
@@ -1319,15 +1324,18 @@ mouse_event(const int button, int modifiers, int action) {
             }
         } else if (action == GLFW_RELEASE && button == GLFW_MOUSE_BUTTON_LEFT) {
             w = window_for_id(global_state.tracked_drag_in_window);
-            if (w && w->render_data.screen->modes.mouse_tracking_mode >= BUTTON_MODE && w->render_data.screen->modes.mouse_tracking_protocol >= SGR_PROTOCOL) {
-                global_state.tracked_drag_in_window = 0;
-                clamp_to_window = true;
-                Tab *t = osw->tabs + osw->active_tab;
-                for (window_idx = 0; window_idx < t->num_windows && t->windows[window_idx].id != w->id; window_idx++);
-                debug("sent to child as drag end\n");
-                handle_button_event(w, button, modifiers, window_idx);
-                clamp_to_window = false;
-                return;
+            if (w) {
+                zero_at_ptr(&w->drag_source.initial_left_press);
+                if (w->render_data.screen->modes.mouse_tracking_mode >= BUTTON_MODE && w->render_data.screen->modes.mouse_tracking_protocol >= SGR_PROTOCOL) {
+                    global_state.tracked_drag_in_window = 0;
+                    clamp_to_window = true;
+                    Tab *t = osw->tabs + osw->active_tab;
+                    for (window_idx = 0; window_idx < t->num_windows && t->windows[window_idx].id != w->id; window_idx++);
+                    debug("sent to child as drag end\n");
+                    handle_button_event(w, button, modifiers, window_idx);
+                    clamp_to_window = false;
+                    return;
+                }
             }
         }
     }
