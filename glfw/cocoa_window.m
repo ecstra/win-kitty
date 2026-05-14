@@ -1555,7 +1555,9 @@ reset_drop_copy_mimes(_GLFWDropData *d) {
 
     // Check for common types first (use _glfw_strdup since we need to own the strings)
     NSDictionary* options = @{NSPasteboardURLReadingFileURLsOnlyKey:@YES};
+    bool has_uri_list = false;
     if ([pasteboard canReadObjectForClasses:@[[NSURL class]] options:options]) {
+        has_uri_list = true;
         mime_array[mime_count++] = _glfw_strdup("text/uri-list");
     }
     if ([pasteboard canReadObjectForClasses:@[[NSString class]] options:nil]) {
@@ -1577,7 +1579,15 @@ reset_drop_copy_mimes(_GLFWDropData *d) {
     // Get file promise based types
     for (NSFilePromiseReceiver *receiver in receivers) {
         for (NSString *uti in receiver.fileTypes) {
-            add_mime(uti);
+            UTType *promisedType = [UTType typeWithIdentifier:uti];
+            if (promisedType && [promisedType conformsToType:UTTypeFileURL]) {
+                if (!has_uri_list) {
+                    mime_array[mime_count++] = _glfw_strdup("text/uri-list");
+                    has_uri_list = true;
+                }
+            } else {
+                add_mime(uti);
+            }
         }
     }
 
@@ -4369,16 +4379,13 @@ add_uri_list_drag_items(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dr
         if (line.length == 0 || [line hasPrefix:@"#"]) continue;
         NSURL *url = [NSURL URLWithString:line];
         if (use_promises && [[url scheme] caseInsensitiveCompare:@"file"] == NSOrderedSame) {
-            NSString *extension = [url pathExtension];
-            UTType *type = [UTType typeWithFilenameExtension:extension];
-            if (!type) type = UTTypeItem;
             snprintf(buf, sizeof(buf), "kitty-internal/uri-list-item-%d", count);
             NSString *filename = [url lastPathComponent];
             GLFWFilePromiseProviderDelegate* delegate = [[[GLFWFilePromiseProviderDelegate alloc]
                 initWithWindow:window mimeType:buf fileName:[filename UTF8String]
                     instanceId:_glfw.drag.instance_id] autorelease];
             NSFilePromiseProvider *provider = [[[NSFilePromiseProvider alloc]
-                initWithFileType:type.identifier delegate:delegate] autorelease];
+                initWithFileType:UTTypeFileURL.identifier delegate:delegate] autorelease];
             // Store the delegate in the provider's user info so it's retained
             provider.userInfo = delegate;
             dragItem = [[[NSDraggingItem alloc] initWithPasteboardWriter:provider] autorelease];
