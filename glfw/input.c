@@ -416,6 +416,7 @@ size_t _glfwInputDropEvent(_GLFWwindow *window, GLFWDropEventType type, double x
         .read_data=type == GLFW_DROP_DATA_AVAILABLE ? _glfwPlatformReadAvailableDropData : NULL,
         .finish_drop=type == GLFW_DROP_DATA_AVAILABLE || type == GLFW_DROP_DROP ? _glfwPlatformEndDrop : NULL,
         .operation.allowed = window->drop_operation.allowed, .operation.preferred = window->drop_operation.preferred,
+        .operation.source_actions = window->drop_operation.source_actions,
     };
     window->callbacks.drop_event((GLFWwindow*)window, &ev);
     window->drop_operation.preferred = ev.operation.preferred; window->drop_operation.allowed = ev.operation.allowed;

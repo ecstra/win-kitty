@@ -290,7 +290,7 @@ typedef struct Window {
         bool is_hovering;
     } scrollbar;
     struct {
-        bool wanted, hovered, dropped, is_remote_client;
+        bool wanted, hovered, dropped, is_remote_client, initialized;
         uint32_t client_id;
         char *registered_mimes;
         char *uri_list; size_t uri_list_sz;
@@ -299,7 +299,7 @@ typedef struct Window {
         const char **offerred_mimes; size_t num_offerred_mimes, offered_mimes_total_size;
 
         char *accepted_mimes; size_t accepted_mimes_sz;
-        int accepted_operation; bool accept_in_progress;
+        int accepted_operation, allowed_operations; bool accept_in_progress;
         char *getting_data_for_mime;
 
         DirHandle *dir_handles; size_t num_dir_handles, dir_handles_capacity;
@@ -507,6 +507,7 @@ typedef struct GlobalState {
         double x, y;
         size_t num_left;
         bool drop_has_happened;
+        int allowed_ops;
     } drop_dest;
 
     struct {

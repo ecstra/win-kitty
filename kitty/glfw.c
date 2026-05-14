@@ -800,12 +800,13 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
             os_window->last_drag_event.x = (int)(ev->xpos * os_window->viewport_x_ratio);
             os_window->last_drag_event.y = (int)(ev->ypos * os_window->viewport_y_ratio);
             on_mouse_position_update(ev->xpos, ev->ypos);
+            global_state.drop_dest.allowed_ops = ev->operation.source_actions;
             if (is_client_drop) {
-                if (ev->type == GLFW_DROP_ENTER) w->drop.accepted_operation = GLFW_DRAG_OPERATION_NONE;
-                int kitty_allowed_ops = 0;
-                if (ev->operation.allowed & GLFW_DRAG_OPERATION_COPY) kitty_allowed_ops |= 1;
-                if (ev->operation.allowed & GLFW_DRAG_OPERATION_MOVE) kitty_allowed_ops |= 2;
-                drop_move_on_child(w, ev->mimes, ev->num_mimes, false, kitty_allowed_ops);
+                if (!w->drop.initialized) {
+                    w->drop.initialized = true;
+                    w->drop.accepted_operation = GLFW_DRAG_OPERATION_NONE;
+                }
+                drop_move_on_child(w, ev->mimes, ev->num_mimes, false);
                 ev->num_mimes = drop_update_mimes(w, ev->mimes, ev->num_mimes);
                 ev->operation.allowed = w->drop.accepted_operation;
                 ev->operation.preferred = w->drop.accepted_operation;
@@ -854,10 +855,7 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
             global_state.drop_dest.client_window_data_request = 0;
             global_state.drop_dest.os_window_id = os_window->id;
             if (is_client_drop) {
-                int kitty_allowed_ops = 0;
-                if (ev->operation.allowed & GLFW_DRAG_OPERATION_COPY) kitty_allowed_ops |= 1;
-                if (ev->operation.allowed & GLFW_DRAG_OPERATION_MOVE) kitty_allowed_ops |= 2;
-                drop_move_on_child(w, ev->mimes, ev->num_mimes, true, kitty_allowed_ops);
+                drop_move_on_child(w, ev->mimes, ev->num_mimes, true);
                 ev->num_mimes = 0;  // we wait for the client to request MIMEs
             } else {
                 if (ev->from_self) {
@@ -3121,7 +3119,10 @@ start_window_drag(Window *w, bool in_test_mode) {
     global_state.drag_source.thumbnail_idx = w->drag_source.img_idx < num_images ? (int)w->drag_source.img_idx : -1;
     global_state.tracked_drag_in_window = 0;  // this is now an OS global drag
     if (in_test_mode) return 0;
-    int ret = glfwStartDrag(osw->handle, items, w->drag_source.num_mimes, thumbnail.pixels ? &thumbnail : NULL, w->drag_source.allowed_operations, true);
+    GLFWDragOperationType ops = GLFW_DRAG_OPERATION_NONE;
+    if (w->drag_source.allowed_operations & 1) ops |= GLFW_DRAG_OPERATION_COPY;
+    if (w->drag_source.allowed_operations & 2) ops |= GLFW_DRAG_OPERATION_MOVE;
+    int ret = glfwStartDrag(osw->handle, items, w->drag_source.num_mimes, thumbnail.pixels ? &thumbnail : NULL, ops, true);
     if (ret != 0) free_drag_source();
     return ret;
 }

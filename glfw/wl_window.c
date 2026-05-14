@@ -2549,6 +2549,14 @@ update_drop_state(_GLFWWaylandDataOffer *d, _GLFWwindow* window, size_t accepted
 }
 
 static void
+update_drop_source_actions(_GLFWwindow *window, _GLFWWaylandDataOffer *offer) {
+    window->drop_operation.source_actions = GLFW_DRAG_OPERATION_NONE;
+    if (offer->source_actions & WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_COPY;
+    if (offer->source_actions & WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_MOVE;
+    if (offer->source_actions & WL_DATA_DEVICE_MANAGER_DND_ACTION_ASK) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_GENERIC;
+}
+
+static void
 drag_enter(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED, uint32_t serial, struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *id) {
     debug_input("Drop entered\n");
     _GLFWWaylandDataOffer *offer = &_glfw.wl.drop_data_offer;
@@ -2565,6 +2573,7 @@ drag_enter(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED, uint
             double xpos = wl_fixed_to_double(x);
             double ypos = wl_fixed_to_double(y);
             if (reset_copy_mimes(offer)) {
+                update_drop_source_actions(window, offer);
                 size_t mime_count = _glfwInputDropEvent(
                         window, GLFW_DROP_ENTER, xpos, ypos,
                         offer->copy_mimes, offer->copy_mimes_count, offer->is_self_offer);
@@ -2713,6 +2722,7 @@ motion(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED, uint32_t
             double xpos = wl_fixed_to_double(x);
             double ypos = wl_fixed_to_double(y);
             if (reset_copy_mimes(offer)) {
+                update_drop_source_actions(window, offer);
                 size_t mime_count = _glfwInputDropEvent(
                     window, GLFW_DROP_MOVE, xpos, ypos, offer->copy_mimes, offer->copy_mimes_count, offer->is_self_offer);
                 update_drop_state(offer, window, mime_count);

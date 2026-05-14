@@ -461,7 +461,7 @@ struct _GLFWwindow
 #else
     const bool                swaps_disallowed;
 #endif
-    struct { GLFWDragOperationType preferred; int allowed; } drop_operation;
+    struct { GLFWDragOperationType preferred; int allowed, source_actions; } drop_operation;
 
     struct {
         GLFWwindowposfun        pos;
