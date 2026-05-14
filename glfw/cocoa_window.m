@@ -4373,8 +4373,10 @@ add_uri_list_drag_items(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dr
             UTType *type = [UTType typeWithFilenameExtension:extension];
             if (!type) type = UTTypeItem;
             snprintf(buf, sizeof(buf), "kitty-internal/uri-list-item-%d", count);
+            NSString *filename = [url lastPathComponent];
             GLFWFilePromiseProviderDelegate* delegate = [[[GLFWFilePromiseProviderDelegate alloc]
-                initWithWindow:window mimeType:buf fileName:NULL instanceId:_glfw.drag.instance_id] autorelease];
+                initWithWindow:window mimeType:buf fileName:[filename UTF8String]
+                    instanceId:_glfw.drag.instance_id] autorelease];
             NSFilePromiseProvider *provider = [[[NSFilePromiseProvider alloc]
                 initWithFileType:type.identifier delegate:delegate] autorelease];
             // Store the delegate in the provider's user info so it's retained
