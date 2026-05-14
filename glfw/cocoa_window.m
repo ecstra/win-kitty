@@ -1759,41 +1759,39 @@ _glfwPlatformRequestDropData(_GLFWwindow *window, const char *mime) {
             }
             char *mt = _glfw_strdup(mime);
             NSMutableArray *collected_urls = [[NSMutableArray alloc] init];
-            _Atomic(NSInteger) *pending = (_Atomic(NSInteger) *)malloc(sizeof(_Atomic(NSInteger)));
-            atomic_init(pending, (NSInteger)[file_receivers count]);
+            dispatch_group_t group = dispatch_group_create();
             NSOperationQueue *opQueue = [[NSOperationQueue alloc] init];
             opQueue.maxConcurrentOperationCount = 1;  // serial: safe to append to collected_urls
             for (NSFilePromiseReceiver *receiver in file_receivers) {
+                dispatch_group_enter(group);
                 [receiver receivePromisedFilesAtDestination:tmpDirURL options:@{}
                     operationQueue:opQueue
                     reader:^(NSURL *fileURL, NSError *errorOrNil) {
                     if (!errorOrNil && fileURL) [collected_urls addObject:fileURL];
-                    if (atomic_fetch_sub_explicit(pending, 1, memory_order_acq_rel) == 1) {
-                        // All file promises resolved; build uri-list on the main thread
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            free(pending);
-                            _GLFWwindow *w = _glfwWindowForId(wid);
-                            if (w && w->ns.drop_data.file_promise_mapping) {
-                                if (w->ns.drop_data.data_mapping == nil)
-                                    w->ns.drop_data.data_mapping = [[NSMutableDictionary alloc] init];
-                                NSMutableString *uri_list = [NSMutableString stringWithCapacity:4096];
-                                for (NSURL *url in collected_urls) {
-                                    if ([uri_list length] > 0) [uri_list appendString:@"\n"];
-                                    [uri_list appendString:url.absoluteString];
-                                }
-                                NSData *result = [uri_list dataUsingEncoding:NSUTF8StringEncoding];
-                                w->ns.drop_data.data_mapping[@(mt)] = @[result, @0];
-                                [w->ns.drop_data.file_promise_mapping removeObjectForKey:@(mt)];
-                                const char *mimes[1] = {mt};
-                                _glfwInputDropEvent(w, GLFW_DROP_DATA_AVAILABLE, 0, 0, mimes, 1, false);
-                            }
-                            [collected_urls release];
-                            [opQueue release];
-                            free(mt);
-                        });
-                    }
+                    dispatch_group_leave(group);
                 }];
             }
+            dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+                dispatch_release(group);
+                _GLFWwindow *w = _glfwWindowForId(wid);
+                if (w && w->ns.drop_data.file_promise_mapping) {
+                    if (w->ns.drop_data.data_mapping == nil)
+                        w->ns.drop_data.data_mapping = [[NSMutableDictionary alloc] init];
+                    NSMutableString *uri_list = [NSMutableString stringWithCapacity:4096];
+                    for (NSURL *url in collected_urls) {
+                        if ([uri_list length] > 0) [uri_list appendString:@"\n"];
+                        [uri_list appendString:url.absoluteString];
+                    }
+                    NSData *result = [uri_list dataUsingEncoding:NSUTF8StringEncoding];
+                    w->ns.drop_data.data_mapping[@(mt)] = @[result, @0];
+                    [w->ns.drop_data.file_promise_mapping removeObjectForKey:@(mt)];
+                    const char *mimes[1] = {mt};
+                    _glfwInputDropEvent(w, GLFW_DROP_DATA_AVAILABLE, 0, 0, mimes, 1, false);
+                }
+                [collected_urls release];
+                [opQueue release];
+                free(mt);
+            });
             return 0;
         }
     } else if (strcmp(mime, "text/plain") == 0 || strcmp(mime, "text/plain;charset=utf-8") == 0) {
