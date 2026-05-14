@@ -259,11 +259,11 @@ func (dnd *dnd) run_loop() (err error) {
 			if cmd.Payload != nil {
 				payload = utils.UnsafeBytesToString(cmd.Payload)
 			}
-			if dnd.on_drop_move(cmd.X, cmd.Y, cmd.Has_more, payload, false) {
+			if dnd.on_drop_move(cmd.X, cmd.Y, cmd.Has_more, payload, false, cmd.Operation) {
 				dnd.render_screen()
 			}
 		case 'M':
-			if dnd.on_drop_move(cmd.X, cmd.Y, cmd.Has_more, utils.UnsafeBytesToString(cmd.Payload), true) {
+			if dnd.on_drop_move(cmd.X, cmd.Y, cmd.Has_more, utils.UnsafeBytesToString(cmd.Payload), true, cmd.Operation) {
 				dnd.render_screen()
 			}
 		case 'R':

@@ -197,6 +197,35 @@ class TestDnDKitten(BaseTest):
         self.screen = None
         self.pty = None
 
+    def test_dnd_kitten_drop_allowed_ops(self):
+        # Test that the drop destination respects the drag source's allowed operations.
+        # When the drag source only allows copy (allowed_ops=1), dropping on the move
+        # box must be rejected, and vice versa.
+        self.finish_setup()
+        copy, move = self.get_button_geometry()
+        mimes = ['text/uri-list']
+        wid = self.capture.window_id
+        # allowed_ops=1 means copy-only in kitten format
+        dnd_test_fake_drop_event(wid, False, mimes, copy[0] + 1, copy[1] + 1, 1)
+        self.wait_for_state('drop_action', GLFW_DRAG_OPERATION_COPY)
+        dnd_test_fake_drop_event(wid, False)
+        dnd_test_fake_drop_event(wid, False, mimes, move[0] + 1, move[1] + 1, 1)
+        self.wait_for_state('drop_action', 0)  # GLFW_DRAG_OPERATION_NONE: source allows copy only, move box must reject
+        dnd_test_fake_drop_event(wid, False)
+        # allowed_ops=2 means move-only in kitten format
+        dnd_test_fake_drop_event(wid, False, mimes, move[0] + 1, move[1] + 1, 2)
+        self.wait_for_state('drop_action', GLFW_DRAG_OPERATION_MOVE)
+        dnd_test_fake_drop_event(wid, False)
+        dnd_test_fake_drop_event(wid, False, mimes, copy[0] + 1, copy[1] + 1, 2)
+        self.wait_for_state('drop_action', 0)  # GLFW_DRAG_OPERATION_NONE: source allows move only, copy box must reject
+        dnd_test_fake_drop_event(wid, False)
+        # allowed_ops=3 means both copy and move allowed (default)
+        for b, expected in ((copy, GLFW_DRAG_OPERATION_COPY), (move, GLFW_DRAG_OPERATION_MOVE)):
+            dnd_test_fake_drop_event(wid, False, mimes, b[0] + 1, b[1] + 1, 3)
+            self.wait_for_state('drop_action', expected)
+            dnd_test_fake_drop_event(wid, False)
+        self.exit_kitten()
+
     def test_dnd_kitten_drop(self):
         img_drop_path = 'images/image.png'
         self.finish_setup(cli_args=(f'--drop=image/png:{img_drop_path}', '--confirm-drop-overwrite'))

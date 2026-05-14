@@ -505,7 +505,7 @@ drop_register_machine_id(Window *w, const uint8_t *machine_id, size_t sz) {
 }
 
 void
-drop_move_on_child(Window *w, const char** mimes, size_t num_mimes, bool is_drop) {
+drop_move_on_child(Window *w, const char** mimes, size_t num_mimes, bool is_drop, int allowed_ops) {
     if (!w->drop.hovered) {
         reset_drop(w);
         w->drop.hovered = true;
@@ -530,9 +530,15 @@ drop_move_on_child(Window *w, const char** mimes, size_t num_mimes, bool is_drop
     // we simply drop this event if there is too much data being written to the child
     if (w->drop.pending.count && !is_drop) return;
     char buf[128];
-    int header_size = snprintf(buf, sizeof(buf), "\x1b]%d;t=%c:x=%u:y=%u:X=%d:Y=%d", DND_CODE,
-            is_drop ? 'M' : 'm', w->mouse_pos.cell_x, w->mouse_pos.cell_y,
-            (int)w->mouse_pos.global_x, (int)w->mouse_pos.global_y);
+    int header_size;
+    if (allowed_ops)
+        header_size = snprintf(buf, sizeof(buf), "\x1b]%d;t=%c:x=%u:y=%u:X=%d:Y=%d:o=%d", DND_CODE,
+                is_drop ? 'M' : 'm', w->mouse_pos.cell_x, w->mouse_pos.cell_y,
+                (int)w->mouse_pos.global_x, (int)w->mouse_pos.global_y, allowed_ops);
+    else
+        header_size = snprintf(buf, sizeof(buf), "\x1b]%d;t=%c:x=%u:y=%u:X=%d:Y=%d", DND_CODE,
+                is_drop ? 'M' : 'm', w->mouse_pos.cell_x, w->mouse_pos.cell_y,
+                (int)w->mouse_pos.global_x, (int)w->mouse_pos.global_y);
     if (w->drop.offered_mimes_total_size) {
         const size_t mimes_total_size = 1 + w->drop.offered_mimes_total_size;
         RAII_ALLOC(char, mbuf, malloc(mimes_total_size));
@@ -2409,7 +2415,8 @@ dnd_test_fake_drop_event(PyObject *self UNUSED, PyObject *args) {
     int is_drop;
     PyObject *mimes_seq = Py_None;
     int x = -2, y = -2;
-    if (!PyArg_ParseTuple(args, "Kp|Oii", &window_id, &is_drop, &mimes_seq, &x, &y)) return NULL;
+    int allowed_ops = 0;
+    if (!PyArg_ParseTuple(args, "Kp|Oiii", &window_id, &is_drop, &mimes_seq, &x, &y, &allowed_ops)) return NULL;
     Window *w = window_for_window_id((id_type)window_id);
     if (!w) { PyErr_SetString(PyExc_ValueError, "Window not found"); return NULL; }
     if (mimes_seq == Py_None) {
@@ -2427,7 +2434,7 @@ dnd_test_fake_drop_event(PyObject *self UNUSED, PyObject *args) {
     }
     if (x > -1) w->mouse_pos.cell_x = x;
     if (y > -1) w->mouse_pos.cell_y = y;
-    drop_move_on_child(w, mimes, (size_t)num_mimes, is_drop ? true : false);
+    drop_move_on_child(w, mimes, (size_t)num_mimes, is_drop ? true : false, allowed_ops);
     Py_RETURN_NONE;
 }
 
