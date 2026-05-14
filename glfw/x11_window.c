@@ -1692,6 +1692,24 @@ _glfwPlatformEndDrop(GLFWwindow *w, GLFWDragOperationType op) {
 
 
 static void
+update_drop_source_actions(_GLFWwindow *window) {
+    window->drop_operation.source_actions = GLFW_DRAG_OPERATION_NONE;
+    Atom *actions = NULL;
+    unsigned long count = _glfwGetWindowPropertyX11(dnd.source, _glfw.x11.XdndActionList, XA_ATOM, (unsigned char**)&actions);
+    if (actions) {
+        for (unsigned long i = 0; i < count; i++) {
+            if (actions[i] == _glfw.x11.XdndActionCopy) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_COPY;
+            else if (actions[i] == _glfw.x11.XdndActionMove) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_MOVE;
+            else if (actions[i] == _glfw.x11.XdndActionAsk) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_GENERIC;
+        }
+        XFree(actions);
+    } else {
+        // XdndActionList not present; default to copy only
+        window->drop_operation.source_actions = GLFW_DRAG_OPERATION_COPY;
+    }
+}
+
+static void
 drop_start(_GLFWwindow *window, XEvent *event) {
     // A drag operation has entered the window
     if (dnd.version > _GLFW_XDND_VERSION) return;
@@ -1703,6 +1721,7 @@ drop_start(_GLFWwindow *window, XEvent *event) {
     dnd.format_priority  = 0;
     update_dnd_mimes(event);
     dnd.from_self = _glfw.x11.drag.source_window != None && dnd.source == _glfw.x11.drag.source_window;
+    update_drop_source_actions(window);
     // Position is not known yet at enter time, will be updated with XdndPosition
     if (reset_dnd_copy_mimes()) {
         size_t accepted_count = _glfwInputDropEvent(

@@ -327,6 +327,8 @@ typedef struct _GLFWlibraryX11
     Atom            XdndFinished;
     Atom            XdndSelection;
     Atom            XdndTypeList;
+    Atom            XdndActionList;
+    Atom            XdndActionAsk;
     Atom            XdndLeave;
     Atom            XdndProxy;
 
