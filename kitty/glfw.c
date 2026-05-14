@@ -783,7 +783,7 @@ request_drop_data(OSWindow *w, id_type wid, const char* mime) {
 }
 
 static void
-on_drop(GLFWwindow *window, GLFWDropEvent *ev) {
+drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
     if (!set_callback_window(window)) return;
     OSWindow *os_window = global_state.callback_os_window;
     Window *w = NULL; id_type wid = global_state.mouse_hover_in_window;
@@ -1894,7 +1894,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     glfwSetKeyboardCallback(glfw_window, key_callback);
 
     glfwSetDragSourceCallback(glfw_window, drag_source_callback);
-    glfwSetDropEventCallback(glfw_window, on_drop);
+    glfwSetDropEventCallback(glfw_window, drop_dest_callback);
     monotonic_t now = monotonic();
     w->is_focused = true;
     w->cursor_blink_zero_time = now;
