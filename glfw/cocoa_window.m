@@ -871,12 +871,13 @@ static void _glfwUpdateNotchCover(_GLFWwindow*);
 {
     GLFWid windowId, instanceId;
     char* mimeType;  // MIME type for this provider
+    char *file_name; // Optional file name for this provider
     NSFileHandle *file_handle;
     NSURL *file_url;
     void (^completion_handler)(NSError*);
 }
 
-- (instancetype)initWithWindow:(_GLFWwindow*)initWindow mimeType:(const char*)mime instanceId:(GLFWid)iid;
+- (instancetype)initWithWindow:(_GLFWwindow*)initWindow mimeType:(const char*)mime fileName:(const char*)name instanceId:(GLFWid)iid;
 - (void)request_drag_data;
 - (void)promised_data_ready:(const char*)data sz:(size_t)sz type:(int)type;
 - (void)end_transfer:(int)errorCode;
@@ -4373,7 +4374,7 @@ add_uri_list_drag_items(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dr
             if (!type) type = UTTypeItem;
             snprintf(buf, sizeof(buf), "kitty-internal/uri-list-item-%d", count);
             GLFWFilePromiseProviderDelegate* delegate = [[[GLFWFilePromiseProviderDelegate alloc]
-                initWithWindow:window mimeType:buf instanceId:_glfw.drag.instance_id] autorelease];
+                initWithWindow:window mimeType:buf fileName:NULL instanceId:_glfw.drag.instance_id] autorelease];
             NSFilePromiseProvider *provider = [[[NSFilePromiseProvider alloc]
                 initWithFileType:type.identifier delegate:delegate] autorelease];
             // Store the delegate in the provider's user info so it's retained
@@ -4408,7 +4409,7 @@ add_drag_items(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dragItems, 
     } else {
         // Create file promise provider with our delegate
         GLFWFilePromiseProviderDelegate* delegate = [[[GLFWFilePromiseProviderDelegate alloc]
-            initWithWindow:window mimeType:mime_item->mime_type instanceId:_glfw.drag.instance_id] autorelease];
+            initWithWindow:window mimeType:mime_item->mime_type fileName:NULL instanceId:_glfw.drag.instance_id] autorelease];
         NSFilePromiseProvider *provider = [[[NSFilePromiseProvider alloc]
             initWithFileType:utiString delegate:delegate] autorelease];
         // Store the delegate in the provider's user info so it's retained
@@ -4625,11 +4626,12 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
     }
 }
 
-- (instancetype)initWithWindow:(_GLFWwindow*)initWindow mimeType:(const char*)mime instanceId:(GLFWid) instance_id {
+- (instancetype)initWithWindow:(_GLFWwindow*)initWindow mimeType:(const char*)mime fileName: (const char*)name instanceId:(GLFWid) instance_id {
     self = [super init];
     if (self) {
         windowId = initWindow ? initWindow->id : 0;
         mimeType = _glfw_strdup(mime);
+        file_name = name ? _glfw_strdup(name) : nil;
         instanceId = instance_id;
         if (file_promise_providers == nil) file_promise_providers = [[NSMutableArray alloc] init];
         [file_promise_providers addObject:self];
@@ -4639,6 +4641,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
 
 - (void)dealloc {
     free(mimeType); mimeType = NULL;
+    free(file_name); file_name = NULL;
     if (file_handle) [file_handle release];
     file_handle = nil;
     if (file_url) [file_url release];
@@ -4649,6 +4652,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
 
 - (NSString*)filePromiseProvider:(NSFilePromiseProvider*)filePromiseProvider fileNameForType:(NSString*)fileType {
     (void)filePromiseProvider; (void)fileType;
+    if (file_name) return [NSString stringWithUTF8String:file_name];
     // Generate a unique filename based on the MIME type
     NSString* extension = @"data";
     if (mimeType) {
