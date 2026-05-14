@@ -62,8 +62,6 @@ typedef void* id;
  #define NSOpenGLContextParameterSurfaceOpacity NSOpenGLCPSurfaceOpacity
 #endif
 
-#define debug_key(...) if (_glfw.hints.init.debugKeyboard) { fprintf(stderr, __VA_ARGS__); fflush(stderr); }
-
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int, unsigned long);
 typedef bool (* GLFWapplicationshouldhandlereopenfun)(int);
 typedef bool (* GLFWhandleurlopen)(const char*);

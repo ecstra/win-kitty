@@ -108,7 +108,7 @@ forward_dictation_selector_to_app(SEL selector, id sender) {
     }
     if (selector != start_dictation_selector && selector != stop_dictation_selector) return false;
     if ([NSApp respondsToSelector:selector]) {
-        debug_key("Forwarding %s to NSApp\n", [NSStringFromSelector(selector) UTF8String]);
+        debug_input("Forwarding %s to NSApp\n", [NSStringFromSelector(selector) UTF8String]);
         [NSApp performSelector:selector withObject:sender];
         return true;
     }
@@ -859,7 +859,7 @@ static void _glfwUpdateNotchCover(_GLFWwindow*);
     // interpretKeyEvents: May call insertText: or doCommandBySelector:.
     // With the default macOS keybindings, pressing certain key combinations
     // (e.g. Ctrl+/, Ctrl+Cmd+Down/Left/Right) will produce a beep sound.
-    debug_key("\n\tTextInputCtx: doCommandBySelector: (%s)\n", [NSStringFromSelector(selector) UTF8String]);
+    debug_input("\n\tTextInputCtx: doCommandBySelector: (%s)\n", [NSStringFromSelector(selector) UTF8String]);
     if (forward_dictation_selector_to_app(selector, nil)) return;
 }
 @end // }}}
@@ -1264,7 +1264,7 @@ is_ascii_control_char(char x) {
     const bool previous_has_marked_text = [self hasMarkedText];
     if (input_context && (!input_source_at_last_key_event || ![input_source_at_last_key_event isEqualToString:input_context.selectedKeyboardInputSource])) {
         if (input_source_at_last_key_event) {
-            debug_key("Input source changed, clearing pre-edit text and resetting deadkey state\n");
+            debug_input("Input source changed, clearing pre-edit text and resetting deadkey state\n");
             GLFWkeyevent dummy = {.action = GLFW_RELEASE, .ime_state = GLFW_IME_PREEDIT_CHANGED};
             window->ns.deadKeyState = 0;
             _glfwInputKeyboard(window, &dummy); // clear pre-edit text
@@ -1307,12 +1307,12 @@ is_ascii_control_char(char x) {
                     &char_count,
                     text
                     ) != noErr) {
-            debug_key("UCKeyTranslate failed for keycode: 0x%x (%s) %s\n",
+            debug_input("UCKeyTranslate failed for keycode: 0x%x (%s) %s\n",
                     keycode, safe_name_for_keycode(keycode), format_mods(mods));
             window->ns.deadKeyState = 0;
             return;
         }
-        debug_key("\x1b[31mPress:\x1b[m native_key: 0x%x (%s) glfw_key: 0x%x %schar_count: %lu deadKeyState: %u repeat: %d ",
+        debug_input("\x1b[31mPress:\x1b[m native_key: 0x%x (%s) glfw_key: 0x%x %schar_count: %lu deadKeyState: %u repeat: %d ",
                 keycode, safe_name_for_keycode(keycode), key, format_mods(mods), char_count, window->ns.deadKeyState, event.ARepeat);
         marked_text_cleared_by_insert = false;
         if (process_text) {
@@ -1325,17 +1325,17 @@ is_ascii_control_char(char x) {
         }
         if (window->ns.deadKeyState && (char_count == 0 || keycode == 0x75)) {
             // 0x75 is the delete key which needs to be ignored during a compose sequence
-            debug_key("Sending pre-edit text for dead key (text: %s markedText: %s).\n", format_text(_glfw.ns.text), glfw_keyevent.text);
+            debug_input("Sending pre-edit text for dead key (text: %s markedText: %s).\n", format_text(_glfw.ns.text), glfw_keyevent.text);
             UPDATE_PRE_EDIT_TEXT;
             return;
         }
         if (in_compose_sequence) {
-            debug_key("Clearing pre-edit text at end of compose sequence\n");
+            debug_input("Clearing pre-edit text at end of compose sequence\n");
             CLEAR_PRE_EDIT_TEXT;
         }
     }
     if (is_ascii_control_char(_glfw.ns.text[0])) _glfw.ns.text[0] = 0;  // don't send text for ascii control codes
-    debug_key("text: %s glfw_key: %s marked_text: (%s)\n",
+    debug_input("text: %s glfw_key: %s marked_text: (%s)\n",
             format_text(_glfw.ns.text), _glfwGetKeyName(key), [[markedText string] UTF8String]);
     bool bracketed_ime = false;
     if (!window->ns.deadKeyState) {
@@ -1348,7 +1348,7 @@ is_ascii_control_char(char x) {
         }
         if (([self hasMarkedText] || previous_has_marked_text) && !_glfw.ns.text[0]) {
             // do not pass keys like BACKSPACE while there's pre-edit text, let IME handle it
-            debug_key("Ignoring key press as IME is active and it generated no text\n");
+            debug_input("Ignoring key press as IME is active and it generated no text\n");
             return;
         }
     }
@@ -1406,7 +1406,7 @@ is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_m
     }
 #undef action_for
     GLFWkeyevent glfw_keyevent = {.key = key, .native_key = keycode, .native_key_id = keycode, .action = action, .mods = mods};
-    debug_key("\x1b[33mflagsChanged:\x1b[m modifier: %s native_key: 0x%x (%s) glfw_key: 0x%x %s\n",
+    debug_input("\x1b[33mflagsChanged:\x1b[m modifier: %s native_key: 0x%x (%s) glfw_key: 0x%x %s\n",
             mod_name, keycode, safe_name_for_keycode(keycode), key, format_mods(mods));
     marked_text_cleared_by_insert = false;
     if (process_text && input_context) {
@@ -1415,7 +1415,7 @@ is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_m
         [input_context handleEvent:event];
         in_key_handler = 0;
         if (marked_text_cleared_by_insert) {
-            debug_key("Clearing pre-edit text because insertText called from flagsChanged\n");
+            debug_input("Clearing pre-edit text because insertText called from flagsChanged\n");
             CLEAR_PRE_EDIT_TEXT;
             if (_glfw.ns.text[0]) glfw_keyevent.text = _glfw.ns.text;
             else _glfw.ns.text[0] = old_first_char;
@@ -1433,7 +1433,7 @@ is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_m
 
     GLFWkeyevent glfw_keyevent = {.key = key, .native_key = keycode, .native_key_id = keycode, .action = GLFW_RELEASE, .mods = mods};
     add_alternate_keys(&glfw_keyevent, event);
-    debug_key("\x1b[32mRelease:\x1b[m native_key: 0x%x (%s) glfw_key: 0x%x %s\n",
+    debug_input("\x1b[32mRelease:\x1b[m native_key: 0x%x (%s) glfw_key: 0x%x %s\n",
             keycode, safe_name_for_keycode(keycode), key, format_mods(mods));
     _glfwInputKeyboard(window, &glfw_keyevent);
 }
@@ -1827,12 +1827,12 @@ _glfwPlatformEndDrop(GLFWwindow *w UNUSED, GLFWDragOperationType op UNUSED) {
      replacementRange:(NSRange)replacementRange
 {
     const char *s = polymorphic_string_as_utf8(string);
-    debug_key("\n\tsetMarkedText: %s selectedRange: (%lu, %lu) replacementRange: (%lu, %lu)\n", s, selectedRange.location, selectedRange.length, replacementRange.location, replacementRange.length);
+    debug_input("\n\tsetMarkedText: %s selectedRange: (%lu, %lu) replacementRange: (%lu, %lu)\n", s, selectedRange.location, selectedRange.length, replacementRange.location, replacementRange.length);
     if (string == nil || !s[0]) {
         bool had_marked_text = [self hasMarkedText];
         [self unmarkText];
         if (had_marked_text && (!in_key_handler || in_key_handler == 2)) {
-            debug_key("Clearing pre-edit because setMarkedText called from %s\n", in_key_handler ? "flagsChanged" : "event loop");
+            debug_input("Clearing pre-edit because setMarkedText called from %s\n", in_key_handler ? "flagsChanged" : "event loop");
             GLFWkeyevent glfw_keyevent = {.ime_state = GLFW_IME_PREEDIT_CHANGED};
             _glfwInputKeyboard(window, &glfw_keyevent);
             _glfw.ns.text[0] = 0;
@@ -1849,7 +1849,7 @@ _glfwPlatformEndDrop(GLFWwindow *w UNUSED, GLFWDragOperationType op UNUSED) {
         markedText = [[NSMutableAttributedString alloc] initWithString:string];
     }
     if (!in_key_handler || in_key_handler == 2) {
-        debug_key("Updating IME text in kitty from setMarkedText called from %s: %s\n", in_key_handler ? "flagsChanged" : "event loop", _glfw.ns.text);
+        debug_input("Updating IME text in kitty from setMarkedText called from %s: %s\n", in_key_handler ? "flagsChanged" : "event loop", _glfw.ns.text);
         GLFWkeyevent glfw_keyevent = {.text=[[markedText string] UTF8String], .ime_state = GLFW_IME_PREEDIT_CHANGED};
         _glfwInputKeyboard(window, &glfw_keyevent);
         _glfw.ns.text[0] = 0;
@@ -1909,7 +1909,7 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
             const CGFloat top = (CGFloat)ev.cursor.top / window->ns.yscale;
             const CGFloat cellWidth = (CGFloat)ev.cursor.width / window->ns.xscale;
             const CGFloat cellHeight = (CGFloat)ev.cursor.height / window->ns.yscale;
-            debug_key("updateIMEPosition: left=%f, top=%f, width=%f, height=%f\n", left, top, cellWidth, cellHeight);
+            debug_input("updateIMEPosition: left=%f, top=%f, width=%f, height=%f\n", left, top, cellWidth, cellHeight);
             const NSRect frame = [window->ns.view frame];
             const NSRect rectInView = NSMakeRect(left,
                                                  frame.size.height - top - cellHeight,
@@ -1923,12 +1923,12 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange
 {
     const char *utf8 = polymorphic_string_as_utf8(string);
-    debug_key("\n\tinsertText: %s replacementRange: (%lu, %lu)\n", utf8, replacementRange.location, replacementRange.length);
+    debug_input("\n\tinsertText: %s replacementRange: (%lu, %lu)\n", utf8, replacementRange.location, replacementRange.length);
     if ([self hasMarkedText] && !is_ascii_control_char(utf8[0])) {
         [self unmarkText];
         marked_text_cleared_by_insert = true;
         if (!in_key_handler) {
-            debug_key("Clearing pre-edit because insertText called from event loop\n");
+            debug_input("Clearing pre-edit because insertText called from event loop\n");
             GLFWkeyevent glfw_keyevent = {.ime_state = GLFW_IME_PREEDIT_CHANGED};
             _glfwInputKeyboard(window, &glfw_keyevent);
             _glfw.ns.text[0] = 0;
@@ -1943,7 +1943,7 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
         _glfw.ns.text[sizeof(_glfw.ns.text) - 1] = 0;
         if ((!in_key_handler || in_key_handler == 2) && _glfw.ns.text[0]) {
             if (!is_ascii_control_char(_glfw.ns.text[0])) {
-                debug_key("Sending text to kitty from insertText called from %s: %s\n", in_key_handler ? "flagsChanged" : "event loop", _glfw.ns.text);
+                debug_input("Sending text to kitty from insertText called from %s: %s\n", in_key_handler ? "flagsChanged" : "event loop", _glfw.ns.text);
                 GLFWkeyevent glfw_keyevent = {.text=_glfw.ns.text, .ime_state=GLFW_IME_COMMIT_TEXT};
                 _glfwInputKeyboard(window, &glfw_keyevent);
             }
@@ -1954,7 +1954,7 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
 
 - (void)doCommandBySelector:(SEL)selector
 {
-    debug_key("\n\tdoCommandBySelector: (%s)\n", [NSStringFromSelector(selector) UTF8String]);
+    debug_input("\n\tdoCommandBySelector: (%s)\n", [NSStringFromSelector(selector) UTF8String]);
     if (forward_dictation_selector_to_app(selector, self)) return;
 }
 
@@ -2052,7 +2052,7 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     // When dictation or other accessibility features set text, insert it as keyboard input
     if (value && [value length] > 0 && window) {
         const char *utf8 = [value UTF8String];
-        debug_key("Inserting text via setAccessibilityValue: %s\n", utf8);
+        debug_input("Inserting text via setAccessibilityValue: %s\n", utf8);
         GLFWkeyevent glfw_keyevent = {.text=utf8, .ime_state=GLFW_IME_COMMIT_TEXT};
         _glfwInputKeyboard(window, &glfw_keyevent);
     }
@@ -2109,7 +2109,7 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     if (text && [text length] > 0) {
         // The service wants us to replace the selection, but we can't replace anything but insert text.
         const char *utf8 = polymorphic_string_as_utf8(text);
-        debug_key("Sending text received in readSelectionFromPasteboard as key event\n");
+        debug_input("Sending text received in readSelectionFromPasteboard as key event\n");
         GLFWkeyevent glfw_keyevent = {.text=utf8, .ime_state=GLFW_IME_COMMIT_TEXT};
         _glfwInputKeyboard(window, &glfw_keyevent);
         // Restore pre-edit text after inserting the received text
@@ -4170,6 +4170,7 @@ static NSMutableArray<GLFWFilePromiseProviderDelegate*> *file_promise_providers 
            willBeginAtPoint:(NSPoint)screenPoint
 {
     (void)session;
+    debug_input("Dragging session started at: (%f, %f)\n", screenPoint.x, screenPoint.y);
     start_point = screenPoint;
 }
 
@@ -4177,15 +4178,40 @@ static NSMutableArray<GLFWFilePromiseProviderDelegate*> *file_promise_providers 
            movedToPoint:(NSPoint)screenPoint
 {
     (void)session;
+    debug_input("Dragging session moved to: (%f, %f)\n", screenPoint.x, screenPoint.y);
     current_point = screenPoint;
 }
 
+NSString*
+NSStringFromDragOperation(NSDragOperation operation) {
+    // Check explicit presets first
+    if (operation == NSDragOperationNone) return @"None";
+    if (operation == NSDragOperationEvery) return @"Every";
+
+    NSMutableArray<NSString *> *descriptions = [NSMutableArray array];
+
+    // Evaluate individual bitwise flags
+    if (operation & NSDragOperationCopy) [descriptions addObject:@"Copy"];
+    if (operation & NSDragOperationLink) [descriptions addObject:@"Link"];
+    if (operation & NSDragOperationGeneric) [descriptions addObject:@"Generic"];
+    if (operation & NSDragOperationPrivate) [descriptions addObject:@"Private"];
+    if (operation & NSDragOperationMove) [descriptions addObject:@"Move"];
+    if (operation & NSDragOperationDelete) [descriptions addObject:@"Delete"];
+
+    // Fallback for undefined or custom masks
+    if (descriptions.count == 0) {
+        return [NSString stringWithFormat:@"Unknown (%lu)", (unsigned long)operation];
+    }
+
+    return [descriptions componentsJoinedByString:@", "];
+}
 
 - (void)draggingSession:(NSDraggingSession *)session
            endedAtPoint:(NSPoint)screenPoint
               operation:(NSDragOperation)operation
 {
     (void)session;
+    debug_input("Dragging session ended at: (%f, %f) with operation: %s\n", screenPoint.x, screenPoint.y, [NSStringFromDragOperation(operation) UTF8String]);
     _glfwPlatformFreeDragSourceData();
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (window) {

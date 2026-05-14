@@ -927,12 +927,12 @@ int _glfwPlatformInit(bool *supports_window_occlusion)
 
     NSEvent* (^keydown_block)(NSEvent*) = ^ NSEvent* (NSEvent* event)
     {
-        debug_key("---------------- key down -------------------\n");
-        debug_key("%s\n", [[event description] UTF8String]);
+        debug_input("---------------- key down -------------------\n");
+        debug_input("%s\n", [[event description] UTF8String]);
         if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed) {
             // first check if there is a global menu bar shortcut
             if ([[NSApp mainMenu] performKeyEquivalent:event]) {
-                debug_key("keyDown triggered global menu bar action ignoring\n");
+                debug_input("keyDown triggered global menu bar action ignoring\n");
                 last_keydown_shortcut_event.virtual_key_code = [event keyCode];
                 last_keydown_shortcut_event.input_source_switch_modifiers = 0;
                 last_keydown_shortcut_event.timestamp = [event timestamp];
@@ -941,7 +941,7 @@ int _glfwPlatformInit(bool *supports_window_occlusion)
             // now check if there is a useful apple shortcut
             int global_shortcut = is_active_apple_global_shortcut(event);
             if (is_useful_apple_global_shortcut(global_shortcut)) {
-                debug_key("keyDown triggered global macOS shortcut ignoring\n");
+                debug_input("keyDown triggered global macOS shortcut ignoring\n");
                 last_keydown_shortcut_event.virtual_key_code = [event keyCode];
                 // record the modifier keys if switching to the next input source
                 last_keydown_shortcut_event.input_source_switch_modifiers = (global_shortcut == kSHKSelectNextSourceInInputMenu) ? USEFUL_MODS([event modifierFlags]) : 0;
@@ -950,7 +950,7 @@ int _glfwPlatformInit(bool *supports_window_occlusion)
             }
             // check for JIS keyboard layout function keys
             if (is_apple_jis_layout_function_key(event)) {
-                debug_key("keyDown triggered JIS layout function key ignoring\n");
+                debug_input("keyDown triggered JIS layout function key ignoring\n");
                 last_keydown_shortcut_event.virtual_key_code = [event keyCode];
                 last_keydown_shortcut_event.input_source_switch_modifiers = 0;
                 last_keydown_shortcut_event.timestamp = [event timestamp];
@@ -960,33 +960,33 @@ int _glfwPlatformInit(bool *supports_window_occlusion)
         last_keydown_shortcut_event.virtual_key_code = 0xffff;
         NSWindow *kw = [NSApp keyWindow];
         if (kw && kw.contentView) [kw.contentView keyDown:event];
-        else debug_key("keyDown ignored as no keyWindow present\n");
+        else debug_input("keyDown ignored as no keyWindow present\n");
         return nil;
     };
 
     NSEvent* (^keyup_block)(NSEvent*) = ^ NSEvent* (NSEvent* event)
     {
-        debug_key("----------------- key up --------------------\n");
-        debug_key("%s\n", [[event description] UTF8String]);
+        debug_input("----------------- key up --------------------\n");
+        debug_input("%s\n", [[event description] UTF8String]);
         if (last_keydown_shortcut_event.virtual_key_code != 0xffff && last_keydown_shortcut_event.virtual_key_code == [event keyCode]) {
             // ignore as the corresponding key down event triggered a menu bar or macOS shortcut
             last_keydown_shortcut_event.virtual_key_code = 0xffff;
-            debug_key("keyUp ignored as corresponds to previous keyDown that triggered a shortcut\n");
+            debug_input("keyUp ignored as corresponds to previous keyDown that triggered a shortcut\n");
             return nil;
         }
         NSWindow *kw = [NSApp keyWindow];
         if (kw && kw.contentView) [kw.contentView keyUp:event];
-        else debug_key("keyUp ignored as no keyWindow present\n");
+        else debug_input("keyUp ignored as no keyWindow present\n");
         return nil;
     };
 
     NSEvent* (^flags_changed_block)(NSEvent*) = ^ NSEvent* (NSEvent* event)
     {
-        debug_key("-------------- flags changed -----------------\n");
-        debug_key("%s\n", [[event description] UTF8String]);
+        debug_input("-------------- flags changed -----------------\n");
+        debug_input("%s\n", [[event description] UTF8String]);
         last_keydown_shortcut_event.virtual_key_code = 0xffff;
         if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed && is_apple_fn_global_shortcut(event)) {
-            debug_key("flagsChanged triggered global fn shortcut ignoring\n");
+            debug_input("flagsChanged triggered global fn shortcut ignoring\n");
             return event;
         }
         // switching to the next input source is only confirmed when all modifier keys are released
@@ -997,7 +997,7 @@ int _glfwPlatformInit(bool *supports_window_occlusion)
         }
         NSWindow *kw = [NSApp keyWindow];
         if (kw && kw.contentView) [kw.contentView flagsChanged:event];
-        else debug_key("flagsChanged ignored as no keyWindow present\n");
+        else debug_input("flagsChanged ignored as no keyWindow present\n");
         return nil;
     };
 
