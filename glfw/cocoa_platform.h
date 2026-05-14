@@ -123,6 +123,7 @@ typedef struct _GLFWDropData {
     id pasteboard;
     id data_mapping;
     id file_promise_mapping;
+    id file_promise_temp_dir;    // NSURL* for the unique temp dir used when receiving file promises for text/uri-list
 } _GLFWDropData;
 
 // Cocoa-specific per-window data
