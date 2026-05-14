@@ -802,7 +802,10 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
             on_mouse_position_update(ev->xpos, ev->ypos);
             if (is_client_drop) {
                 if (ev->type == GLFW_DROP_ENTER) w->drop.accepted_operation = GLFW_DRAG_OPERATION_NONE;
-                drop_move_on_child(w, ev->mimes, ev->num_mimes, false);
+                int kitty_allowed_ops = 0;
+                if (ev->operation.allowed & GLFW_DRAG_OPERATION_COPY) kitty_allowed_ops |= 1;
+                if (ev->operation.allowed & GLFW_DRAG_OPERATION_MOVE) kitty_allowed_ops |= 2;
+                drop_move_on_child(w, ev->mimes, ev->num_mimes, false, kitty_allowed_ops);
                 ev->num_mimes = drop_update_mimes(w, ev->mimes, ev->num_mimes);
                 ev->operation.allowed = w->drop.accepted_operation;
                 ev->operation.preferred = w->drop.accepted_operation;
@@ -851,7 +854,10 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
             global_state.drop_dest.client_window_data_request = 0;
             global_state.drop_dest.os_window_id = os_window->id;
             if (is_client_drop) {
-                drop_move_on_child(w, ev->mimes, ev->num_mimes, true);
+                int kitty_allowed_ops = 0;
+                if (ev->operation.allowed & GLFW_DRAG_OPERATION_COPY) kitty_allowed_ops |= 1;
+                if (ev->operation.allowed & GLFW_DRAG_OPERATION_MOVE) kitty_allowed_ops |= 2;
+                drop_move_on_child(w, ev->mimes, ev->num_mimes, true, kitty_allowed_ops);
                 ev->num_mimes = 0;  // we wait for the client to request MIMEs
             } else {
                 if (ev->from_self) {

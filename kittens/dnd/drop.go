@@ -379,14 +379,15 @@ func parse_uri_list(src string) (ans []string, err error) {
 }
 
 type drop_status struct {
-	offered_mimes    []string
-	accepted_mimes   []string
-	uri_list         []string
-	cell_x, cell_y   int
-	action           int
-	in_window        bool
-	reading_data     bool
-	is_remote_client bool
+	offered_mimes      []string
+	accepted_mimes     []string
+	uri_list           []string
+	cell_x, cell_y     int
+	action             int
+	in_window          bool
+	reading_data       bool
+	is_remote_client   bool
+	source_allowed_ops int
 
 	dropping_to          *dir_handle
 	root_remote_dir      *remote_dir_entry
@@ -594,7 +595,7 @@ func (dnd *dnd) request_mime_data() {
 
 var offered_mimes_buf strings.Builder
 
-func (dnd *dnd) on_drop_move(cell_x, cell_y int, has_more bool, offered_mimes string, is_drop bool) (needs_rerender bool) {
+func (dnd *dnd) on_drop_move(cell_x, cell_y int, has_more bool, offered_mimes string, is_drop bool, source_allowed_ops int) (needs_rerender bool) {
 	prev_status := dnd.drop_status
 	dnd.drop_status.cell_x, dnd.drop_status.cell_y = cell_x, cell_y
 	if offered_mimes != "" {
@@ -614,6 +615,9 @@ func (dnd *dnd) on_drop_move(cell_x, cell_y int, has_more bool, offered_mimes st
 		}
 	}
 	offered_mimes_buf.Reset()
+	if source_allowed_ops != 0 {
+		dnd.drop_status.source_allowed_ops = source_allowed_ops
+	}
 	if dnd.copy_button_region.has(cell_x, cell_y) {
 		dnd.drop_status.action = copy_on_drop
 	} else if dnd.move_button_region.has(cell_x, cell_y) {
@@ -627,6 +631,13 @@ func (dnd *dnd) on_drop_move(cell_x, cell_y int, has_more bool, offered_mimes st
 			dnd.drop_status.action = copy_on_drop
 		case "move":
 			dnd.drop_status.action = move_on_drop
+		}
+	}
+	// Restrict to operations allowed by the drag source.
+	if sao := dnd.drop_status.source_allowed_ops; sao != 0 && dnd.drop_status.action != 0 {
+		if sao&dnd.drop_status.action == 0 {
+			dnd.drop_status.action = 0
+			dnd.drop_status.accepted_mimes = nil
 		}
 	}
 	dnd.drop_status.in_window = cell_x > -1 && cell_y > -1
