@@ -1212,6 +1212,7 @@ glfwStartDrag(GLFWwindow* handle, const GLFWDragSourceItem *items, size_t item_c
             memcpy((void*)_glfw.drag.items[i].optional_data, items[i].optional_data, items[i].data_size);
         }
         _glfw.drag.items[i].data_size = items[i].data_size;
+        _glfw.drag.items[i].is_remote_client = items[i].is_remote_client;
     }
     _glfw.drag.window_id = window->id;
     _glfw.drag.operations = operations;
