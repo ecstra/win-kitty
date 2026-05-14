@@ -943,7 +943,7 @@ drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
     if (ds.from_window && (w = window_for_window_id(ds.from_window)) && w->drag_source.state) {
         is_client_drag = true;
     }
-    // On Wayland, wen compositor doesnt support top level drag protocol we get
+    // On Wayland, when compositor doesn't support top level drag protocol we get
     // a drop event for what is either a cancel or a drop on something that
     // does not accept the drop. In both of these cases we need to send the
     // client a drop cancel.
@@ -3113,6 +3113,7 @@ start_window_drag(Window *w, bool in_test_mode) {
     global_state.drag_source.from_window = w->id;
     global_state.drag_source.from_os_window = osw->id;
     global_state.drag_source.thumbnail_idx = w->drag_source.img_idx < num_images ? (int)w->drag_source.img_idx : -1;
+    global_state.tracked_drag_in_window = 0;  // this is now an OS global drag
     if (in_test_mode) return 0;
     int ret = glfwStartDrag(osw->handle, items, w->drag_source.num_mimes, thumbnail.pixels ? &thumbnail : NULL, w->drag_source.allowed_operations, true);
     if (ret != 0) free_drag_source();
