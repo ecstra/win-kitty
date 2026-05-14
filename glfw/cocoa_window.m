@@ -1718,6 +1718,14 @@ _glfwPlatformRequestDropData(_GLFWwindow *window, const char *mime) {
                 else [uri_list appendString:url.absoluteString];
             }
             data = [uri_list dataUsingEncoding:NSUTF8StringEncoding];
+        } else {
+            window->ns.drop_data.file_promise_mapping[@(mime)] = @[[NSNull null], [NSNull null], [NSNull null]];
+            // TODO: store all file promise based items that conform to UTTypeFileURL into a temp dir
+            // and once that's complete, generate a response with file:// URLs pointing to the items in that temp dir
+            // This must be done in the background but remember to send the GLFW_DROP_DATA_AVAILABLE event on main thread.
+            // The temporary directory must live until the next drop event for this window starts.
+            // It must also be deleted when the window is destroyed.
+            return 0;
         }
     } else if (strcmp(mime, "text/plain") == 0 || strcmp(mime, "text/plain;charset=utf-8") == 0) {
         NSArray* strings = [pasteboard readObjectsForClasses:@[[NSString class]] options:nil];
