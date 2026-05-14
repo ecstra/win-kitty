@@ -381,6 +381,7 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 	}
 	var uri_list []uri_list_item
 	for _, arg := range args {
+		arg = utils.Expanduser(arg)
 		st, err := os.Lstat(arg)
 		if err != nil {
 			return 1, err
