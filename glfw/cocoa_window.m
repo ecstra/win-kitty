@@ -1673,7 +1673,7 @@ send_data_available_event_on_next_event_loop_tick(GLFWid wid, const char *mime) 
 }
 
 int
-_glfwPlatformRequestDropData(_GLFWwindow *window UNUSED, const char *mime) {
+_glfwPlatformRequestDropData(_GLFWwindow *window, const char *mime) {
     NSPasteboard* pasteboard = window->ns.drop_data.pasteboard;
     if (!pasteboard) return EINVAL;
     GLFWid wid = window->id;
