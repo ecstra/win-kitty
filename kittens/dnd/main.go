@@ -338,7 +338,7 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 		if dest == "" {
 			delete(drop_dests, mime)
 		} else {
-			path, err := filepath.Abs(dest)
+			path, err := filepath.Abs(utils.Expanduser(dest))
 			if err != nil {
 				return 1, err
 			}
@@ -361,7 +361,7 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 				drag_sources["text/plain"] = &drag_source{human_name: "STDIN", mime_type: "text/plain", data: data}
 			}
 		} else {
-			path, err := filepath.Abs(src)
+			path, err := filepath.Abs(utils.Expanduser(src))
 			if err != nil {
 				return 1, err
 			}
