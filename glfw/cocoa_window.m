@@ -1492,9 +1492,14 @@ free_drop_data(_GLFWwindow *window) {
         for (NSString *key in window->ns.drop_data.file_promise_mapping) {
             NSArray *pair = [window->ns.drop_data.file_promise_mapping objectForKey:key];
             error = nil; if (pair[1] != [NSNull null]) [pair[1] closeAndReturnError:&error];
-            error = nil; [fileManager removeItemAtURL:pair[0] error:&error];
+            if (pair[0] != [NSNull null]) { error = nil; [fileManager removeItemAtURL:pair[0] error:&error]; }
         }
         [window->ns.drop_data.file_promise_mapping release];
+    }
+    if (window->ns.drop_data.file_promise_temp_dir) {
+        NSError *error = nil;
+        [[NSFileManager defaultManager] removeItemAtURL:window->ns.drop_data.file_promise_temp_dir error:&error];
+        [window->ns.drop_data.file_promise_temp_dir release];
     }
     memset(&window->ns.drop_data, 0, sizeof(_GLFWDropData));
 }
@@ -1720,11 +1725,75 @@ _glfwPlatformRequestDropData(_GLFWwindow *window, const char *mime) {
             data = [uri_list dataUsingEncoding:NSUTF8StringEncoding];
         } else {
             window->ns.drop_data.file_promise_mapping[@(mime)] = @[[NSNull null], [NSNull null], [NSNull null]];
-            // TODO: store all file promise based items that conform to UTTypeFileURL into a temp dir
-            // and once that's complete, generate a response with file:// URLs pointing to the items in that temp dir
-            // This must be done in the background but remember to send the GLFW_DROP_DATA_AVAILABLE event on main thread.
-            // The temporary directory must live until the next drop event for this window starts.
-            // It must also be deleted when the window is destroyed.
+            // Create a unique temp directory that lives until the next drop event or window destruction
+            NSError *mkdirError = nil;
+            NSString *tmpDirPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                [[NSUUID UUID] UUIDString]];
+            NSURL *tmpDirURL = [NSURL fileURLWithPath:tmpDirPath isDirectory:YES];
+            if (![[NSFileManager defaultManager] createDirectoryAtURL:tmpDirURL
+                    withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
+                NSLog(@"Failed to create temp dir for file promises: %@", mkdirError);
+                return 0;
+            }
+            window->ns.drop_data.file_promise_temp_dir = [tmpDirURL retain];
+            // Collect file promise receivers whose UTIs conform to UTTypeFileURL
+            NSArray *all_receivers = [pasteboard readObjectsForClasses:@[[NSFilePromiseReceiver class]] options:@{}];
+            NSMutableArray *file_receivers = [NSMutableArray array];
+            for (NSFilePromiseReceiver *receiver in all_receivers) {
+                for (NSString *ruti in receiver.fileTypes) {
+                    UTType *promisedType = [UTType typeWithIdentifier:ruti];
+                    if (promisedType && [promisedType conformsToType:UTTypeFileURL]) {
+                        [file_receivers addObject:receiver];
+                        break;
+                    }
+                }
+            }
+            if ([file_receivers count] == 0) {
+                // Nothing to receive; emit an empty uri-list immediately
+                if (window->ns.drop_data.data_mapping == nil)
+                    window->ns.drop_data.data_mapping = [[NSMutableDictionary alloc] init];
+                window->ns.drop_data.data_mapping[@(mime)] = @[[NSData data], @0];
+                [window->ns.drop_data.file_promise_mapping removeObjectForKey:@(mime)];
+                send_data_available_event_on_next_event_loop_tick(wid, mime);
+                return 0;
+            }
+            char *mt = _glfw_strdup(mime);
+            // collected_urls is accessed only from the serial opQueue, then from the main thread
+            // after all operations complete, so no extra locking is needed.
+            NSMutableArray *collected_urls = [[NSMutableArray alloc] init];
+            __block NSInteger pending = (NSInteger)[file_receivers count];
+            NSOperationQueue *opQueue = [[NSOperationQueue alloc] init];
+            opQueue.maxConcurrentOperationCount = 1;  // serial: protects collected_urls
+            for (NSFilePromiseReceiver *receiver in file_receivers) {
+                [receiver receivePromisedFilesAtDestination:tmpDirURL options:@{}
+                    operationQueue:opQueue
+                    reader:^(NSURL *fileURL, NSError *errorOrNil) {
+                    if (!errorOrNil && fileURL) [collected_urls addObject:fileURL];
+                    if (--pending == 0) {
+                        // All file promises resolved; build uri-list on the main thread
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            _GLFWwindow *w = _glfwWindowForId(wid);
+                            if (w && w->ns.drop_data.file_promise_mapping) {
+                                if (w->ns.drop_data.data_mapping == nil)
+                                    w->ns.drop_data.data_mapping = [[NSMutableDictionary alloc] init];
+                                NSMutableString *uri_list = [NSMutableString stringWithCapacity:4096];
+                                for (NSURL *url in collected_urls) {
+                                    if ([uri_list length] > 0) [uri_list appendString:@"\n"];
+                                    [uri_list appendString:url.filePathURL.absoluteString];
+                                }
+                                NSData *result = [uri_list dataUsingEncoding:NSUTF8StringEncoding];
+                                w->ns.drop_data.data_mapping[@(mt)] = @[result, @0];
+                                [w->ns.drop_data.file_promise_mapping removeObjectForKey:@(mt)];
+                                const char *mimes[1] = {mt};
+                                _glfwInputDropEvent(w, GLFW_DROP_DATA_AVAILABLE, 0, 0, mimes, 1, false);
+                            }
+                            [collected_urls release];
+                            [opQueue release];
+                            free(mt);
+                        });
+                    }
+                }];
+            }
             return 0;
         }
     } else if (strcmp(mime, "text/plain") == 0 || strcmp(mime, "text/plain;charset=utf-8") == 0) {
