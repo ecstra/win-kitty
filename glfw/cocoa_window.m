@@ -4659,7 +4659,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
     NSString* extension = @"data";
     if (mimeType) {
         UTType *type = [UTType typeWithMIMEType:@(mimeType)];
-        extension = type.preferredFilenameExtension;
+        if (type) extension = type.preferredFilenameExtension;
     }
     return [NSString stringWithFormat:@"kitty-drag-source-%@.%@", [[NSUUID UUID] UUIDString], extension];
 }
