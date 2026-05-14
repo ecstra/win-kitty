@@ -520,6 +520,8 @@ static bool initExtensions(void)
     _glfw.x11.XdndFinished = XInternAtom(_glfw.x11.display, "XdndFinished", False);
     _glfw.x11.XdndSelection = XInternAtom(_glfw.x11.display, "XdndSelection", False);
     _glfw.x11.XdndTypeList = XInternAtom(_glfw.x11.display, "XdndTypeList", False);
+    _glfw.x11.XdndActionList = XInternAtom(_glfw.x11.display, "XdndActionList", False);
+    _glfw.x11.XdndActionAsk = XInternAtom(_glfw.x11.display, "XdndActionAsk", False);
     _glfw.x11.XdndLeave = XInternAtom(_glfw.x11.display, "XdndLeave", False);
     _glfw.x11.XdndProxy = XInternAtom(_glfw.x11.display, "XdndProxy", False);
 

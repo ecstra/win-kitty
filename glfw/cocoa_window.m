@@ -1581,6 +1581,11 @@ reset_drop_copy_mimes(_GLFWDropData *d) {
     window->ns.drop_data.mimes = mime_array;
     window->ns.drop_data.mimes_count = mime_count;
     bool from_self = ([sender draggingSource] != nil);
+    NSDragOperation src_ops = [sender draggingSourceOperationMask];
+    window->drop_operation.source_actions = GLFW_DRAG_OPERATION_NONE;
+    if (src_ops & NSDragOperationCopy) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_COPY;
+    if (src_ops & NSDragOperationMove) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_MOVE;
+    if (src_ops & NSDragOperationGeneric) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_GENERIC;
     _GLFWDropData *d = &window->ns.drop_data;
     if (reset_drop_copy_mimes(d)) {
         size_t accepted_count = _glfwInputDropEvent(window, GLFW_DROP_ENTER, xpos, ypos, d->copy_mimes, d->copy_mimes_count, from_self);
@@ -1598,6 +1603,11 @@ reset_drop_copy_mimes(_GLFWDropData *d) {
     double ypos = contentRect.size.height - pos.y;
 
     bool from_self = ([sender draggingSource] != nil);
+    NSDragOperation src_ops = [sender draggingSourceOperationMask];
+    window->drop_operation.source_actions = GLFW_DRAG_OPERATION_NONE;
+    if (src_ops & NSDragOperationCopy) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_COPY;
+    if (src_ops & NSDragOperationMove) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_MOVE;
+    if (src_ops & NSDragOperationGeneric) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_GENERIC;
     _GLFWDropData *d = &window->ns.drop_data;
     if (reset_drop_copy_mimes(d)) {
         size_t accepted_count = _glfwInputDropEvent(window, GLFW_DROP_MOVE, xpos, ypos, d->copy_mimes, d->copy_mimes_count, from_self);
