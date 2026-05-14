@@ -1758,20 +1758,20 @@ _glfwPlatformRequestDropData(_GLFWwindow *window, const char *mime) {
                 return 0;
             }
             char *mt = _glfw_strdup(mime);
-            // collected_urls is accessed only from the serial opQueue, then from the main thread
-            // after all operations complete, so no extra locking is needed.
             NSMutableArray *collected_urls = [[NSMutableArray alloc] init];
-            __block NSInteger pending = (NSInteger)[file_receivers count];
+            _Atomic(NSInteger) *pending = (_Atomic(NSInteger) *)malloc(sizeof(_Atomic(NSInteger)));
+            atomic_init(pending, (NSInteger)[file_receivers count]);
             NSOperationQueue *opQueue = [[NSOperationQueue alloc] init];
-            opQueue.maxConcurrentOperationCount = 1;  // serial: protects collected_urls
+            opQueue.maxConcurrentOperationCount = 1;  // serial: safe to append to collected_urls
             for (NSFilePromiseReceiver *receiver in file_receivers) {
                 [receiver receivePromisedFilesAtDestination:tmpDirURL options:@{}
                     operationQueue:opQueue
                     reader:^(NSURL *fileURL, NSError *errorOrNil) {
                     if (!errorOrNil && fileURL) [collected_urls addObject:fileURL];
-                    if (--pending == 0) {
+                    if (atomic_fetch_sub_explicit(pending, 1, memory_order_acq_rel) == 1) {
                         // All file promises resolved; build uri-list on the main thread
                         dispatch_async(dispatch_get_main_queue(), ^{
+                            free(pending);
                             _GLFWwindow *w = _glfwWindowForId(wid);
                             if (w && w->ns.drop_data.file_promise_mapping) {
                                 if (w->ns.drop_data.data_mapping == nil)
@@ -1779,7 +1779,7 @@ _glfwPlatformRequestDropData(_GLFWwindow *window, const char *mime) {
                                 NSMutableString *uri_list = [NSMutableString stringWithCapacity:4096];
                                 for (NSURL *url in collected_urls) {
                                     if ([uri_list length] > 0) [uri_list appendString:@"\n"];
-                                    [uri_list appendString:url.filePathURL.absoluteString];
+                                    [uri_list appendString:url.absoluteString];
                                 }
                                 NSData *result = [uri_list dataUsingEncoding:NSUTF8StringEncoding];
                                 w->ns.drop_data.data_mapping[@(mt)] = @[result, @0];
