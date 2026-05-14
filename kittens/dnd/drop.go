@@ -634,8 +634,8 @@ func (dnd *dnd) on_drop_move(cell_x, cell_y int, has_more bool, offered_mimes st
 		}
 	}
 	// Restrict to operations allowed by the drag source.
-	if sao := dnd.drop_status.source_allowed_ops; sao != 0 && dnd.drop_status.action != 0 {
-		if sao&dnd.drop_status.action == 0 {
+	if allowed := dnd.drop_status.source_allowed_ops; allowed != 0 && dnd.drop_status.action != 0 {
+		if allowed&dnd.drop_status.action == 0 {
 			dnd.drop_status.action = 0
 			dnd.drop_status.accepted_mimes = nil
 		}

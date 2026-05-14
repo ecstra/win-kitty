@@ -210,14 +210,14 @@ class TestDnDKitten(BaseTest):
         self.wait_for_state('drop_action', GLFW_DRAG_OPERATION_COPY)
         dnd_test_fake_drop_event(wid, False)
         dnd_test_fake_drop_event(wid, False, mimes, move[0] + 1, move[1] + 1, 1)
-        self.wait_for_state('drop_action', 0)  # GLFW_DRAG_OPERATION_NONE
+        self.wait_for_state('drop_action', 0)  # GLFW_DRAG_OPERATION_NONE: source allows copy only, move box must reject
         dnd_test_fake_drop_event(wid, False)
         # allowed_ops=2 means move-only in kitten format
         dnd_test_fake_drop_event(wid, False, mimes, move[0] + 1, move[1] + 1, 2)
         self.wait_for_state('drop_action', GLFW_DRAG_OPERATION_MOVE)
         dnd_test_fake_drop_event(wid, False)
         dnd_test_fake_drop_event(wid, False, mimes, copy[0] + 1, copy[1] + 1, 2)
-        self.wait_for_state('drop_action', 0)  # GLFW_DRAG_OPERATION_NONE
+        self.wait_for_state('drop_action', 0)  # GLFW_DRAG_OPERATION_NONE: source allows move only, copy box must reject
         dnd_test_fake_drop_event(wid, False)
         # allowed_ops=3 means both copy and move allowed (default)
         for b, expected in ((copy, GLFW_DRAG_OPERATION_COPY), (move, GLFW_DRAG_OPERATION_MOVE)):
