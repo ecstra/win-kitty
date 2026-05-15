@@ -4570,7 +4570,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
         Block_release(completion_handler);
         completion_handler = nil;
     }
-    [file_promise_providers removeObject:self];
+    if (file_promise_providers) [file_promise_providers removeObject:self];
     if (drag_finish_window_id) {
         if (!file_promise_providers || [file_promise_providers count] == 0) {
             fire_drag_finished();
