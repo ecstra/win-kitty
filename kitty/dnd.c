@@ -668,7 +668,7 @@ do_drop_request_data(Window *w, int32_t idx) {
     }
     const char *mime = w->drop.offerred_mimes[idx - 1];
     w->drop.getting_data_for_mime = strdup(mime);
-    if (w->drop.getting_data_for_mime) {
+    if (w->drop.getting_data_for_mime && !dnd_is_test_mode()) {
         int err = request_drop_data(osw, w->id, mime);
         if (err) {
             drop_send_error(w, err, "drop data request from OS failed");
