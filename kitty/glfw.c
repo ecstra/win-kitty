@@ -776,10 +776,11 @@ register_mimes_for_drop(OSWindow *w, const char **mimes, size_t sz) {
 #endif
 }
 
-void
+int
 request_drop_data(OSWindow *w, id_type wid, const char* mime) {
     global_state.drop_dest.client_window_data_request = wid;
-    if (w->handle) glfwRequestDropData(w->handle, mime);
+    if (w->handle) return glfwRequestDropData(w->handle, mime);
+    return ENOENT;
 }
 
 static void
