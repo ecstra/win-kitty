@@ -4773,7 +4773,8 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
         [fileManager removeItemAtURL:url error:&error];
         return;
     }
-    file_handle = fileHandle; completion_handler = completionHandler;
+    file_handle = fileHandle;
+    completion_handler = Block_copy(completionHandler);
     file_url = [url retain];
     [self request_drag_data];
 }
