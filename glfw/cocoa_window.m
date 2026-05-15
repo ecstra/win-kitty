@@ -4362,12 +4362,11 @@ fire_drag_finished(void) {
         [drag_finish_timer invalidate];
         drag_finish_timer = nil;
     }
-    if (!drag_finish_window_id) return;
     GLFWid wid = drag_finish_window_id;
     GLFWDragOperationType action = drag_finish_action;
     drag_finish_window_id = 0;
     drag_finish_action = 0;
-    _GLFWwindow *window = _glfwWindowForId(wid);
+    _GLFWwindow *window = wid ? _glfwWindowForId(wid) : NULL;
     if (window) {
         GLFWDragEvent ev = {.type=GLFW_DRAG_FINSHED, .action=action};
         _glfwInputDragSourceRequest(window, &ev);
