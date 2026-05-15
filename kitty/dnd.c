@@ -1677,7 +1677,7 @@ static int
 notify_drag_data_received(Window *w, size_t uri_item_idx, const char *basename, int type) {
     char mime_type[128], path[4096];
     snprintf(mime_type, sizeof(mime_type), "kitty-internal/uri-list-item-%zu", uri_item_idx);
-    if (!basename || !basename[0]) notify_drag_data_ready(global_state.drag_source.from_os_window, mime_type, NULL, 0, type);
+    if (!basename || !basename[0]) return notify_drag_data_ready(global_state.drag_source.from_os_window, mime_type, NULL, 0, type);
     int sz = snprintf(path, sizeof(path), "%s/%zu/%s", ds.base_dir_for_remote_items, uri_item_idx, basename);
     return notify_drag_data_ready(global_state.drag_source.from_os_window, mime_type, path, sz, type);
 }
@@ -1705,7 +1705,9 @@ request_file_promise(Window *w, size_t idx_in_uri_list, const char *url, int *er
     char *fname = sanitized_filename_from_url(url);
     if (!fname) { *err_code = EINVAL; return NULL; }
     w->drag_source.file_promises[w->drag_source.file_promises_count].uri_item_idx = idx_in_uri_list;
-    w->drag_source.file_promises[w->drag_source.file_promises_count++].ri = (DragRemoteItem){.dir_entry_name = fname};
+    w->drag_source.file_promises[w->drag_source.file_promises_count].ri = (DragRemoteItem){.dir_entry_name = fname};
+    request_remote_file(w, &w->drag_source.file_promises[w->drag_source.file_promises_count].ri, url, idx_in_uri_list);
+    w->drag_source.file_promises_count++;
 
     *err_code = EAGAIN;
     return NULL;
