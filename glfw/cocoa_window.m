@@ -1630,7 +1630,13 @@ reset_drop_copy_mimes(_GLFWDropData *d) {
         size_t accepted_count = _glfwInputDropEvent(window, GLFW_DROP_MOVE, xpos, ypos, d->copy_mimes, d->copy_mimes_count, from_self);
         update_drop_state(window, accepted_count, GLFW_DROP_MOVE);
     }
-    return window->ns.drop_data.drag_accepted ? NSDragOperationGeneric : NSDragOperationNone;
+    switch (window->drop_operation.preferred) {
+        case GLFW_DRAG_OPERATION_NONE: return NSDragOperationNone;
+        case GLFW_DRAG_OPERATION_MOVE: return NSDragOperationMove;
+        case GLFW_DRAG_OPERATION_COPY: return NSDragOperationCopy;
+        case GLFW_DRAG_OPERATION_GENERIC: return NSDragOperationGeneric;
+    }
+    return NSDragOperationGeneric;
 }
 
 - (void)draggingExited:(id <NSDraggingInfo>)sender
