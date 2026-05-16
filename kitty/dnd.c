@@ -688,11 +688,11 @@ drop_dispatch_data(Window *w, const char *mime, const char *data, ssize_t sz) {
         char buf[128];
         int header_size = snprintf(buf, sizeof(buf), "\x1b]%d;t=r", DND_CODE);
         const bool is_uri_list = strcmp(mime, "text/uri-list") == 0;
-        if (is_uri_list) header_size += snprintf(
-            buf + header_size, sizeof(buf) - header_size, ":X=%d", w->drop.is_remote_client);
+        if (is_uri_list && w->drop.is_remote_client) header_size += snprintf(
+            buf + header_size, sizeof(buf) - header_size, ":X=1");
         header_size += drop_append_request_keys(w, buf + header_size, sizeof(buf) - header_size);
         queue_payload_to_child(w->id, w->drop.client_id, &w->drop.pending, buf, header_size, sz ? data : NULL, sz, true);
-        if (is_uri_list) {
+        if (is_uri_list && sz) {
             w->drop.uri_list_sz += sz;
             char *tmp = realloc(w->drop.uri_list, w->drop.uri_list_sz);
             if (tmp) { w->drop.uri_list = tmp; memcpy(w->drop.uri_list + w->drop.uri_list_sz - sz, data, sz); }
@@ -810,7 +810,7 @@ drop_send_file_chunks(Window *w) {
                 return;
             }
             drop_close_file_fd(w);
-            drop_send_error(w, EIO, "failed ot read from drop data file");
+            drop_send_error(w, EIO, "failed to read from drop data file");
             drop_pop_request(w);
             drop_process_queue(w);
             return;
