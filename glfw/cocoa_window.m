@@ -1669,13 +1669,19 @@ send_data_available_event_on_next_event_loop_tick(GLFWid wid, const char *mime) 
 static void
 create_uri_list(_GLFWDropData *d, NSArray *urls) {
     NSMutableArray<NSString *> *items = [NSMutableArray array];
-    NSCharacterSet *allowedChars = [NSCharacterSet URLQueryAllowedCharacterSet];
+    NSCharacterSet *c1 = [NSCharacterSet URLQueryAllowedCharacterSet];
+    NSCharacterSet *c2 = [NSCharacterSet URLPathAllowedCharacterSet];
     for (NSURL *url in urls) {
+        NSCharacterSet *allowedChars = c1;
+        if ([url isFileURL]) {
+            url = [url filePathURL];
+            allowedChars = c2;
+        }
         NSString *absoluteString = url.absoluteString;
         NSString *q = [absoluteString stringByAddingPercentEncodingWithAllowedCharacters:allowedChars];
         [items addObject:q];
     }
-    NSString *result = [urls componentsJoinedByString:@"\r\n"];
+    NSString *result = [items componentsJoinedByString:@"\r\n"];
     NSData *data = [result dataUsingEncoding:NSUTF8StringEncoding];
     NSInputStream *inputStream = [NSInputStream inputStreamWithData:data];
     [inputStream open];

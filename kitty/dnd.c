@@ -1043,6 +1043,7 @@ do_drop_request_uri_data(Window *w, int32_t mime_idx, int32_t file_idx) {
 
     struct stat st;
     if (lstat(path, &st) < 0) {
+        log_error("lstat() of uri-list entry num: %d (%s) failed with error: %s", file_n, path, strerror(errno));
         switch (errno) {
             case ENOENT: case ENOTDIR: drop_send_error(w, ENOENT, "drop data file does not exist"); break;
             case EACCES: case EPERM:   drop_send_error(w, EPERM, "permission denied for stat() on drop data file"); break;
