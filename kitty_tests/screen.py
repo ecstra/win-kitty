@@ -741,6 +741,35 @@ class TestScreen(BaseTest):
         self.ae(s.text_for_selection(False, True), ('1234 ', '5'))
         self.ae(s.text_for_selection(True, True), ('1234 ', '5', ''))
 
+    def test_apply_selection_with_paused_rendering_and_scrollback(self):
+        # Regression test: in 0.46.2 the paused-rendering branch of
+        # apply_selection passed the (possibly negative) loop variable y
+        # directly to linebuf_init_line, which interprets it as an unsigned
+        # index_type and reads ~4GB out of bounds in line_attrs[idx]. The fix
+        # translates to paused_y = y + scrolled_by and guards paused_y < 0.
+        # Real-world trigger: a TUI sending DCS =1s (DEC synchronized output)
+        # while the user has scrolled back and has an active scrollback
+        # selection.
+        s = self.create_screen(cols=10, lines=3, scrollback=50)
+        for i in range(40):
+            s.draw(f"row{i:03d}")
+            s.carriage_return()
+            s.linefeed()
+        s.scroll(20, True)
+        self.assertGreater(s.scrolled_by, 0)
+        # Selection that crosses the top of the visible area into scrollback,
+        # so the inner loop iterates with negative y.
+        s.start_selection(0, 0)
+        s.update_selection(2, 1)
+        self.assertTrue(s.has_selection())
+        self.assertTrue(s.pause_rendering(True, 5000))
+        # Must not crash and must return the visible-area buffer.
+        result = s.current_selections()
+        self.ae(len(result), s.lines * s.columns)
+        # The visible portion of the selection must have at least one byte
+        # marked (set_mask = 1 for plain selections).
+        self.assertIn(1, result)
+
     def test_soft_hyphen(self):
         s = self.create_screen()
         s.draw('a\u00adb')
