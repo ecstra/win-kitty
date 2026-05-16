@@ -5761,7 +5761,7 @@ static PyObject*
 pause_rendering(Screen *self, PyObject *args) {
     int msec = 100;
     int pause = 1;
-    if (!PyArg_ParseTuple(args, "|pi", &msec)) return NULL;
+    if (!PyArg_ParseTuple(args, "|pi", &pause, &msec)) return NULL;
     if (screen_pause_rendering(self, pause, msec)) Py_RETURN_TRUE;
     Py_RETURN_FALSE;
 }
