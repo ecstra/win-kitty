@@ -801,6 +801,13 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
             os_window->last_drag_event.x = (int)(ev->xpos * os_window->viewport_x_ratio);
             os_window->last_drag_event.y = (int)(ev->ypos * os_window->viewport_y_ratio);
             on_mouse_position_update(ev->xpos, ev->ypos);
+            // Re-evaluate which kitty window is now under the cursor after the
+            // position update, so that drag enter/leave events are sent to the
+            // correct kitty window when the drag crosses a kitty window boundary
+            // within the same OS window.
+            wid = global_state.mouse_hover_in_window;
+            w = wid ? window_for_window_id(wid) : NULL;
+            is_client_drop = !is_kitty_ui_drag && wid && w && w->drop.wanted;
             global_state.drop_dest.allowed_ops = ev->operation.source_actions;
             if (is_client_drop) {
                 if (!w->drop.initialized) {
