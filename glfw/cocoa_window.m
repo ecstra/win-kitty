@@ -1671,7 +1671,6 @@ create_uri_list(_GLFWDropData *d, NSArray *urls) {
     NSMutableArray<NSString *> *items = [NSMutableArray array];
     NSCharacterSet *allowedChars = [NSCharacterSet URLQueryAllowedCharacterSet];
     for (NSURL *url in urls) {
-        NSCharacterSet *allowedChars = c1;
         if ([url isFileURL]) url = [url filePathURL];
         NSString *absoluteString = url.absoluteString;
         NSString *q = [absoluteString stringByAddingPercentEncodingWithAllowedCharacters:allowedChars];
