@@ -1720,7 +1720,6 @@ build_uri_list(_GLFWDropData *d) {
         NSLog(@"Failed to create temp dir for file promises: %@", mkdirError);
         return NO;
     }
-    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @(0777)} ofItemAtPath:[tempDirURL path] error:&mkdirError];
     d->in_progress_drop.data_map = [[NSMutableDictionary alloc] init];
     NSPasteboard *pasteboard = [sender draggingPasteboard];
     NSMutableArray<NSURL *> *urls = [NSMutableArray array];
