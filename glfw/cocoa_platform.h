@@ -120,10 +120,14 @@ typedef struct _GLFWDropData {
     const char **copy_mimes;     // Working copy passed to callbacks; pointers into mimes[]
     size_t copy_mimes_count;     // Accepted count after last callback
     bool drag_accepted;
-    id pasteboard;
-    id data_mapping;
-    id file_promise_mapping;
-    id file_promise_temp_dir;    // NSURL* for the unique temp dir used when receiving file promises for text/uri-list
+    struct {
+        unsigned long long request_id;
+        id temp_dir;
+        id data_map;  // map MIME to NSError or NSInputStream
+        id path_map;  // map MIME to NSError or NSInputStream or NSUrl
+        id pending_requests;
+        bool promises_loaded;
+    } in_progress_drop;
 } _GLFWDropData;
 
 // Cocoa-specific per-window data
@@ -184,6 +188,7 @@ typedef struct _GLFWwindowNS
 
     // Cached MIME types from drag enter (for move events)
     _GLFWDropData drop_data;
+    unsigned long long drop_request_counter;
 
 } _GLFWwindowNS;
 

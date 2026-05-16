@@ -7,7 +7,7 @@
 // warranty. In no event will the authors be held liable for any damages
 // arising from the use of this software.
 //
-// Permission is granted to anyone to use this software for any purpose,
+// Permission is granted to anyone to use this software fo any purpose,
 // including commercial applications, and to alter it and redistribute it
 // freely, subject to the following restrictions:
 //
@@ -1478,30 +1478,30 @@ is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_m
 }
 
 static void
+free_in_progress_drop_data(_GLFWwindow *window) {
+    _GLFWDropData *d = &window->ns.drop_data;
+    if (d->in_progress_drop.temp_dir) {
+        NSError *error = nil;
+        [[NSFileManager defaultManager] removeItemAtURL:d->in_progress_drop.temp_dir error:&error];
+        [d->in_progress_drop.temp_dir release];
+    }
+    if (d->in_progress_drop.data_map) [d->in_progress_drop.data_map release];
+    if (d->in_progress_drop.path_map) [d->in_progress_drop.path_map release];
+    if (d->in_progress_drop.pending_requests) [d->in_progress_drop.pending_requests release];
+    memset(&d->in_progress_drop, 0, sizeof(d->in_progress_drop));
+}
+
+static void
 free_drop_data(_GLFWwindow *window) {
-    if (window->ns.drop_data.mimes) {
-        for (size_t i = 0; i < window->ns.drop_data.mimes_count; i++) free((void*)window->ns.drop_data.mimes[i]);
-        free(window->ns.drop_data.mimes);
+    _GLFWDropData *d = &window->ns.drop_data;
+    if (d->mimes) {
+        for (size_t i = 0; i < d->mimes_count; i++) free((void*)d->mimes[i]);
+        free(d->mimes);
     }
-    free(window->ns.drop_data.copy_mimes);  // pointer array only; strings owned by mimes[]
-    if (window->ns.drop_data.pasteboard) [window->ns.drop_data.pasteboard release];
-    if (window->ns.drop_data.data_mapping) [window->ns.drop_data.data_mapping release];
-    if (window->ns.drop_data.file_promise_mapping) {
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSError *error = nil;
-        for (NSString *key in window->ns.drop_data.file_promise_mapping) {
-            NSArray *pair = [window->ns.drop_data.file_promise_mapping objectForKey:key];
-            error = nil; if (pair[1] != [NSNull null]) [pair[1] closeAndReturnError:&error];
-            if (pair[0] != [NSNull null]) { error = nil; [fileManager removeItemAtURL:pair[0] error:&error]; }
-        }
-        [window->ns.drop_data.file_promise_mapping release];
-    }
-    if (window->ns.drop_data.file_promise_temp_dir) {
-        NSError *error = nil;
-        [[NSFileManager defaultManager] removeItemAtURL:window->ns.drop_data.file_promise_temp_dir error:&error];
-        [window->ns.drop_data.file_promise_temp_dir release];
-    }
-    memset(&window->ns.drop_data, 0, sizeof(_GLFWDropData));
+    free(d->copy_mimes);  // pointer array only; strings owned by mimes[]
+    d->mimes = NULL; d->copy_mimes = NULL;
+    d->mimes_count = 0; d->copy_mimes_count = 0; d->drag_accepted = NO;
+    free_in_progress_drop_data(window);
 }
 
 static void
@@ -1559,9 +1559,8 @@ reset_drop_copy_mimes(_GLFWDropData *d) {
     size_t mime_count = 0;
 
     // Check for common types first (use _glfw_strdup since we need to own the strings)
-    NSDictionary* options = @{NSPasteboardURLReadingFileURLsOnlyKey:@YES};
     bool has_uri_list = false;
-    if ([pasteboard canReadObjectForClasses:@[[NSURL class]] options:options]) {
+    if ([pasteboard canReadObjectForClasses:@[[NSURL class]] options:nil]) {
         has_uri_list = true;
         mime_array[mime_count++] = _glfw_strdup("text/uri-list");
     }
@@ -1650,35 +1649,8 @@ reset_drop_copy_mimes(_GLFWDropData *d) {
     free_drop_data(window);
 }
 
-- (BOOL)performDragOperation:(id <NSDraggingInfo>)sender
-{
-    if (!window->ns.drop_data.drag_accepted) return NO;
-    const NSRect contentRect = [window->ns.view frame];
-    const NSPoint pos = [sender draggingLocation];
-    double xpos = pos.x;
-    double ypos = contentRect.size.height - pos.y;
-    bool from_self = ([sender draggingSource] != nil);
-    _GLFWDropData *d = &window->ns.drop_data;
-    if (!reset_drop_copy_mimes(d)) return NO;
-    size_t num_accepted = _glfwInputDropEvent(window, GLFW_DROP_DROP, xpos, ypos, d->copy_mimes, d->copy_mimes_count, from_self);
-    if (d->copy_mimes) {
-        update_drop_state(window, num_accepted, GLFW_DROP_DROP);
-        window->ns.drop_data.pasteboard = [[sender draggingPasteboard] retain];
-        for (size_t i = 0; i < num_accepted; i++)
-            _glfwPlatformRequestDropData(window, d->copy_mimes[i]);
-    }
-    // Restore first-responder status after native DnD; the drag operation can
-    // displace the content view from first responder, silently breaking keyboard
-    // input even though osw->is_focused remains true.
-    [window->ns.object makeFirstResponder:window->ns.view];
+- (BOOL) prepareForDragOperation:(id<NSDraggingInfo>) sender {
     return YES;
-}
-
-void
-_glfwPlatformRequestDropUpdate(_GLFWwindow* window UNUSED) {
-    // No-op since macOS is calling the drop move callback periodically anyway
-    // thanks to wantsPeriodicDraggingUpdates and we have no way to inform
-    // macOS of any changes except in the cocoa callbacks.
 }
 
 static void
@@ -1694,205 +1666,233 @@ send_data_available_event_on_next_event_loop_tick(GLFWid wid, const char *mime) 
     });
 }
 
+static void
+create_uri_list(_GLFWDropData *d, NSArray *urls) {
+    NSMutableArray<NSString *> *items = [NSMutableArray array];
+    NSCharacterSet *allowedChars = [NSCharacterSet URLQueryAllowedCharacterSet];
+    for (NSURL *url in urls) {
+        NSString *absoluteString = url.absoluteString;
+        NSString *q = [absoluteString stringByAddingPercentEncodingWithAllowedCharacters:allowedChars];
+        [items addObject:q];
+    }
+    NSString *result = [urls componentsJoinedByString:@"\r\n"];
+    NSData *data = [result dataUsingEncoding:NSUTF8StringEncoding];
+    NSInputStream *inputStream = [NSInputStream inputStreamWithData:data];
+    [inputStream open];
+    d->in_progress_drop.data_map[@"text/uri-list"] = inputStream;
+}
+
+static void
+build_uri_list(_GLFWDropData *d) {
+    if (!d->in_progress_drop.path_map) return;
+    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    for (NSString *mime in d->in_progress_drop.path_map) {
+        if (![mime hasPrefix:@"kitty-internal/uri-list-item-"]) continue;
+        id x = d->in_progress_drop.path_map[mime];
+        if ([x isKindOfClass:[NSError class]]) {
+            d->in_progress_drop.data_map[@"text/uri-list"] = x;
+            return;
+        }
+        if ([x isKindOfClass:[NSURL class]]) [urls addObject:x];
+    }
+    if ([urls count] > 0) create_uri_list(d, urls);
+}
+
+- (BOOL)performDragOperation:(id <NSDraggingInfo>)sender
+{
+    free_in_progress_drop_data(window);
+    if (!window->ns.drop_data.drag_accepted) return NO;
+    const NSRect contentRect = [window->ns.view frame];
+    const NSPoint pos = [sender draggingLocation];
+    double xpos = pos.x;
+    double ypos = contentRect.size.height - pos.y;
+    bool from_self = ([sender draggingSource] != nil);
+    _GLFWDropData *d = &window->ns.drop_data;
+    if (!reset_drop_copy_mimes(d)) return NO;
+    NSError *mkdirError = nil;
+    NSURL *tempDirURL = [[NSFileManager defaultManager]
+    URLForDirectory:NSItemReplacementDirectory
+           inDomain:NSUserDomainMask
+  appropriateForURL:[NSURL fileURLWithPath:NSTemporaryDirectory()]
+             create:YES
+              error:&mkdirError];
+    if (!tempDirURL) {
+        NSLog(@"Failed to create temp dir for file promises: %@", mkdirError);
+        return NO;
+    }
+    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @(0777)} ofItemAtPath:[tempDirURL path] error:&mkdirError];
+    d->in_progress_drop.data_map = [[NSMutableDictionary alloc] init];
+    NSPasteboard *pasteboard = [sender draggingPasteboard];
+    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    for (NSURL *url in [pasteboard readObjectsForClasses:@[[NSURL class]] options:nil]) [urls addObject:url];
+    if ([urls count] > 0) create_uri_list(d, urls);
+    NSMutableArray<NSString *> *texts = [NSMutableArray array];
+    for (NSString *text in [pasteboard readObjectsForClasses:@[[NSString class]] options:nil]) [texts addObject:text];
+    if ([texts count] > 0) {
+        NSString *text = [texts componentsJoinedByString:@"\n\n"];
+        NSInputStream *s = [NSInputStream inputStreamWithData:[text dataUsingEncoding:NSUTF8StringEncoding]];
+        [s open];
+        d->in_progress_drop.data_map[@"text/plain"] = s;
+    }
+    for (NSPasteboardType type in [pasteboard types]) {
+        const char *mime = uti_to_mime(type);
+        if (!mime || d->in_progress_drop.data_map[@(mime)] != nil) continue;
+        NSData *data = [pasteboard dataForType:type];
+        if (data) {
+            NSInputStream *s = [NSInputStream inputStreamWithData:data];
+            [s open];
+            d->in_progress_drop.data_map[@(mime)] = s;
+        }
+    }
+    NSArray *receivers = [pasteboard readObjectsForClasses:@[[NSFilePromiseReceiver class]] options:nil];
+    if ([receivers count] > 0) {
+        d->in_progress_drop.request_id = ++window->ns.drop_request_counter;
+        unsigned long long request_id = d->in_progress_drop.request_id;
+        GLFWid wid = window->id;
+        NSOperationQueue *workQueue = [[[NSOperationQueue alloc] init] autorelease];
+        dispatch_group_t promiseGroup = dispatch_group_create();
+        NSMutableDictionary *results = [[NSMutableDictionary alloc] init];
+        unsigned url_counter = 0;
+        for (NSFilePromiseReceiver *receiver in receivers) {
+            dispatch_group_enter(promiseGroup);
+            NSArray<NSString *> *types = receiver.fileTypes;
+            unsigned url_list_idx = 0;
+            for (NSString *type in types) {
+                UTType *promisedType = [UTType typeWithIdentifier:type];
+                if (promisedType && [promisedType conformsToType:UTTypeFileURL]) {
+                    url_list_idx = ++url_counter;
+                    break;
+                }
+            }
+            [receiver receivePromisedFilesAtDestination:tempDirURL options:@{} operationQueue:workQueue
+                reader:^(NSURL * _Nonnull fileURL, NSError * _Nullable error) {
+                    if (url_list_idx) results[
+                        [NSString stringWithFormat:@"kitty-internal/uri-list-item-%u", url_list_idx-1]] = error ? error : fileURL;
+                    else {
+                        id result = error;
+                        if (!result) {
+                            NSInputStream *s = [NSInputStream inputStreamWithURL:fileURL];
+                            [s open];
+                            if ([s streamStatus] == NSStreamStatusError) result = [s streamError];
+                            else result = s;
+                        }
+                        for (NSString *type in types) {
+                            const char *mime = uti_to_mime(type);
+                            if (mime) results[@(mime)] = result;
+                        }
+                    }
+                    dispatch_group_leave(promiseGroup);
+                }];
+        }
+        dispatch_group_notify(promiseGroup, dispatch_get_main_queue(), ^{
+            _GLFWwindow *w = NULL;
+            for (_GLFWwindow *ww = _glfw.windowListHead; ww; ww = ww->next) {
+                if (ww->id == wid) { w = ww; break; }
+            }
+            if (w && w->ns.drop_data.in_progress_drop.request_id == request_id) {
+                _GLFWDropData *d = &w->ns.drop_data;
+                d->in_progress_drop.path_map = results;
+                d->in_progress_drop.promises_loaded = YES;
+                d->in_progress_drop.temp_dir = [tempDirURL retain];
+                build_uri_list(d);
+                if (d->in_progress_drop.pending_requests) {
+                    for (NSString *mime in d->in_progress_drop.pending_requests) {
+                        send_data_available_event_on_next_event_loop_tick(wid, [mime UTF8String]);
+                    }
+                }
+            } else {
+                NSError *error = nil;
+                [[NSFileManager defaultManager] removeItemAtURL:tempDirURL error:&error];
+            }
+        });
+        [promiseGroup release];
+    } else d->in_progress_drop.promises_loaded = true;
+
+    size_t num_accepted = _glfwInputDropEvent(
+        window, GLFW_DROP_DROP, xpos, ypos, d->copy_mimes, d->copy_mimes_count, from_self);
+    if (d->copy_mimes) {
+        update_drop_state(window, num_accepted, GLFW_DROP_DROP);
+        for (size_t i = 0; i < num_accepted; i++)
+            _glfwPlatformRequestDropData(window, d->copy_mimes[i]);
+    }
+
+    // Restore first-responder status after native DnD; the drag operation can
+    // displace the content view from first responder, silently breaking keyboard
+    // input even though osw->is_focused remains true.
+    [window->ns.object makeFirstResponder:window->ns.view];
+    return YES;
+}
+
+- (void) concludeDragOperation:(id<NSDraggingInfo>) sender {
+}
+
+void
+_glfwPlatformRequestDropUpdate(_GLFWwindow* window UNUSED) {
+    // No-op since macOS is calling the drop move callback periodically anyway
+    // thanks to wantsPeriodicDraggingUpdates and we have no way to inform
+    // macOS of any changes except in the cocoa callbacks.
+}
+
 int
 _glfwPlatformRequestDropData(_GLFWwindow *window, const char *mime) {
-    NSPasteboard* pasteboard = window->ns.drop_data.pasteboard;
-    if (!pasteboard) return EINVAL;
-    GLFWid wid = window->id;
-    if (window->ns.drop_data.data_mapping == nil) window->ns.drop_data.data_mapping = [[NSMutableDictionary alloc] init];
-    NSArray *pair;
-    if ((pair = window->ns.drop_data.data_mapping[@(mime)])) {
-        window->ns.drop_data.data_mapping[@(mime)] = @[pair[0], @0];
-        send_data_available_event_on_next_event_loop_tick(wid, mime);
+    _GLFWDropData *d = &window->ns.drop_data;
+    if (d->in_progress_drop.data_map[@(mime)] != nil) {
+        send_data_available_event_on_next_event_loop_tick(window->id, mime);
         return 0;
     }
-    if (window->ns.drop_data.file_promise_mapping == nil) window->ns.drop_data.file_promise_mapping = [[NSMutableDictionary alloc] init];
-    if ((pair = window->ns.drop_data.file_promise_mapping[@(mime)])) {
-        if (pair[0] == [NSNull null]) return 0;  // waiting for promise
-        if (pair[1] != [NSNull null]) {
-            NSFileHandle *h = pair[1]; NSError *error = nil;
-            [h seekToOffset:0 error:&error];
-        }
-        send_data_available_event_on_next_event_loop_tick(wid, mime);
+    if (!d->in_progress_drop.promises_loaded) {
+        if (d->in_progress_drop.pending_requests == nil) d->in_progress_drop.pending_requests = [[NSMutableSet alloc] init];
+        [d->in_progress_drop.pending_requests addObject:@(mime)];
         return 0;
     }
-    NSData* data = nil; NSFilePromiseReceiver *file_promise = nil;
-    // Handle special MIME types
-    if (strcmp(mime, "text/uri-list") == 0) {
-        NSDictionary* options = @{NSPasteboardURLReadingFileURLsOnlyKey:@YES};
-        NSArray* urls = [pasteboard readObjectsForClasses:@[[NSURL class]] options:options];
-        if (urls && [urls count] > 0) {
-            NSMutableString *uri_list = [NSMutableString stringWithCapacity:4096];
-            for (NSURL* url in urls) {
-                if ([uri_list length] > 0) [uri_list appendString:@"\n"];
-                if (url.fileURL) [uri_list appendString:url.filePathURL.absoluteString];
-                else [uri_list appendString:url.absoluteString];
-            }
-            data = [uri_list dataUsingEncoding:NSUTF8StringEncoding];
-        } else {
-            window->ns.drop_data.file_promise_mapping[@(mime)] = @[[NSNull null], [NSNull null], [NSNull null]];
-            // Create a unique temp directory that lives until the next drop event or window destruction
-            NSError *mkdirError = nil;
-            NSString *tmpDirPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
-                [[NSUUID UUID] UUIDString]];
-            NSURL *tmpDirURL = [NSURL fileURLWithPath:tmpDirPath isDirectory:YES];
-            if (![[NSFileManager defaultManager] createDirectoryAtURL:tmpDirURL
-                    withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
-                NSLog(@"Failed to create temp dir for file promises: %@", mkdirError);
-                return 0;
-            }
-            window->ns.drop_data.file_promise_temp_dir = [tmpDirURL retain];
-            // Collect file promise receivers whose UTIs conform to UTTypeFileURL
-            NSArray *all_receivers = [pasteboard readObjectsForClasses:@[[NSFilePromiseReceiver class]] options:@{}];
-            NSMutableArray *file_receivers = [NSMutableArray array];
-            for (NSFilePromiseReceiver *receiver in all_receivers) {
-                for (NSString *ruti in receiver.fileTypes) {
-                    UTType *promisedType = [UTType typeWithIdentifier:ruti];
-                    if (promisedType && [promisedType conformsToType:UTTypeFileURL]) {
-                        [file_receivers addObject:receiver];
-                        break;
-                    }
-                }
-            }
-            if ([file_receivers count] == 0) {
-                // Nothing to receive; emit an empty uri-list immediately
-                if (window->ns.drop_data.data_mapping == nil)
-                    window->ns.drop_data.data_mapping = [[NSMutableDictionary alloc] init];
-                window->ns.drop_data.data_mapping[@(mime)] = @[[NSData data], @0];
-                [window->ns.drop_data.file_promise_mapping removeObjectForKey:@(mime)];
-                send_data_available_event_on_next_event_loop_tick(wid, mime);
-                return 0;
-            }
-            char *mt = _glfw_strdup(mime);
-            NSMutableArray *collected_urls = [[NSMutableArray alloc] init];
-            dispatch_group_t group = dispatch_group_create();
-            NSOperationQueue *opQueue = [[NSOperationQueue alloc] init];
-            opQueue.maxConcurrentOperationCount = 1;  // serial: safe to append to collected_urls
-            for (NSFilePromiseReceiver *receiver in file_receivers) {
-                dispatch_group_enter(group);
-                [receiver receivePromisedFilesAtDestination:tmpDirURL options:@{}
-                    operationQueue:opQueue
-                    reader:^(NSURL *fileURL, NSError *errorOrNil) {
-                    if (!errorOrNil && fileURL) [collected_urls addObject:fileURL];
-                    dispatch_group_leave(group);
-                }];
-            }
-            dispatch_group_notify(group, dispatch_get_main_queue(), ^{
-                dispatch_release(group);
-                _GLFWwindow *w = _glfwWindowForId(wid);
-                if (w && w->ns.drop_data.file_promise_mapping) {
-                    if (w->ns.drop_data.data_mapping == nil)
-                        w->ns.drop_data.data_mapping = [[NSMutableDictionary alloc] init];
-                    NSMutableString *uri_list = [NSMutableString stringWithCapacity:4096];
-                    for (NSURL *url in collected_urls) {
-                        if ([uri_list length] > 0) [uri_list appendString:@"\n"];
-                        [uri_list appendString:url.absoluteString];
-                    }
-                    NSData *result = [uri_list dataUsingEncoding:NSUTF8StringEncoding];
-                    w->ns.drop_data.data_mapping[@(mt)] = @[result, @0];
-                    [w->ns.drop_data.file_promise_mapping removeObjectForKey:@(mt)];
-                    const char *mimes[1] = {mt};
-                    _glfwInputDropEvent(w, GLFW_DROP_DATA_AVAILABLE, 0, 0, mimes, 1, false);
-                }
-                [collected_urls release];
-                [opQueue release];
-                free(mt);
-            });
-            return 0;
-        }
-    } else if (strcmp(mime, "text/plain") == 0 || strcmp(mime, "text/plain;charset=utf-8") == 0) {
-        NSArray* strings = [pasteboard readObjectsForClasses:@[[NSString class]] options:nil];
-        if (strings && [strings count] > 0) {
-            NSString* str = strings[0];
-            data = [str dataUsingEncoding:NSUTF8StringEncoding];
-        }
+    if (d->in_progress_drop.path_map && d->in_progress_drop.path_map[@(mime)] != nil) {
+        send_data_available_event_on_next_event_loop_tick(window->id, mime);
+        return 0;
     }
-    if (data == nil) {
-        // Try to read data for other MIME types using UTI
-        NSString* uti = mime_to_uti(mime);
-        if (uti) {
-            NSPasteboardType pbType = [pasteboard availableTypeFromArray:@[uti]];
-            if (pbType) data = [pasteboard dataForType:pbType];
-        }
-        if (data == nil) {
-            // look in the file promise providers
-            NSArray *receivers = [pasteboard readObjectsForClasses:@[[NSFilePromiseReceiver class]] options:@{}];
-            for (NSFilePromiseReceiver *receiver in receivers) {
-                for (NSString *uti in receiver.fileTypes) {
-                    const char *q = uti_to_mime(uti);
-                    if (q && strcmp(q, mime) == 0) {
-                        file_promise = receiver;
-                        break;
-                    }
-                }
-                if (file_promise) break;
-            }
-        }
+    return ENOENT;
+}
+
+static NSString*
+NSStringFromStreamStatus(NSStreamStatus status) {
+    switch (status) {
+        case NSStreamStatusNotOpen: return @"NSStreamStatusNotOpen";
+        case NSStreamStatusOpening: return @"NSStreamStatusOpening";
+        case NSStreamStatusOpen:    return @"NSStreamStatusOpen";
+        case NSStreamStatusReading: return @"NSStreamStatusReading";
+        case NSStreamStatusWriting: return @"NSStreamStatusWriting";
+        case NSStreamStatusAtEnd:   return @"NSStreamStatusAtEnd";
+        case NSStreamStatusClosed:  return @"NSStreamStatusClosed";
+        case NSStreamStatusError:   return @"NSStreamStatusError";
+        default:                    return [NSString stringWithFormat:@"Unknown (%lu)", (unsigned long)status];
     }
-    if (!data && !file_promise) return ENOENT;
-    if (file_promise != nil) {
-        window->ns.drop_data.file_promise_mapping[@(mime)] = @[[NSNull null], [NSNull null], [NSNull null]];
-        char *mt = _glfw_strdup(mime);
-        [file_promise receivePromisedFilesAtDestination:[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
-            options:@{} operationQueue:[NSOperationQueue mainQueue] reader:^(NSURL *fileURL, NSError *errorOrNil) {
-            _GLFWwindow *window = _glfwWindowForId(wid);
-            if (!window || !window->ns.drop_data.file_promise_mapping) return;
-            id null = [NSNull null];
-            if (errorOrNil) {
-                NSLog(@"Error receiving file: %@: %@", fileURL, errorOrNil);
-                window->ns.drop_data.file_promise_mapping[@(mt)] = @[fileURL, null, errorOrNil];
-            } else {
-                NSError *err = nil;
-                NSFileHandle *file_handle = [NSFileHandle fileHandleForReadingFromURL:fileURL error:&err];
-                window->ns.drop_data.file_promise_mapping[@(mt)] = err ? @[fileURL, null, err] : @[fileURL, file_handle, null];
-            }
-            const char *mimes[1] = {mt};
-            _glfwInputDropEvent(window, GLFW_DROP_DATA_AVAILABLE, 0, 0, mimes, 1, false);
-            free(mt);
-        }];
-    } else {
-        window->ns.drop_data.data_mapping[@(mime)] = @[data, @0];
-        const char *mimes[1] = {mime};
-        _glfwInputDropEvent(window, GLFW_DROP_DATA_AVAILABLE, 0, 0, mimes, 1, false);
-    }
-    return 0;
 }
 
 ssize_t
 _glfwPlatformReadAvailableDropData(GLFWwindow *w, GLFWDropEvent *ev, char *buffer, size_t capacity) {
     _GLFWwindow *window = (_GLFWwindow*)w; const char *mime = ev->mimes[0];
-    NSArray *pair;
-    if ((pair = window->ns.drop_data.data_mapping[@(mime)])) {
-        NSData *data = pair[0];
-        size_t offset = [pair[1] unsignedIntegerValue];
-        NSUInteger dataLength = [data length];
-        if (offset >= dataLength) return 0;  // EOF
-        NSUInteger remaining = dataLength - offset;
-        NSUInteger to_read = (remaining < capacity) ? remaining : capacity;
-        [data getBytes:buffer range:NSMakeRange(offset, to_read)];
-        offset += to_read;
-        window->ns.drop_data.data_mapping[@(mime)] = @[data, @(offset)];
-        if (to_read) send_data_available_event_on_next_event_loop_tick(window->id, mime);
-        return (ssize_t)to_read;
+    _GLFWDropData *d = &window->ns.drop_data;
+    id x = d->in_progress_drop.data_map[@(mime)];
+    if (x == nil && d->in_progress_drop.promises_loaded && d->in_progress_drop.path_map != nil)
+        x = d->in_progress_drop.path_map[@(mime)];
+    if (x == nil) return -ENOENT;
+    if ([x isKindOfClass:[NSError class]]) {
+        NSError *error = x;
+        if ([error.domain isEqualToString:NSPOSIXErrorDomain]) return - (int)error.code;
+        return -EINVAL;
     }
-    if ((pair = window->ns.drop_data.file_promise_mapping[@(mime)])) {
-        id null = [NSNull null];
-        if (pair[0] == null) { return -ENOENT; }
-        if (pair[2] != null) {
-            NSError *err = pair[2];
-            if ([err.domain isEqualToString:NSPOSIXErrorDomain]) return -err.code;
-            NSError *underlyingError = err.userInfo[NSUnderlyingErrorKey];
-            if (underlyingError && [underlyingError.domain isEqualToString:NSPOSIXErrorDomain]) return -underlyingError.code;
-            return -EIO;
+    if ([x isKindOfClass:[NSInputStream class]]) {
+        NSInputStream *stream = x;
+        if ([stream streamStatus] == NSStreamStatusNotOpen) [stream open];
+        NSInteger bytesRead = [stream read:(uint8_t*)buffer maxLength:capacity];
+        if (bytesRead > 0) {
+            send_data_available_event_on_next_event_loop_tick(window->id, mime);
+            return (ssize_t)bytesRead;
         }
-        NSFileHandle *h = pair[1];
-        int fd = h.fileDescriptor;
-        ssize_t bytesRead; do {
-            bytesRead = read(fd, buffer, capacity);
-        } while (bytesRead == -1 && errno == EINTR);
-        bytesRead = bytesRead < 0 ? -errno : bytesRead;
-        if (bytesRead > 0) send_data_available_event_on_next_event_loop_tick(window->id, mime);
-        return bytesRead;
+        if (bytesRead == 0) return 0;  // EOF
+        NSError *error = [stream streamError];
+        NSLog(@"Failed to read from drop data stream, status: %@ error: %@", NSStringFromStreamStatus([stream streamStatus]), error);
+        if (error && [error.domain isEqualToString:NSPOSIXErrorDomain]) return - (int)error.code;
+        return -EIO;
     }
     return -ENOENT;
 }
