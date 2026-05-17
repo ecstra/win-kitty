@@ -550,10 +550,7 @@ drop_move_on_child(Window *w, const char** mimes, size_t num_mimes, bool is_drop
             }
             queue_payload_to_child(w->id, w->drop.client_id, &w->drop.pending, buf, header_size, mbuf, pos, false);
         }
-    } else {
-        buf[header_size++] = 0x1b; buf[header_size++] = '\\';
-        queue_payload_to_child(w->id, w->drop.client_id,  &w->drop.pending, buf, header_size, NULL, 0, false);
-    }
+    } else queue_payload_to_child(w->id, w->drop.client_id,  &w->drop.pending, buf, header_size, NULL, 0, false);
 }
 
 static GLFWDragOperationType
