@@ -862,7 +862,7 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
                 drop_move_on_child(w, ev->mimes, ev->num_mimes, true);
                 ev->num_mimes = 0;  // we wait for the client to request MIMEs
             } else {
-                if (ev->from_self) {
+                if (ev->from_self && !global_state.drag_source.from_window) {
                     PyObject *data = global_state.drag_source.drag_data ? global_state.drag_source.drag_data : global_state.drop_dest.self_drag_data;
                     if (data) {
                         global_state.drag_source.was_dropped = true;
