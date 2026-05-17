@@ -2510,7 +2510,7 @@ static void handle_primary_selection_offer(void *data UNUSED, struct zwp_primary
 
 // Helper function to update drop state from callback results
 static void
-update_drop_state(_GLFWWaylandDataOffer *d, _GLFWwindow* window, size_t accepted_count) {
+update_drop_state(_GLFWWaylandDataOffer *d, _GLFWwindow* window, const size_t accepted_count) {
     d->copy_mimes_count = accepted_count;
     bool accepted = accepted_count > 0;
     bool acceptance_changed = (accepted != d->drag_accepted);

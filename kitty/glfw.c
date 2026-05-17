@@ -810,10 +810,6 @@ drop_dest_callback(GLFWwindow *window, GLFWDropEvent *ev) {
             is_client_drop = !is_kitty_ui_drag && wid && w && w->drop.wanted;
             global_state.drop_dest.allowed_ops = ev->operation.source_actions;
             if (is_client_drop) {
-                if (!w->drop.initialized) {
-                    w->drop.initialized = true;
-                    w->drop.accepted_operation = GLFW_DRAG_OPERATION_NONE;
-                }
                 drop_move_on_child(w, ev->mimes, ev->num_mimes, false);
                 ev->num_mimes = drop_update_mimes(w, ev->mimes, ev->num_mimes);
                 ev->operation.allowed = w->drop.accepted_operation;
