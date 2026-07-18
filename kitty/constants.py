@@ -70,6 +70,9 @@ else:
 
 @run_once
 def kitty_exe() -> str:
+    # The launcher binary is kitty.exe on Windows. Without the suffix, spawning it
+    # (e.g. for overlay kittens) fails with "file not found".
+    exe_name = 'kitty.exe' if is_windows else 'kitty'
     rpath = kitty_run_data.get('bundle_exe_dir')
     if not rpath:
         items = os.environ.get('PATH', '').split(os.pathsep) + [os.path.join(kitty_base_dir, 'kitty', 'launcher')]
@@ -77,17 +80,17 @@ def kitty_exe() -> str:
         for candidate in filter(None, items):
             if candidate not in seen:
                 seen.add(candidate)
-                if os.access(os.path.join(candidate, 'kitty'), os.X_OK):
+                if os.access(os.path.join(candidate, exe_name), os.X_OK):
                     rpath = candidate
                     break
         else:
             raise RuntimeError('kitty binary not found')
-    return os.path.join(rpath, 'kitty')
+    return os.path.join(rpath, exe_name)
 
 
 @run_once
 def kitten_exe() -> str:
-    return os.path.join(os.path.dirname(kitty_exe()), 'kitten')
+    return os.path.join(os.path.dirname(kitty_exe()), 'kitten.exe' if is_windows else 'kitten')
 
 
 def _get_config_dir() -> str:

@@ -253,6 +253,11 @@ class TabAccessor:
         return os.path.basename((tab.get_exe_of_active_window() if tab else '') or '')
 
     @property
+    def active_wd_name(self) -> str:
+        wd = self.active_wd
+        return os.path.basename(wd.rstrip('\\/')) or wd
+
+    @property
     def active_oldest_exe(self) -> str:
         tab = get_boss().tab_for_id(self.tab_id)
         return os.path.basename((tab.get_exe_of_active_window(oldest=True) if tab else '') or '')
