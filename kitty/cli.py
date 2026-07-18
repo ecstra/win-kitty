@@ -126,7 +126,8 @@ def go_options_for_seq(seq: 'OptionSpecSeq') -> Iterator[GoOption]:
 
 
 def surround(x: str, start: int, end: int) -> str:
-    if sys.stdout.isatty():
+    # sys.stdout is None in a GUI process with no console (Windows), so guard it.
+    if sys.stdout is not None and sys.stdout.isatty():
         x = f'\033[{start}m{x}\033[{end}m'
     return x
 

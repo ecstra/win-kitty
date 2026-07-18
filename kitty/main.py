@@ -167,10 +167,10 @@ def get_icon128_path(base_path: str) -> str:
 def set_window_icon() -> None:
     custom_icon_path = get_custom_window_icon()[1]
     is_x11 = not is_macos and not is_windows and not is_wayland()
-    # X11 wants a rasterized icon set on the window. On Windows the icon is
-    # embedded in kitty.exe (taskbar/alt-tab) and the title bar stays icon-free,
-    # so no per-window icon is set here.
-    wants_raster_icon = is_x11
+    # X11 and Windows want a rasterized icon set on the window. On Windows the
+    # custom frame draws no caption, so the window icon only affects the
+    # taskbar/alt-tab (the .exe also embeds it as a fallback).
+    wants_raster_icon = is_x11 or is_windows
     try:
         if custom_icon_path is not None:
             custom_icon128_path = get_icon128_path(custom_icon_path)

@@ -201,7 +201,7 @@ def init_env(
             ans.cppflags.append('-DHAS_MEMFD_CREATE')
 
     elif module == 'win32':
-        ans.ldpaths.extend('-lopengl32 -lgdi32 -luser32 -ldwmapi -lws2_32 -lshell32 -limm32'.split())
+        ans.ldpaths.extend('-lopengl32 -lgdi32 -luser32 -ldwmapi -lws2_32 -lshell32 -limm32 -lgdiplus'.split())
 
     return ans
 
