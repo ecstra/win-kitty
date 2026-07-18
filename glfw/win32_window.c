@@ -13,7 +13,7 @@
 
 static void createKeyTables(void) {
     memset(_glfw.win32.keycodes, 0, sizeof(_glfw.win32.keycodes));
-    short int* k = _glfw.win32.keycodes;
+    int* k = _glfw.win32.keycodes;
     k[VK_ESCAPE]    = GLFW_FKEY_ESCAPE;
     k[VK_RETURN]    = GLFW_FKEY_ENTER;
     k[VK_TAB]       = GLFW_FKEY_TAB;
@@ -33,7 +33,17 @@ static void createKeyTables(void) {
     k[VK_NUMLOCK]   = GLFW_FKEY_NUM_LOCK;
     k[VK_SNAPSHOT]  = GLFW_FKEY_PRINT_SCREEN;
     k[VK_PAUSE]     = GLFW_FKEY_PAUSE;
+    k[VK_APPS]      = GLFW_FKEY_MENU;
     for (int i = 0; i < 24; i++) k[VK_F1 + i] = GLFW_FKEY_F1 + i;
+    // Printable keys carry their US-layout base (unshifted, lowercase) codepoint
+    // so kitty can match shortcuts like ctrl+shift+t and encode ctrl+<key>.
+    for (int i = 0; i < 26; i++) k[0x41 + i] = 'a' + i;   // VK_A..VK_Z -> a..z
+    for (int i = 0; i < 10; i++) k[0x30 + i] = '0' + i;   // VK_0..VK_9
+    k[VK_SPACE]     = ' ';
+    k[VK_OEM_1]     = ';';   k[VK_OEM_PLUS]  = '=';  k[VK_OEM_COMMA] = ',';
+    k[VK_OEM_MINUS] = '-';   k[VK_OEM_PERIOD]= '.';  k[VK_OEM_2]     = '/';
+    k[VK_OEM_3]     = '`';   k[VK_OEM_4]     = '[';  k[VK_OEM_5]     = '\\';
+    k[VK_OEM_6]     = ']';   k[VK_OEM_7]     = '\'';
 }
 
 static int getKeyMods(void) {
@@ -206,21 +216,33 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_KEYUP: case WM_SYSKEYUP: {
             const bool up = uMsg == WM_KEYUP || uMsg == WM_SYSKEYUP;
             uint32_t key = (wParam < 512) ? (uint32_t) _glfw.win32.keycodes[wParam] : 0;
-            // Printable keys deliver their text via WM_CHAR; only forward the
-            // functional keys here, plus releases (WM_CHAR has no up event).
-            if (key || up) {
+            int mods = getKeyMods();
+            const bool functional = key >= GLFW_FKEY_FIRST;
+            const bool shortcutMod = mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER);
+            // A plain printable key (no ctrl/alt) is delivered as text by WM_CHAR,
+            // to keep dead keys and layouts working. Forward everything else here:
+            // functional keys (arrows, enter, tab...) and any key combined with a
+            // shortcut modifier, so kitty can match bindings and encode ctrl+<key>.
+            if (key && (functional || shortcutMod)) {
                 GLFWkeyevent ev = {0};
                 ev.key = key;
                 ev.native_key = (int) wParam;
                 ev.action = up ? GLFW_RELEASE : (HIWORD(lParam) & KF_REPEAT ? GLFW_REPEAT : GLFW_PRESS);
-                ev.mods = getKeyMods();
-                if (key) _glfwInputKeyboard(window, &ev);
+                ev.mods = mods;
+                _glfwInputKeyboard(window, &ev);
             }
             if (uMsg == WM_SYSKEYDOWN || uMsg == WM_SYSKEYUP) break; // allow system keys
             return 0;
         }
 
         case WM_CHAR: case WM_SYSCHAR: {
+            // Control chars (< 0x20) and pure-ctrl combos are encoded from the key
+            // event above; only genuine text reaches the child here.
+            if ((WCHAR) wParam < 0x20) return 0;
+            {
+                int m = getKeyMods();
+                if ((m & GLFW_MOD_CONTROL) && !(m & GLFW_MOD_ALT)) return 0;
+            }
             // wParam is a UTF-16 code unit; accumulate surrogate pairs.
             WCHAR utf16[2]; int n = 0;
             WCHAR c = (WCHAR) wParam;
@@ -341,6 +363,18 @@ extern int WINAPI GdipClosePathFigure(void*);
 extern int WINAPI GdipFillPath(void*, void*, void*);
 extern int WINAPI GdipDrawPath(void*, void*, void*);
 extern int WINAPI GdipAddPathRectangleI(void*, int, int, int, int);
+// Text (for the Segoe caption-icon glyphs)
+extern int WINAPI GdipCreateFontFamilyFromName(const WCHAR*, void*, void**);
+extern int WINAPI GdipDeleteFontFamily(void*);
+extern int WINAPI GdipCreateFont(void*, float, int, int, void**);
+extern int WINAPI GdipDeleteFont(void*);
+extern int WINAPI GdipCreateStringFormat(int, unsigned short, void**);
+extern int WINAPI GdipDeleteStringFormat(void*);
+extern int WINAPI GdipSetStringFormatAlign(void*, int);
+extern int WINAPI GdipSetStringFormatLineAlign(void*, int);
+extern int WINAPI GdipDrawString(void*, const WCHAR*, int, void*, const void*, void*, void*);
+extern int WINAPI GdipSetTextRenderingHint(void*, int);
+typedef struct { float X, Y, W, H; } GpRectF;
 
 #define CB_COUNT 3   // minimize, maximize/restore, close
 typedef struct { _GLFWwindow* owner; int hovered; int pressed; } CaptionState;
@@ -363,19 +397,6 @@ static int cbHitTest(HWND overlay, int x, int y) {
         if (x >= bx && x < bx + bw) return i;
     }
     return -1;
-}
-
-static void GdipDrawRoundedSquare(void* g, void* pen, int x, int y, int sz, int r) {
-    void* p = NULL;
-    if (GdipCreatePath(0, &p) != 0) return;
-    int d = r * 2; if (d > sz) d = sz;
-    GdipAddPathArcI(p, x, y, d, d, 180, 90);
-    GdipAddPathArcI(p, x + sz - d, y, d, d, 270, 90);
-    GdipAddPathArcI(p, x + sz - d, y + sz - d, d, d, 0, 90);
-    GdipAddPathArcI(p, x, y + sz - d, d, d, 90, 90);
-    GdipClosePathFigure(p);
-    GdipDrawPath(g, pen, p);
-    GdipDeletePath(p);
 }
 
 static void cbPaint(HWND overlay) {
@@ -401,6 +422,20 @@ static void cbPaint(HWND overlay) {
     void* g = NULL;
     if (GdipCreateFromHDC(dc, &g) == 0) {
         GdipSetSmoothingMode(g, 4 /* antialias */);
+        GdipSetTextRenderingHint(g, 4 /* antialias, alpha-correct on a layered window */);
+        // Load the native caption-icon font once (Win11 ships Segoe Fluent Icons,
+        // Win10 ships Segoe MDL2 Assets; the caption glyphs share codepoints).
+        void* fam = NULL;
+        if (GdipCreateFontFamilyFromName(L"Segoe Fluent Icons", NULL, &fam) != 0) {
+            fam = NULL; GdipCreateFontFamilyFromName(L"Segoe MDL2 Assets", NULL, &fam);
+        }
+        void* font = NULL;
+        if (fam) GdipCreateFont(fam, (float) MulDiv(10, dpi, 96), 0 /* regular */, 2 /* pixel */, &font);
+        void* fmt = NULL;
+        if (GdipCreateStringFormat(0, 0, &fmt) == 0) {
+            GdipSetStringFormatAlign(fmt, 1 /* center */);
+            GdipSetStringFormatLineAlign(fmt, 1 /* center */);
+        }
         int top = (H - bh) / 2;
         float rad = (float) MulDiv(7, dpi, 96);
         for (int i = 0; i < CB_COUNT; i++) {
@@ -426,32 +461,23 @@ static void cbPaint(HWND overlay) {
                 }
                 GdipDeleteBrush(brush);
             }
-            // glyph (kept small relative to the button, Windows-explorer style)
-            ULONG gcol = (hot && i == 2) ? 0xFFFFFFFFu : 0xFFE6E6E6u;
-            void* pen = NULL;
-            if (GdipCreatePen1(gcol, MulDiv(12, dpi, 96) / 10.0f, 2 /* unit pixel */, &pen) == 0) {
-                GdipSetPenStartCap(pen, 2 /* round */); GdipSetPenEndCap(pen, 2);
-                int cx = bx + bw / 2, cy = top + bh / 2;
-                int s = MulDiv(5, dpi, 96);   // half glyph size for minimize/close
-                if (i == 0) {                 // minimize
-                    GdipDrawLineI(g, pen, cx - s, cy, cx + s, cy);
-                } else if (i == 1) {          // maximize / restore
-                    int m = MulDiv(4, dpi, 96);   // small square (half-size), like explorer
-                    int rr = MulDiv(2, dpi, 96);
-                    if (IsZoomed(st->owner->win32.handle)) {  // restore: two offset squares
-                        int o = MulDiv(3, dpi, 96);
-                        GdipDrawRoundedSquare(g, pen, cx - m + o, cy - m - o, 2 * m, rr);
-                        GdipDrawRoundedSquare(g, pen, cx - m - o, cy - m + o, 2 * m, rr);
-                    } else {                                  // maximize: one small square
-                        GdipDrawRoundedSquare(g, pen, cx - m, cy - m, 2 * m, rr);
-                    }
-                } else {                      // close
-                    GdipDrawLineI(g, pen, cx - s, cy - s, cx + s, cy + s);
-                    GdipDrawLineI(g, pen, cx - s, cy + s, cx + s, cy - s);
-                }
-                GdipDeletePen(pen);
+            // glyph: draw the native Segoe caption icon, centered in the button
+            //  E921 minimize, E922 maximize, E923 restore, E8BB close
+            WCHAR glyph[2] = { 0, 0 };
+            glyph[0] = (i == 0) ? 0xE921u
+                     : (i == 1) ? (IsZoomed(st->owner->win32.handle) ? 0xE923u : 0xE922u)
+                                : 0xE8BBu;
+            ULONG gcol = hot ? 0xFFFFFFFFu : 0xFFE6E6E6u;
+            void* gbrush = NULL;
+            if (font && fmt && GdipCreateSolidFill(gcol, &gbrush) == 0) {
+                GpRectF layout = { (float) bx, (float) top, (float) bw, (float) bh };
+                GdipDrawString(g, glyph, 1, font, &layout, fmt, gbrush);
+                GdipDeleteBrush(gbrush);
             }
         }
+        if (font) GdipDeleteFont(font);
+        if (fam) GdipDeleteFontFamily(fam);
+        if (fmt) GdipDeleteStringFormat(fmt);
         GdipDeleteGraphics(g);
     }
     // premultiply for UpdateLayeredWindow
@@ -571,11 +597,20 @@ static void updateWindowComposition(_GLFWwindow* window) {
     }
     if (!_glfw.win32.user32.SetWindowCompositionAttribute) return;
     ACCENT_POLICY policy = {0};
-    if (window->win32.blur > 0) policy.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
+    if (window->win32.blur > 0) {
+        // DWM disables acrylic blur for maximized windows, so fall back to the
+        // classic blur-behind (which does render when zoomed) in that state.
+        policy.AccentState = IsZoomed(hwnd) ? ACCENT_ENABLE_BLURBEHIND : ACCENT_ENABLE_ACRYLICBLURBEHIND;
+    }
     else if (window->win32.transparent) policy.AccentState = ACCENT_ENABLE_BLURBEHIND;
     else policy.AccentState = ACCENT_DISABLED;
     policy.GradientColor = 0x00000000;  // no tint; the terminal's bg alpha does the rest
     WIN_COMP_ATTR_DATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
+    // Toggle off first so DWM re-composites cleanly across maximize/restore
+    // transitions (otherwise the accent can get stuck disabled after unzoom).
+    ACCENT_POLICY off = {0};
+    WIN_COMP_ATTR_DATA offdata = { WCA_ACCENT_POLICY, &off, sizeof(off) };
+    _glfw.win32.user32.SetWindowCompositionAttribute(hwnd, &offdata);
     _glfw.win32.user32.SetWindowCompositionAttribute(hwnd, &data);
 }
 

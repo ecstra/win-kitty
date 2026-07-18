@@ -436,7 +436,20 @@ class Child:
         exe = which(argv[0]) or argv[0]
         self.final_exe = exe
         self.final_argv0 = argv[0]
-        read_fd, write_fd, pty_id = fast_data_types.open_pty(80, 24)
+        # Create the ConPTY at the real window size so the shell's first prompt
+        # is laid out correctly. Using a fixed 80x24 makes conhost/PSReadLine draw
+        # the initial prompt at the wrong width until the next resize (or `cls`).
+        cols, rows = 80, 24
+        try:
+            os_window_id = fast_data_types.current_os_window()
+            if os_window_id:
+                central = fast_data_types.viewport_for_window(os_window_id)[0]
+                cw, ch = fast_data_types.cell_size_for_window(os_window_id)
+                if cw > 0 and ch > 0 and central.width > 0 and central.height > 0:
+                    cols, rows = max(1, central.width // cw), max(1, central.height // ch)
+        except Exception:
+            pass
+        read_fd, write_fd, pty_id = fast_data_types.open_pty(cols, rows)
         pid = fast_data_types.spawn(pty_id, exe, self.cwd or os.getcwd(), tuple(argv), env)
         self.pid = pid
         self.pty_id = pty_id
