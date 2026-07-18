@@ -593,30 +593,30 @@ static void updateWindowComposition(_GLFWwindow* window) {
     const bool wantBlur = window->win32.blur > 0;
     const bool wantTransparent = window->win32.transparent;
     // Never use the Win11 system backdrop: it does not compose with the GL
-    // surface and, when maximized, paints a second region-limited blur (the
-    // "brighter rectangle" over part of the window).
+    // surface and, when maximized, paints a second region-limited blur.
     const bool glassMode = wantTransparent && !wantBlur;
     if (_glfw.win32.dwmapi.SetWindowAttribute) {
         DWORD backdrop = 1;  // DWMSBT_NONE
         _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
-        // Only in glass mode does the extended frame make DWM paint its own
-        // caption over our custom frame (the "phantom" title bar). Disable DWM
-        // non-client rendering there -- and ONLY there: doing it unconditionally
-        // forces the classic (win98) frame in every mode.
-        DWORD ncrp = glassMode ? 1 /* DWMNCRP_DISABLED */ : 0 /* DWMNCRP_USEWINDOWSTYLE */;
-        _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 2 /* DWMWA_NCRENDERING_POLICY */, &ncrp, sizeof(ncrp));
     }
-    //  * blur off + transparent -> extend the DWM frame across the whole client
-    //    ("sheet of glass") so the GL per-pixel alpha shows the desktop with no
-    //    blur (this is how "acrylic off" transparency works).
-    if (_glfw.win32.dwmapi.ExtendFrameIntoClientArea) {
-        MARGINS glass = { -1, -1, -1, -1 }, none = { 0, 0, 0, 0 };
-        _glfw.win32.dwmapi.ExtendFrameIntoClientArea(hwnd, glassMode ? &glass : &none);
+    // Transparency WITHOUT blur: enable DWM blur-behind with an *empty* blur
+    // region. That turns on per-pixel alpha compositing but applies no blur, and
+    // crucially does NOT extend the frame -- so DWM never draws its own caption
+    // over our custom frame. (DwmExtendFrameIntoClientArea, the "sheet of glass"
+    // approach, is what pulled in the phantom title bar; disabling non-client
+    // rendering to hide it forced the classic win98 frame instead.)
+    if (_glfw.win32.dwmapi.EnableBlurBehindWindow) {
+        DWM_BLURBEHIND bb; memset(&bb, 0, sizeof bb);
+        bb.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
+        bb.fEnable = glassMode ? TRUE : FALSE;
+        bb.hRgnBlur = glassMode ? CreateRectRgn(0, 0, -1, -1) : NULL;  // empty -> no blur
+        _glfw.win32.dwmapi.EnableBlurBehindWindow(hwnd, &bb);
+        if (bb.hRgnBlur) DeleteObject(bb.hRgnBlur);
     }
     if (!_glfw.win32.user32.SetWindowCompositionAttribute) return;
     ACCENT_POLICY policy = {0};
-    // Blur-behind: works in every window state (acrylic flickers on resize and is
-    // dropped when maximized). Uniform-blur work is deferred.
+    // Blur on -> accent blur-behind (translucent + blurred). Blur off -> no accent
+    // (the empty-region blur-behind above provides the plain transparency).
     policy.AccentState = wantBlur ? ACCENT_ENABLE_BLURBEHIND : ACCENT_DISABLED;
     policy.GradientColor = 0x00000000;  // no tint; the terminal's bg alpha does the rest
     WIN_COMP_ATTR_DATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
