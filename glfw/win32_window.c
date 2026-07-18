@@ -124,6 +124,10 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             return 0;
 
         case WM_SETFOCUS:
+            // The accent/glass set before the window was first shown does not
+            // always take (the window opens with an opaque grey backdrop until
+            // interacted with); re-apply once the window is actually active.
+            if (window->win32.transparent) updateWindowComposition(window);
             _glfwInputWindowFocus(window, true);
             return 0;
         case WM_KILLFOCUS:
@@ -364,20 +368,30 @@ extern int WINAPI GdipClosePathFigure(void*);
 extern int WINAPI GdipFillPath(void*, void*, void*);
 extern int WINAPI GdipDrawPath(void*, void*, void*);
 extern int WINAPI GdipAddPathRectangleI(void*, int, int, int, int);
-// Text (for the Segoe caption-icon glyphs)
-extern int WINAPI GdipCreateFontFamilyFromName(const WCHAR*, void*, void**);
-extern int WINAPI GdipDeleteFontFamily(void*);
-extern int WINAPI GdipCreateFont(void*, float, int, int, void**);
-extern int WINAPI GdipDeleteFont(void*);
-extern int WINAPI GdipCreateStringFormat(int, unsigned short, void**);
-extern int WINAPI GdipDeleteStringFormat(void*);
-extern int WINAPI GdipSetStringFormatAlign(void*, int);
-extern int WINAPI GdipSetStringFormatLineAlign(void*, int);
-extern int WINAPI GdipDrawString(void*, const WCHAR*, int, void*, const void*, void*, void*);
-extern int WINAPI GdipSetTextRenderingHint(void*, int);
-typedef struct { float X, Y, W, H; } GpRectF;
+// Bitmaps (the caption-icon glyphs are rasterized Material Symbols SVGs)
+extern int WINAPI GdipCreateBitmapFromScan0(int, int, int, int, void*, void**);
+extern int WINAPI GdipDrawImageRectI(void*, void*, int, int, int, int);
+extern int WINAPI GdipDisposeImage(void*);
+extern int WINAPI GdipSetInterpolationMode(void*, int);
+#include "caption_icons.h"
 
 #define CB_COUNT 3   // minimize, maximize/restore, close
+
+// Lazily create (and cache) the GDI+ bitmap for a caption icon from its embedded
+// BGRA pixels. idx: 0 minimize, 1 maximize, 2 restore, 3 close.
+static void* cbIconBitmap(int idx) {
+    static void* cache[4] = { NULL, NULL, NULL, NULL };
+    if (idx < 0 || idx > 3) return NULL;
+    if (!cache[idx]) {
+        const unsigned char* data[4] = { CB_ICON_MIN, CB_ICON_MAX, CB_ICON_RESTORE, CB_ICON_CLOSE };
+        void* bmp = NULL;
+        // PixelFormat32bppARGB = 0x0026200A
+        if (GdipCreateBitmapFromScan0(CB_ICON_W, CB_ICON_H, CB_ICON_W * 4, 0x0026200A, (void*) data[idx], &bmp) == 0)
+            cache[idx] = bmp;
+    }
+    return cache[idx];
+}
+
 typedef struct { _GLFWwindow* owner; int hovered; int pressed; } CaptionState;
 static const wchar_t* CAPTION_CLASS = L"kittyCaptionButtons";
 
@@ -423,22 +437,7 @@ static void cbPaint(HWND overlay) {
     void* g = NULL;
     if (GdipCreateFromHDC(dc, &g) == 0) {
         GdipSetSmoothingMode(g, 4 /* antialias */);
-        GdipSetTextRenderingHint(g, 4 /* antialias, alpha-correct on a layered window */);
-        // Load the native caption-icon font once (Win11 ships Segoe Fluent Icons,
-        // Win10 ships Segoe MDL2 Assets; the caption glyphs share codepoints).
-        void* fam = NULL;
-        if (GdipCreateFontFamilyFromName(L"Segoe Fluent Icons", NULL, &fam) != 0) {
-            fam = NULL; GdipCreateFontFamilyFromName(L"Segoe MDL2 Assets", NULL, &fam);
-        }
-        void* font = NULL;
-        // Bold (style 1) thickens the otherwise hairline icon strokes; 10px keeps
-        // the glyph compact in the 30px button.
-        if (fam) GdipCreateFont(fam, (float) MulDiv(10, dpi, 96), 1 /* bold */, 2 /* pixel */, &font);
-        void* fmt = NULL;
-        if (GdipCreateStringFormat(0, 0, &fmt) == 0) {
-            GdipSetStringFormatAlign(fmt, 1 /* center */);
-            GdipSetStringFormatLineAlign(fmt, 1 /* center */);
-        }
+        GdipSetInterpolationMode(g, 7 /* HighQualityBicubic: crisp icon downscale */);
         int top = (H - bh) / 2;
         float rad = (float) MulDiv(7, dpi, 96);
         for (int i = 0; i < CB_COUNT; i++) {
@@ -464,26 +463,18 @@ static void cbPaint(HWND overlay) {
                 }
                 GdipDeleteBrush(brush);
             }
-            // glyph: draw the native Segoe caption icon, centered in the button
-            //  E921 minimize, E922 maximize, E923 restore, E8BB close
-            WCHAR glyph[2] = { 0, 0 };
-            glyph[0] = (i == 0) ? 0xE921u
-                     : (i == 1) ? (IsZoomed(st->owner->win32.handle) ? 0xE923u : 0xE922u)
-                                : 0xE8BBu;
-            ULONG gcol = hot ? 0xFFFFFFFFu : 0xFFE6E6E6u;
-            void* gbrush = NULL;
-            if (font && fmt && GdipCreateSolidFill(gcol, &gbrush) == 0) {
-                // GDI+ centers the text line box, whose leading sits above the
-                // glyph ink, so the icon looks high; nudge it down to visually center.
-                float nudge = (float) MulDiv(1, dpi, 96);
-                GpRectF layout = { (float) bx, (float) top + nudge, (float) bw, (float) bh };
-                GdipDrawString(g, glyph, 1, font, &layout, fmt, gbrush);
-                GdipDeleteBrush(gbrush);
+            // glyph: the rasterized Material Symbols icon, scaled and centered
+            //  0 minimize, 1 maximize (or 2 restore when zoomed), 3 close
+            int iconIdx = (i == 0) ? 0
+                        : (i == 1) ? (IsZoomed(st->owner->win32.handle) ? 2 : 1)
+                                   : 3;
+            void* bmp = cbIconBitmap(iconIdx);
+            if (bmp) {
+                int gsz = MulDiv(18, dpi, 96);   // glyph box within the 30px button
+                int gx = bx + (bw - gsz) / 2, gy = top + (bh - gsz) / 2;
+                GdipDrawImageRectI(g, bmp, gx, gy, gsz, gsz);
             }
         }
-        if (font) GdipDeleteFont(font);
-        if (fam) GdipDeleteFontFamily(fam);
-        if (fmt) GdipDeleteStringFormat(fmt);
         GdipDeleteGraphics(g);
     }
     // premultiply for UpdateLayeredWindow
@@ -594,23 +585,29 @@ static void styleTitlebar(_GLFWwindow* window) {
 static void updateWindowComposition(_GLFWwindow* window) {
     HWND hwnd = window->win32.handle;
     if (!hwnd) return;
-    // The accent policy is the only mechanism that makes an OpenGL window's
-    // per-pixel alpha translucent (the Win11 system backdrop does not compose
-    // with a GL surface). It blurs behind the client area.
+    const bool wantBlur = window->win32.blur > 0;
+    const bool wantTransparent = window->win32.transparent;
+    // Never use the Win11 system backdrop: it does not compose with the GL
+    // surface and, when maximized, paints a second region-limited blur (the
+    // "brighter rectangle" over part of the window).
     if (_glfw.win32.dwmapi.SetWindowAttribute) {
-        DWORD backdrop = window->win32.blur > 0 ? 3 : 1;
+        DWORD backdrop = 1;  // DWMSBT_NONE
         _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
+    }
+    // Two independent translucency mechanisms:
+    //  * blur on  -> accent blur-behind (translucent + blurred), consistent in
+    //    every window state (acrylic is dropped by DWM when maximized, so we do
+    //    not use it).
+    //  * blur off + transparent -> extend the DWM frame across the whole client
+    //    ("sheet of glass") so the GL per-pixel alpha shows the desktop with no
+    //    blur (this is how "acrylic off" transparency works).
+    if (_glfw.win32.dwmapi.ExtendFrameIntoClientArea) {
+        MARGINS glass = { -1, -1, -1, -1 }, none = { 0, 0, 0, 0 };
+        _glfw.win32.dwmapi.ExtendFrameIntoClientArea(hwnd, (wantTransparent && !wantBlur) ? &glass : &none);
     }
     if (!_glfw.win32.user32.SetWindowCompositionAttribute) return;
     ACCENT_POLICY policy = {0};
-    // background_blur is a toggle on Windows (the accent API has no blur-radius
-    // control): > 0 enables blur, 0 disables it. Per-pixel transparency for a GL
-    // window is produced by the blur compositor, so with blur off the window is
-    // opaque. Use classic blur-behind (not acrylic) because acrylic is disabled by
-    // DWM for maximized windows, which makes the blur flip on/off across the
-    // maximize<->restore transition; blur-behind stays consistent in every state.
-    if (window->win32.blur > 0) policy.AccentState = ACCENT_ENABLE_BLURBEHIND;
-    else policy.AccentState = ACCENT_DISABLED;
+    policy.AccentState = wantBlur ? ACCENT_ENABLE_BLURBEHIND : ACCENT_DISABLED;
     policy.GradientColor = 0x00000000;  // no tint; the terminal's bg alpha does the rest
     WIN_COMP_ATTR_DATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
     _glfw.win32.user32.SetWindowCompositionAttribute(hwnd, &data);
