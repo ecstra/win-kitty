@@ -430,7 +430,8 @@ static void cbPaint(HWND overlay) {
             fam = NULL; GdipCreateFontFamilyFromName(L"Segoe MDL2 Assets", NULL, &fam);
         }
         void* font = NULL;
-        if (fam) GdipCreateFont(fam, (float) MulDiv(10, dpi, 96), 0 /* regular */, 2 /* pixel */, &font);
+        // ~40% of the 30px button (Windows proportion); 10px em renders too thin.
+        if (fam) GdipCreateFont(fam, (float) MulDiv(12, dpi, 96), 0 /* regular */, 2 /* pixel */, &font);
         void* fmt = NULL;
         if (GdipCreateStringFormat(0, 0, &fmt) == 0) {
             GdipSetStringFormatAlign(fmt, 1 /* center */);
