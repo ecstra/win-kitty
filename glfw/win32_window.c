@@ -593,6 +593,11 @@ static void updateWindowComposition(_GLFWwindow* window) {
     if (_glfw.win32.dwmapi.SetWindowAttribute) {
         DWORD backdrop = 1;  // DWMSBT_NONE
         _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
+        // In glass mode the extended frame makes DWM paint the standard caption
+        // (a phantom title bar / caption buttons) over our custom frame. Disable
+        // DWM non-client rendering there; otherwise leave it to the window style.
+        DWORD ncrp = (wantTransparent && !wantBlur) ? 1 /* DWMNCRP_DISABLED */ : 0 /* DWMNCRP_USEWINDOWSTYLE */;
+        _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 2 /* DWMWA_NCRENDERING_POLICY */, &ncrp, sizeof(ncrp));
     }
     // Two independent translucency mechanisms:
     //  * blur on  -> accent blur-behind (translucent + blurred), consistent in
