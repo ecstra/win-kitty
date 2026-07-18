@@ -686,6 +686,23 @@ pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
             r->bottom = r->top - gl_size(r->px.bottom - r->px.top, osw->viewport_height);
             r->color = color; r->border_type = border_type; r->horizontal = horizontal;
         }
+#ifdef _WIN32
+        // Fill the custom-frame title-bar strip with the window background at the
+        // same opacity as the cells, so the title bar matches the body exactly.
+        if (!(OPT(hide_window_decorations) & 1)) {
+            long strip = pt_to_px_for_os_window(27.0, osw);
+            if (strip > 0) {
+                BorderRect *r = br->rect_buf + br->num_border_rects;
+                r->px.left = 0; r->px.top = 0; r->px.right = osw->viewport_width; r->px.bottom = strip;
+                r->left = gl_pos_x(r->px.left, osw->viewport_width);
+                r->top = gl_pos_y(r->px.top, osw->viewport_height);
+                r->right = r->left + gl_size(r->px.right - r->px.left, osw->viewport_width);
+                r->bottom = r->top - gl_size(r->px.bottom - r->px.top, osw->viewport_height);
+                r->color = 0 /* default_bg */; r->border_type = 0; r->horizontal = 1;
+                br->num_border_rects++;
+            }
+        }
+#endif
     END_WITH_TAB
     Py_RETURN_NONE;
 }

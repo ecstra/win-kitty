@@ -291,37 +291,246 @@ typedef struct { ACCENT_STATE AccentState; DWORD AccentFlags; DWORD GradientColo
 typedef struct { DWORD Attrib; PVOID pvData; SIZE_T cbData; } WIN_COMP_ATTR_DATA;
 #define WCA_ACCENT_POLICY 19
 
-// Caption button overlay: implemented further below. Stubs for now.
-static void ensureCaptionButtons(_GLFWwindow* window) { (void) window; }
-static void positionCaptionButtons(_GLFWwindow* window) { (void) window; }
+// ---------------------------------------------------------------------------
+// Caption buttons: a per-pixel-alpha layered overlay pinned to the title strip
+// so the min/max/close controls float over the acrylic surface. Drawn with the
+// GDI+ flat API (declared here to avoid the C++ gdiplus headers).
+// ---------------------------------------------------------------------------
+typedef struct { UINT32 version; void* cb; BOOL noThread; BOOL noCodecs; } GpStartupInput;
+extern int WINAPI GdiplusStartup(ULONG_PTR*, const GpStartupInput*, void*);
+extern int WINAPI GdipCreateFromHDC(HDC, void**);
+extern int WINAPI GdipDeleteGraphics(void*);
+extern int WINAPI GdipSetSmoothingMode(void*, int);
+extern int WINAPI GdipCreateSolidFill(ULONG, void**);
+extern int WINAPI GdipDeleteBrush(void*);
+extern int WINAPI GdipCreatePen1(ULONG, float, int, void**);
+extern int WINAPI GdipDeletePen(void*);
+extern int WINAPI GdipSetPenStartCap(void*, int);
+extern int WINAPI GdipSetPenEndCap(void*, int);
+extern int WINAPI GdipDrawLineI(void*, void*, int, int, int, int);
+extern int WINAPI GdipDrawRectangleI(void*, void*, int, int, int, int);
+extern int WINAPI GdipCreatePath(int, void**);
+extern int WINAPI GdipDeletePath(void*);
+extern int WINAPI GdipAddPathArcI(void*, int, int, int, int, float, float);
+extern int WINAPI GdipClosePathFigure(void*);
+extern int WINAPI GdipFillPath(void*, void*, void*);
+extern int WINAPI GdipDrawPath(void*, void*, void*);
+extern int WINAPI GdipAddPathRectangleI(void*, int, int, int, int);
 
-// kitty publishes its configured background colour in KITTY_TITLEBAR_RGB
-// (0xRRGGBB hex) so the caption can match it without a cross-module glfw call.
-static COLORREF titlebarColorref(void) {
-    const char* e = getenv("KITTY_TITLEBAR_RGB");
-    unsigned long v = 0x1e1e1e;  // dark default
-    if (e && *e) { char* end = NULL; unsigned long p = strtoul(e, &end, 16); if (end && end != e) v = p; }
-    return RGB((v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
+#define CB_COUNT 3   // minimize, maximize/restore, close
+typedef struct { _GLFWwindow* owner; int hovered; int pressed; } CaptionState;
+static const wchar_t* CAPTION_CLASS = L"kittyCaptionButtons";
+
+static void cbLayout(HWND overlay, int* bw, int* bh, int* gap, int* pad) {
+    UINT dpi = windowDpi(overlay);
+    // 24px square buttons in a 36px strip -> 6px vertical margin; pad matches it
+    // so the top and right gaps are equal.
+    *bw = *bh = MulDiv(24, dpi, 96);
+    *gap = MulDiv(4, dpi, 96); *pad = MulDiv(6, dpi, 96);
+}
+static int cbHitTest(HWND overlay, int x, int y) {
+    int bw, bh, gap, pad; cbLayout(overlay, &bw, &bh, &gap, &pad);
+    RECT rc; GetClientRect(overlay, &rc);
+    int top = (rc.bottom - bh) / 2;
+    if (y < top || y >= top + bh) return -1;
+    for (int i = 0; i < CB_COUNT; i++) {
+        int bx = pad + i * (bw + gap);
+        if (x >= bx && x < bx + bw) return i;
+    }
+    return -1;
 }
 
-// Theme the title bar: colour the caption to the terminal background, hide the
-// icon and the title text (drawn in the caption colour so it is invisible), and
-// keep the min/max/close buttons.
+static void GdipDrawRoundedSquare(void* g, void* pen, int x, int y, int sz, int r) {
+    void* p = NULL;
+    if (GdipCreatePath(0, &p) != 0) return;
+    int d = r * 2; if (d > sz) d = sz;
+    GdipAddPathArcI(p, x, y, d, d, 180, 90);
+    GdipAddPathArcI(p, x + sz - d, y, d, d, 270, 90);
+    GdipAddPathArcI(p, x + sz - d, y + sz - d, d, d, 0, 90);
+    GdipAddPathArcI(p, x, y + sz - d, d, d, 90, 90);
+    GdipClosePathFigure(p);
+    GdipDrawPath(g, pen, p);
+    GdipDeletePath(p);
+}
+
+static void cbPaint(HWND overlay) {
+    CaptionState* st = (CaptionState*) GetWindowLongPtrW(overlay, GWLP_USERDATA);
+    if (!st) return;
+    RECT rc; GetClientRect(overlay, &rc);
+    int W = rc.right, H = rc.bottom;
+    if (W <= 0 || H <= 0) return;
+    int bw, bh, gap, pad; cbLayout(overlay, &bw, &bh, &gap, &pad);
+    UINT dpi = windowDpi(overlay);
+
+    HDC screen = GetDC(NULL);
+    HDC dc = CreateCompatibleDC(screen);
+    BITMAPINFO bi; ZeroMemory(&bi, sizeof bi);
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = W; bi.bmiHeader.biHeight = -H;
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = NULL;
+    HBITMAP dib = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    HBITMAP oldbm = (HBITMAP) SelectObject(dc, dib);
+    memset(bits, 0, (size_t) W * H * 4);
+
+    void* g = NULL;
+    if (GdipCreateFromHDC(dc, &g) == 0) {
+        GdipSetSmoothingMode(g, 4 /* antialias */);
+        int top = (H - bh) / 2;
+        float rad = (float) MulDiv(7, dpi, 96);
+        for (int i = 0; i < CB_COUNT; i++) {
+            int bx = pad + i * (bw + gap);
+            bool hot = st->hovered == i;
+            // Always fill the button rect: a base alpha of 1 keeps the WHOLE
+            // button clickable/hoverable (a layered window is click-through only
+            // where alpha == 0), while hover shows a clear background.
+            ULONG col = hot ? ((i == 2) ? 0xF0E81123u /* red */ : 0x55FFFFFFu /* ~33% white */)
+                            : 0x01FFFFFFu /* invisible but hit-testable */;
+            void* brush = NULL;
+            if (GdipCreateSolidFill(col, &brush) == 0) {
+                void* path = NULL;
+                if (GdipCreatePath(0, &path) == 0) {
+                    int d = (int)(rad * 2);
+                    GdipAddPathArcI(path, bx, top, d, d, 180, 90);
+                    GdipAddPathArcI(path, bx + bw - d, top, d, d, 270, 90);
+                    GdipAddPathArcI(path, bx + bw - d, top + bh - d, d, d, 0, 90);
+                    GdipAddPathArcI(path, bx, top + bh - d, d, d, 90, 90);
+                    GdipClosePathFigure(path);
+                    GdipFillPath(g, brush, path);
+                    GdipDeletePath(path);
+                }
+                GdipDeleteBrush(brush);
+            }
+            // glyph
+            ULONG gcol = (hot && i == 2) ? 0xFFFFFFFFu : 0xFFE6E6E6u;
+            void* pen = NULL;
+            if (GdipCreatePen1(gcol, MulDiv(13, dpi, 96) / 10.0f, 2 /* unit pixel */, &pen) == 0) {
+                GdipSetPenStartCap(pen, 2 /* round */); GdipSetPenEndCap(pen, 2);
+                int cx = bx + bw / 2, cy = top + bh / 2;
+                int s = MulDiv(5, dpi, 96);   // half glyph size
+                if (i == 0) {                 // minimize
+                    GdipDrawLineI(g, pen, cx - s, cy, cx + s, cy);
+                } else if (i == 1) {          // maximize / restore (rounded square, Win11 style)
+                    int rr = MulDiv(2, dpi, 96);
+                    bool zoomed = IsZoomed(st->owner->win32.handle);
+                    if (zoomed) {             // back square, offset up-right
+                        int o = MulDiv(2, dpi, 96);
+                        GdipDrawRoundedSquare(g, pen, cx - s + o, cy - s - o, 2 * s, rr);
+                    }
+                    GdipDrawRoundedSquare(g, pen, cx - s - (zoomed ? MulDiv(2, dpi, 96) : 0),
+                                          cy - s + (zoomed ? MulDiv(2, dpi, 96) : 0), 2 * s, rr);
+                } else {                      // close
+                    GdipDrawLineI(g, pen, cx - s, cy - s, cx + s, cy + s);
+                    GdipDrawLineI(g, pen, cx - s, cy + s, cx + s, cy - s);
+                }
+                GdipDeletePen(pen);
+            }
+        }
+        GdipDeleteGraphics(g);
+    }
+    // premultiply for UpdateLayeredWindow
+    uint8_t* px = (uint8_t*) bits;
+    for (int i = 0; i < W * H; i++) {
+        uint8_t a = px[3];
+        px[0] = (uint8_t)(px[0] * a / 255); px[1] = (uint8_t)(px[1] * a / 255); px[2] = (uint8_t)(px[2] * a / 255);
+        px += 4;
+    }
+    RECT wr; GetWindowRect(overlay, &wr);
+    POINT dst = { wr.left, wr.top }, srcp = { 0, 0 }; SIZE sz = { W, H };
+    BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    UpdateLayeredWindow(overlay, screen, &dst, &sz, dc, &srcp, 0, &bf, ULW_ALPHA);
+    SelectObject(dc, oldbm); DeleteObject(dib); DeleteDC(dc); ReleaseDC(NULL, screen);
+}
+
+static LRESULT CALLBACK captionProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
+    CaptionState* st = (CaptionState*) GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+    switch (msg) {
+        case WM_MOUSEMOVE: {
+            if (!st) break;
+            TRACKMOUSEEVENT tme = { sizeof tme, TME_LEAVE, hWnd, 0 };
+            TrackMouseEvent(&tme);
+            int h = cbHitTest(hWnd, GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+            if (h != st->hovered) { st->hovered = h; cbPaint(hWnd); }
+            return 0;
+        }
+        case WM_MOUSELEAVE:
+            if (st && st->hovered != -1) { st->hovered = -1; st->pressed = -1; cbPaint(hWnd); }
+            return 0;
+        case WM_LBUTTONDOWN:
+            if (st) { st->pressed = cbHitTest(hWnd, GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); SetCapture(hWnd); }
+            return 0;
+        case WM_LBUTTONUP: {
+            if (!st) break;
+            ReleaseCapture();
+            int h = cbHitTest(hWnd, GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+            int pressed = st->pressed; st->pressed = -1;
+            HWND owner = st->owner->win32.handle;
+            if (h == pressed && h != -1) {
+                if (h == 0) ShowWindow(owner, SW_MINIMIZE);
+                else if (h == 1) ShowWindow(owner, IsZoomed(owner) ? SW_RESTORE : SW_MAXIMIZE);
+                else PostMessageW(owner, WM_CLOSE, 0, 0);
+            }
+            return 0;
+        }
+        case WM_NCDESTROY:
+            if (st) { free(st); SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0); }
+            break;
+    }
+    return DefWindowProcW(hWnd, msg, wp, lp);
+}
+
+static void ensureCaptionButtons(_GLFWwindow* window) {
+    if (window->win32.captionButtons) return;
+    static ULONG_PTR gdipToken = 0;
+    static bool classReady = false;
+    if (!gdipToken) { GpStartupInput in = { 1, NULL, FALSE, FALSE }; GdiplusStartup(&gdipToken, &in, NULL); }
+    if (!classReady) {
+        WNDCLASSEXW wc; ZeroMemory(&wc, sizeof wc); wc.cbSize = sizeof wc;
+        wc.lpfnWndProc = captionProc; wc.hInstance = _glfw.win32.instance;
+        wc.hCursor = LoadCursorW(NULL, (LPCWSTR) IDC_ARROW); wc.lpszClassName = CAPTION_CLASS;
+        RegisterClassExW(&wc); classReady = true;
+    }
+    HWND overlay = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+        CAPTION_CLASS, L"", WS_POPUP, 0, 0, 10, 10,
+        window->win32.handle, NULL, _glfw.win32.instance, NULL);
+    if (!overlay) return;
+    CaptionState* st = calloc(1, sizeof(CaptionState));
+    st->owner = window; st->hovered = -1; st->pressed = -1;
+    SetWindowLongPtrW(overlay, GWLP_USERDATA, (LONG_PTR) st);
+    window->win32.captionButtons = overlay;
+    positionCaptionButtons(window);
+    ShowWindow(overlay, SW_SHOWNOACTIVATE);
+}
+
+static void positionCaptionButtons(_GLFWwindow* window) {
+    HWND overlay = window->win32.captionButtons;
+    if (!overlay) return;
+    HWND owner = window->win32.handle;
+    if (IsIconic(owner)) { ShowWindow(overlay, SW_HIDE); return; }
+    int strip = titlebarHeightPx(owner);
+    int bw, bh, gap, pad; cbLayout(overlay, &bw, &bh, &gap, &pad);
+    int W = pad * 2 + CB_COUNT * bw + (CB_COUNT - 1) * gap;
+    // top-right of the client area, in screen coords
+    RECT cr; GetClientRect(owner, &cr);
+    POINT tr = { cr.right, cr.top }; ClientToScreen(owner, &tr);
+    SetWindowPos(overlay, HWND_TOP, tr.x - W, tr.y, W, strip,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    cbPaint(overlay);
+}
+
+// With the custom frame kitty renders the whole surface (caption included), so
+// the title bar colour/opacity/blur is the terminal background automatically.
+// Here we only ask DWM for rounded corners and a thin dark border so the window
+// edge reads clearly, plus dark-mode window controls.
 static void styleTitlebar(_GLFWwindow* window) {
     HWND hwnd = window->win32.handle;
-    if (!hwnd) return;
-    if (_glfw.win32.dwmapi.SetWindowAttribute) {
-        BOOL dark = TRUE;
-        _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
-        COLORREF cap = titlebarColorref();
-        _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 35 /* DWMWA_CAPTION_COLOR */, &cap, sizeof(cap));
-        _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 36 /* DWMWA_TEXT_COLOR */, &cap, sizeof(cap));
-        _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, &cap, sizeof(cap));
-    }
-    // Remove the title-bar icon (WS_EX_DLGMODALFRAME drops the icon slot).
-    LONG ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
-    SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_DLGMODALFRAME);
-    SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (!hwnd || !_glfw.win32.dwmapi.SetWindowAttribute) return;
+    BOOL dark = TRUE;
+    _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
+    DWORD round = 2 /* DWMWCP_ROUND */;
+    _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &round, sizeof(round));
+    COLORREF border = 0x00000000 /* thin black edge, like a normal window */;
+    _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, &border, sizeof(border));
 }
 
 static void updateWindowComposition(_GLFWwindow* window) {
@@ -388,6 +597,10 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
 
 void _glfwPlatformDestroyWindow(_GLFWwindow* window) {
     if (window->context.destroy) window->context.destroy(window);
+    if (window->win32.captionButtons) {
+        DestroyWindow(window->win32.captionButtons);
+        window->win32.captionButtons = NULL;
+    }
     if (window->win32.handle) {
         RemovePropW(window->win32.handle, L"GLFW");
         DestroyWindow(window->win32.handle);
