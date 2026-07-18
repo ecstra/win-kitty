@@ -51,7 +51,7 @@ static int getKeyMods(void) {
 // Custom title bar (frame reclaimed so the caption shares the acrylic surface)
 // ---------------------------------------------------------------------------
 
-#define KITTY_TITLEBAR_LOGICAL_PX 36
+#define KITTY_TITLEBAR_LOGICAL_PX 40
 #define KITTY_RESIZE_BORDER_LOGICAL_PX 6
 
 static UINT windowDpi(HWND hWnd) {
@@ -61,6 +61,7 @@ static int titlebarHeightPx(HWND hWnd) { return MulDiv(KITTY_TITLEBAR_LOGICAL_PX
 
 static void ensureCaptionButtons(_GLFWwindow* window);      // fwd
 static void positionCaptionButtons(_GLFWwindow* window);    // fwd
+static void updateWindowComposition(_GLFWwindow* window);   // fwd
 
 // ---------------------------------------------------------------------------
 // Window procedure
@@ -129,8 +130,32 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             window->win32.maximized = wParam == SIZE_MAXIMIZED;
             _glfwInputFramebufferSize(window, width, height);
             _glfwInputWindowSize(window, width, height);
+            positionCaptionButtons(window);
+            // DWM drops the acrylic accent when the window is maximized/restored;
+            // re-apply it on those transitions.
+            if (wParam == SIZE_MAXIMIZED || wParam == SIZE_RESTORED) updateWindowComposition(window);
+            // The Win32 modal resize loop blocks our main loop, so render here to
+            // keep the window live (otherwise DWM stretches the stale frame).
+            if (_glfw.win32.tickCallback && !window->win32.iconified)
+                _glfw.win32.tickCallback(_glfw.win32.tickCallbackData);
             return 0;
         }
+
+        case WM_ENTERSIZEMOVE:
+            _glfwInputLiveResize(window, true);
+            SetTimer(hWnd, 1001, 12, NULL);   // ~80fps repaint during the drag
+            break;
+        case WM_EXITSIZEMOVE:
+            KillTimer(hWnd, 1001);
+            _glfwInputLiveResize(window, false);
+            if (_glfw.win32.tickCallback) _glfw.win32.tickCallback(_glfw.win32.tickCallbackData);
+            break;
+        case WM_TIMER:
+            if (wParam == 1001) {
+                if (_glfw.win32.tickCallback) _glfw.win32.tickCallback(_glfw.win32.tickCallbackData);
+                return 0;
+            }
+            break;
 
         case WM_MOUSEMOVE: {
             const int x = GET_X_LPARAM(lParam), y = GET_Y_LPARAM(lParam);
@@ -323,10 +348,10 @@ static const wchar_t* CAPTION_CLASS = L"kittyCaptionButtons";
 
 static void cbLayout(HWND overlay, int* bw, int* bh, int* gap, int* pad) {
     UINT dpi = windowDpi(overlay);
-    // 24px square buttons in a 36px strip -> 6px vertical margin; pad matches it
-    // so the top and right gaps are equal.
-    *bw = *bh = MulDiv(24, dpi, 96);
-    *gap = MulDiv(4, dpi, 96); *pad = MulDiv(6, dpi, 96);
+    // 30px square buttons in a 40px strip -> 5px vertical margin; pad matches it
+    // so the top and right gaps are equal. Glyphs stay small (see cbPaint).
+    *bw = *bh = MulDiv(30, dpi, 96);
+    *gap = MulDiv(4, dpi, 96); *pad = MulDiv(5, dpi, 96);
 }
 static int cbHitTest(HWND overlay, int x, int y) {
     int bw, bh, gap, pad; cbLayout(overlay, &bw, &bh, &gap, &pad);
@@ -401,24 +426,25 @@ static void cbPaint(HWND overlay) {
                 }
                 GdipDeleteBrush(brush);
             }
-            // glyph
+            // glyph (kept small relative to the button, Windows-explorer style)
             ULONG gcol = (hot && i == 2) ? 0xFFFFFFFFu : 0xFFE6E6E6u;
             void* pen = NULL;
-            if (GdipCreatePen1(gcol, MulDiv(13, dpi, 96) / 10.0f, 2 /* unit pixel */, &pen) == 0) {
+            if (GdipCreatePen1(gcol, MulDiv(12, dpi, 96) / 10.0f, 2 /* unit pixel */, &pen) == 0) {
                 GdipSetPenStartCap(pen, 2 /* round */); GdipSetPenEndCap(pen, 2);
                 int cx = bx + bw / 2, cy = top + bh / 2;
-                int s = MulDiv(5, dpi, 96);   // half glyph size
+                int s = MulDiv(5, dpi, 96);   // half glyph size for minimize/close
                 if (i == 0) {                 // minimize
                     GdipDrawLineI(g, pen, cx - s, cy, cx + s, cy);
-                } else if (i == 1) {          // maximize / restore (rounded square, Win11 style)
+                } else if (i == 1) {          // maximize / restore
+                    int m = MulDiv(4, dpi, 96);   // small square (half-size), like explorer
                     int rr = MulDiv(2, dpi, 96);
-                    bool zoomed = IsZoomed(st->owner->win32.handle);
-                    if (zoomed) {             // back square, offset up-right
-                        int o = MulDiv(2, dpi, 96);
-                        GdipDrawRoundedSquare(g, pen, cx - s + o, cy - s - o, 2 * s, rr);
+                    if (IsZoomed(st->owner->win32.handle)) {  // restore: two offset squares
+                        int o = MulDiv(3, dpi, 96);
+                        GdipDrawRoundedSquare(g, pen, cx - m + o, cy - m - o, 2 * m, rr);
+                        GdipDrawRoundedSquare(g, pen, cx - m - o, cy - m + o, 2 * m, rr);
+                    } else {                                  // maximize: one small square
+                        GdipDrawRoundedSquare(g, pen, cx - m, cy - m, 2 * m, rr);
                     }
-                    GdipDrawRoundedSquare(g, pen, cx - s - (zoomed ? MulDiv(2, dpi, 96) : 0),
-                                          cy - s + (zoomed ? MulDiv(2, dpi, 96) : 0), 2 * s, rr);
                 } else {                      // close
                     GdipDrawLineI(g, pen, cx - s, cy - s, cx + s, cy + s);
                     GdipDrawLineI(g, pen, cx - s, cy + s, cx + s, cy - s);

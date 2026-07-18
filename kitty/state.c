@@ -690,7 +690,7 @@ pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
         // Fill the custom-frame title-bar strip with the window background at the
         // same opacity as the cells, so the title bar matches the body exactly.
         if (!(OPT(hide_window_decorations) & 1)) {
-            long strip = pt_to_px_for_os_window(27.0, osw);
+            long strip = pt_to_px_for_os_window(30.0, osw);  // ~40px title bar
             if (strip > 0) {
                 BorderRect *r = br->rect_buf + br->num_border_rects;
                 r->px.left = 0; r->px.top = 0; r->px.right = osw->viewport_width; r->px.bottom = strip;
@@ -788,7 +788,7 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
     // strip shows the acrylic window background and hosts the caption buttons;
     // the terminal (and a top tab bar) sit below it. ~36 logical px = 27pt.
     if (!(OPT(hide_window_decorations) & 1)) {
-        long strip = pt_to_px_for_os_window(27.0, os_window);
+        long strip = pt_to_px_for_os_window(30.0, os_window);  // ~40px title bar
         if (strip > (long)os_window->viewport_height) strip = os_window->viewport_height;
         if (tab_bar->bottom > tab_bar->top && OPT(tab_bar_edge) == TOP_EDGE) {
             tab_bar->top += strip; tab_bar->bottom += strip;
