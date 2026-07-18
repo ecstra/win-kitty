@@ -61,7 +61,7 @@ static int getKeyMods(void) {
 // Custom title bar (frame reclaimed so the caption shares the acrylic surface)
 // ---------------------------------------------------------------------------
 
-#define KITTY_TITLEBAR_LOGICAL_PX 32
+#define KITTY_TITLEBAR_LOGICAL_PX 40
 #define KITTY_RESIZE_BORDER_LOGICAL_PX 6
 
 static UINT windowDpi(HWND hWnd) {
@@ -323,12 +323,7 @@ static DWORD windowStyle(const _GLFWwindow* window) {
     DWORD style = WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
     if (window->monitor) style |= WS_POPUP;
     else if (window->decorated) {
-        // No WS_CAPTION: we draw a custom frame (WM_NCCALCSIZE removes the visual
-        // frame, WM_NCHITTEST provides drag/resize). Keeping WS_CAPTION makes DWM
-        // paint its own caption in glass-transparency mode (the "phantom" title
-        // bar). WS_SYSMENU/min/max/thickframe still give snap, maximize and the
-        // taskbar menu.
-        style |= WS_SYSMENU | WS_MINIMIZEBOX;
+        style |= WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         if (window->resizable) style |= WS_MAXIMIZEBOX | WS_THICKFRAME;
     } else style |= WS_POPUP;
     return style;
@@ -402,10 +397,10 @@ static const wchar_t* CAPTION_CLASS = L"kittyCaptionButtons";
 
 static void cbLayout(HWND overlay, int* bw, int* bh, int* gap, int* pad) {
     UINT dpi = windowDpi(overlay);
-    // 28px square buttons in a 32px strip -> 2px vertical margin; pad matches it
+    // 30px square buttons in a 40px strip -> 5px vertical margin; pad matches it
     // so the top and right gaps are equal. Glyphs stay small (see cbPaint).
-    *bw = *bh = MulDiv(28, dpi, 96);
-    *gap = MulDiv(4, dpi, 96); *pad = MulDiv(2, dpi, 96);
+    *bw = *bh = MulDiv(30, dpi, 96);
+    *gap = MulDiv(4, dpi, 96); *pad = MulDiv(5, dpi, 96);
 }
 static int cbHitTest(HWND overlay, int x, int y) {
     int bw, bh, gap, pad; cbLayout(overlay, &bw, &bh, &gap, &pad);
@@ -600,16 +595,23 @@ static void updateWindowComposition(_GLFWwindow* window) {
     // Never use the Win11 system backdrop: it does not compose with the GL
     // surface and, when maximized, paints a second region-limited blur (the
     // "brighter rectangle" over part of the window).
+    const bool glassMode = wantTransparent && !wantBlur;
     if (_glfw.win32.dwmapi.SetWindowAttribute) {
         DWORD backdrop = 1;  // DWMSBT_NONE
         _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
+        // Only in glass mode does the extended frame make DWM paint its own
+        // caption over our custom frame (the "phantom" title bar). Disable DWM
+        // non-client rendering there -- and ONLY there: doing it unconditionally
+        // forces the classic (win98) frame in every mode.
+        DWORD ncrp = glassMode ? 1 /* DWMNCRP_DISABLED */ : 0 /* DWMNCRP_USEWINDOWSTYLE */;
+        _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 2 /* DWMWA_NCRENDERING_POLICY */, &ncrp, sizeof(ncrp));
     }
     //  * blur off + transparent -> extend the DWM frame across the whole client
     //    ("sheet of glass") so the GL per-pixel alpha shows the desktop with no
     //    blur (this is how "acrylic off" transparency works).
     if (_glfw.win32.dwmapi.ExtendFrameIntoClientArea) {
         MARGINS glass = { -1, -1, -1, -1 }, none = { 0, 0, 0, 0 };
-        _glfw.win32.dwmapi.ExtendFrameIntoClientArea(hwnd, (wantTransparent && !wantBlur) ? &glass : &none);
+        _glfw.win32.dwmapi.ExtendFrameIntoClientArea(hwnd, glassMode ? &glass : &none);
     }
     if (!_glfw.win32.user32.SetWindowCompositionAttribute) return;
     ACCENT_POLICY policy = {0};
