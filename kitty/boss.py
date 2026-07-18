@@ -2151,9 +2151,9 @@ class Boss:
         q = get_options().confirm_os_window_close[0]
         num = num_active_windows if q < 0 else len(windows)
         needs_confirmation = tm is not None and q != 0 and num >= abs(q)
-        # The confirmation prompt is drawn by the 'ask' kitten, which is not built
-        # on Windows, so it can never complete and the window would never close.
-        # Skip confirmation there and close directly.
+        # The confirmation prompt is the 'ask' kitten, which needs the Go tool and
+        # a working kitten TUI, neither of which is available on Windows yet. Skip
+        # it so the window can always close.
         if is_windows:
             needs_confirmation = False
         if not needs_confirmation:

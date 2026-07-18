@@ -25,6 +25,15 @@ if is_windows:
     # overrides these (they only change the built-in defaults).
     defaults.window_padding_width = FloatEdges(left=10.0, top=1.0, right=10.0, bottom=10.0)
     defaults.placement_strategy = 'top-left'
+    # Windows apps do not prompt before closing a terminal window, so default to
+    # no close confirmation. Users can still set confirm_os_window_close.
+    defaults.confirm_os_window_close = (0, False)
+    # pwsh has no shell integration on Windows yet, so it sets the tab title to its
+    # own exe path. Show the active folder name instead, which differs per tab.
+    defaults.tab_title_template = (
+        '{fmt.fg.red}{bell_symbol}{activity_symbol}{secure_input_symbol}'
+        '{fmt.fg.tab}{tab.last_focused_progress_percent}{tab.active_wd_name}'
+    )
 
 
 def option_names_for_completion() -> tuple[str, ...]:
