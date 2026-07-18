@@ -51,6 +51,7 @@ from .constants import (
     handled_signals,
     is_macos,
     is_wayland,
+    is_windows,
     kitten_exe,
     kitty_exe,
     logo_png_file,
@@ -2150,6 +2151,11 @@ class Boss:
         q = get_options().confirm_os_window_close[0]
         num = num_active_windows if q < 0 else len(windows)
         needs_confirmation = tm is not None and q != 0 and num >= abs(q)
+        # The confirmation prompt is drawn by the 'ask' kitten, which is not built
+        # on Windows, so it can never complete and the window would never close.
+        # Skip confirmation there and close directly.
+        if is_windows:
+            needs_confirmation = False
         if not needs_confirmation:
             self.mark_os_window_for_close(os_window_id)
             return
@@ -2179,7 +2185,10 @@ class Boss:
         else:
             self.mark_os_window_for_close(os_window_id, NO_CLOSE_REQUESTED)
 
-    def on_os_window_closed(self, os_window_id: int, x: int, y: int, viewport_width: int, viewport_height: int, is_layer_shell: bool) -> None:
+    def on_os_window_closed(
+        self, os_window_id: int, x: int, y: int, viewport_width: int, viewport_height: int,
+        is_layer_shell: bool, is_maximized: bool = False
+    ) -> None:
         tm = self.os_window_map.pop(os_window_id, None)
         opts = get_options()
         if not is_layer_shell:
@@ -2187,6 +2196,7 @@ class Boss:
                 self.cached_values['window-pos'] = x, y
                 self.cached_values['monitor-workarea'] = glfw_get_monitor_workarea()
             self.cached_values['window-size'] = viewport_width, viewport_height
+            self.cached_values['window-maximized'] = is_maximized
         if tm is not None:
             tm.destroy()
         for window_id in tuple(w.id for w in self.window_id_map.values() if getattr(w, 'os_window_id', None) == os_window_id):
