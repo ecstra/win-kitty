@@ -61,7 +61,7 @@ static int getKeyMods(void) {
 // Custom title bar (frame reclaimed so the caption shares the acrylic surface)
 // ---------------------------------------------------------------------------
 
-#define KITTY_TITLEBAR_LOGICAL_PX 40
+#define KITTY_TITLEBAR_LOGICAL_PX 32
 #define KITTY_RESIZE_BORDER_LOGICAL_PX 6
 
 static UINT windowDpi(HWND hWnd) {
@@ -323,7 +323,12 @@ static DWORD windowStyle(const _GLFWwindow* window) {
     DWORD style = WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
     if (window->monitor) style |= WS_POPUP;
     else if (window->decorated) {
-        style |= WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+        // No WS_CAPTION: we draw a custom frame (WM_NCCALCSIZE removes the visual
+        // frame, WM_NCHITTEST provides drag/resize). Keeping WS_CAPTION makes DWM
+        // paint its own caption in glass-transparency mode (the "phantom" title
+        // bar). WS_SYSMENU/min/max/thickframe still give snap, maximize and the
+        // taskbar menu.
+        style |= WS_SYSMENU | WS_MINIMIZEBOX;
         if (window->resizable) style |= WS_MAXIMIZEBOX | WS_THICKFRAME;
     } else style |= WS_POPUP;
     return style;
@@ -397,10 +402,10 @@ static const wchar_t* CAPTION_CLASS = L"kittyCaptionButtons";
 
 static void cbLayout(HWND overlay, int* bw, int* bh, int* gap, int* pad) {
     UINT dpi = windowDpi(overlay);
-    // 30px square buttons in a 40px strip -> 5px vertical margin; pad matches it
+    // 28px square buttons in a 32px strip -> 2px vertical margin; pad matches it
     // so the top and right gaps are equal. Glyphs stay small (see cbPaint).
-    *bw = *bh = MulDiv(30, dpi, 96);
-    *gap = MulDiv(4, dpi, 96); *pad = MulDiv(5, dpi, 96);
+    *bw = *bh = MulDiv(28, dpi, 96);
+    *gap = MulDiv(4, dpi, 96); *pad = MulDiv(2, dpi, 96);
 }
 static int cbHitTest(HWND overlay, int x, int y) {
     int bw, bh, gap, pad; cbLayout(overlay, &bw, &bh, &gap, &pad);
@@ -579,11 +584,6 @@ static void positionCaptionButtons(_GLFWwindow* window) {
 static void styleTitlebar(_GLFWwindow* window) {
     HWND hwnd = window->win32.handle;
     if (!hwnd || !_glfw.win32.dwmapi.SetWindowAttribute) return;
-    // Disable DWM's own non-client (caption) rendering from the start. We draw a
-    // custom frame, and in glass transparency DWM would otherwise paint its
-    // standard caption over ours (a title-bar flash on open, or a phantom bar).
-    DWORD ncrp = 1;  // DWMNCRP_DISABLED
-    _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 2 /* DWMWA_NCRENDERING_POLICY */, &ncrp, sizeof(ncrp));
     BOOL dark = TRUE;
     _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
     DWORD round = 2 /* DWMWCP_ROUND */;
@@ -603,14 +603,6 @@ static void updateWindowComposition(_GLFWwindow* window) {
     if (_glfw.win32.dwmapi.SetWindowAttribute) {
         DWORD backdrop = 1;  // DWMSBT_NONE
         _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
-        // (DWM non-client rendering is disabled once in styleTitlebar so the
-        // standard caption never renders, in any mode.)
-        // Host-backdrop brush: sample the desktop behind the window and blur it
-        // uniformly on a redirection surface. Unlike plain blur-behind (which
-        // darkens toward the edges) and acrylic (which DWM drops when maximized),
-        // this stays even and consistent across every window state.
-        BOOL hostBackdrop = wantBlur ? TRUE : FALSE;
-        _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 17 /* DWMWA_USE_HOSTBACKDROPBRUSH */, &hostBackdrop, sizeof(hostBackdrop));
     }
     //  * blur off + transparent -> extend the DWM frame across the whole client
     //    ("sheet of glass") so the GL per-pixel alpha shows the desktop with no
@@ -621,9 +613,9 @@ static void updateWindowComposition(_GLFWwindow* window) {
     }
     if (!_glfw.win32.user32.SetWindowCompositionAttribute) return;
     ACCENT_POLICY policy = {0};
-    // Acrylic (uniform) paired with the host-backdrop brush above; falls back to
-    // blur-behind automatically on systems where acrylic is unavailable.
-    policy.AccentState = wantBlur ? ACCENT_ENABLE_ACRYLICBLURBEHIND : ACCENT_DISABLED;
+    // Blur-behind: works in every window state (acrylic flickers on resize and is
+    // dropped when maximized). Uniform-blur work is deferred.
+    policy.AccentState = wantBlur ? ACCENT_ENABLE_BLURBEHIND : ACCENT_DISABLED;
     policy.GradientColor = 0x00000000;  // no tint; the terminal's bg alpha does the rest
     WIN_COMP_ATTR_DATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
     _glfw.win32.user32.SetWindowCompositionAttribute(hwnd, &data);
@@ -682,7 +674,12 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window) {
         DestroyWindow(window->win32.handle);
         window->win32.handle = NULL;
     }
-    free(window->win32.bigIcon);
+    // These are HICON handles (CreateIconIndirect), not heap memory: destroy them
+    // with DestroyIcon. free() here corrupts the heap and crashes the process on
+    // window close (fatal when other OS windows are still open).
+    if (window->win32.bigIcon) DestroyIcon(window->win32.bigIcon);
+    if (window->win32.smallIcon) DestroyIcon(window->win32.smallIcon);
+    window->win32.bigIcon = window->win32.smallIcon = NULL;
 }
 
 // ---------------------------------------------------------------------------
