@@ -12,7 +12,7 @@ from itertools import count
 from typing import Any, NamedTuple, Set
 from weakref import ReferenceType, ref
 
-from .constants import cache_dir, config_dir, is_macos, logo_png_file, standard_icon_names, standard_sound_names, supports_window_occlusion
+from .constants import cache_dir, config_dir, is_macos, is_windows, logo_png_file, standard_icon_names, standard_sound_names, supports_window_occlusion
 from .fast_data_types import (
     ESC_OSC,
     StreamingBase64Decoder,
@@ -862,7 +862,7 @@ class NotificationManager:
         global debug_desktop_integration
         debug_desktop_integration = debug
         if desktop_integration is None:
-            self.desktop_integration = MacOSIntegration(self) if is_macos else FreeDesktopIntegration(self)
+            self.desktop_integration = MacOSIntegration(self) if is_macos else (DesktopIntegration(self) if is_windows else FreeDesktopIntegration(self))
         else:
             self.desktop_integration = desktop_integration
         self.channel = channel

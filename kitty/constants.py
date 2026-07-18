@@ -27,6 +27,7 @@ str_version: str = '.'.join(map(str, version))
 _plat = sys.platform.lower()
 is_macos: bool = 'darwin' in _plat
 is_freebsd: bool = 'freebsd' in _plat
+is_windows: bool = 'win32' in _plat
 is_running_from_develop: bool = False
 RC_ENCRYPTION_PROTOCOL_VERSION = '1'
 website_base_url = 'https://sw.kovidgoyal.net/kitty/'
@@ -211,7 +212,7 @@ def detect_if_wayland_ok() -> bool:
 
 
 def is_wayland(opts: Optional['Options'] = None) -> bool:
-    if is_macos:
+    if is_macos or is_windows:
         return False
     if opts is None:
         return bool(getattr(is_wayland, 'ans'))

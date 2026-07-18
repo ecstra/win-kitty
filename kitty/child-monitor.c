@@ -614,6 +614,12 @@ mark_for_close(ChildMonitor *self, PyObject *args) {
 
 static bool
 pty_resize(int fd, struct winsize *dim) {
+#ifdef _WIN32
+    // No ioctl on Windows: resize the pseudoconsole directly.
+    extern int windows_pty_resize_for(int read_fd, int cols, int rows);
+    windows_pty_resize_for(fd, dim->ws_col, dim->ws_row);
+    return true;
+#else
     while(true) {
         if (ioctl(fd, TIOCSWINSZ, dim) == -1) {
             if (errno == EINTR) continue;
@@ -625,6 +631,7 @@ pty_resize(int fd, struct winsize *dim) {
         break;
     }
     return true;
+#endif
 }
 
 static PyObject *
@@ -1609,6 +1616,13 @@ static void
 write_to_child(int fd, Screen *screen) {
     size_t written = 0;
     ssize_t ret = 0;
+#ifdef _WIN32
+    // On Windows the child's "fd" is the pty read side; writes must go to the
+    // ConPTY input pipe instead.
+    extern int windows_pty_write_fd_for(int read_fd);
+    int wfd = windows_pty_write_fd_for(fd);
+    if (wfd >= 0) fd = wfd;
+#endif
     screen_mutex(lock, write);
     while (written < screen->write_buf_used) {
         ret = write(fd, screen->write_buf + written, screen->write_buf_used - written);

@@ -85,6 +85,9 @@ load_fontconfig_lib(void) {
         const char* libnames[] = {
 #if defined(_KITTY_FONTCONFIG_LIBRARY)
             _KITTY_FONTCONFIG_LIBRARY,
+#elif defined(_WIN32)
+            "libfontconfig-1.dll",
+            "fontconfig.dll",
 #else
             "libfontconfig.so",
             // some installs are missing the .so symlink, so try the full name

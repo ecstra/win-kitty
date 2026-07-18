@@ -239,6 +239,17 @@ read_exe_path(char *exe, size_t buf_sz) {
     return false;
 }
 
+#elif defined(_WIN32)
+
+static bool
+read_exe_path(char *exe, size_t buf_sz) {
+    wchar_t wpath[4096];
+    DWORD n = GetModuleFileNameW(NULL, wpath, 4096);
+    if (n == 0 || n >= 4096) { fprintf(stderr, "GetModuleFileName failed\n"); return false; }
+    if (WideCharToMultiByte(CP_UTF8, 0, wpath, -1, exe, (int) buf_sz, NULL, NULL) == 0) { fprintf(stderr, "Failed to convert exe path to UTF-8\n"); return false; }
+    return true;
+}
+
 #else
 
 static bool
@@ -283,6 +294,11 @@ reopen_to_null(const char *mode, FILE *stream) {
 
 static bool
 ensure_working_stdio(void) {
+#ifdef _WIN32
+    // The Unix fixup below (fileno + /dev/null reopen) does not apply on Windows,
+    // where the CRT sets up console/redirected stdio and Python handles None fine.
+    return true;
+#endif
 #define C(which, mode) { \
     int fd = fileno(which); \
     if (fd < 0) { if (!reopen_to_null(mode, which)) return false; } \

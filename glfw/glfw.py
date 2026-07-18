@@ -200,6 +200,9 @@ def init_env(
         if has_memfd_create:
             ans.cppflags.append('-DHAS_MEMFD_CREATE')
 
+    elif module == 'win32':
+        ans.ldpaths.extend('-lopengl32 -lgdi32 -luser32 -ldwmapi -lws2_32 -lshell32 -limm32'.split())
+
     return ans
 
 
