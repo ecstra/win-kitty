@@ -766,6 +766,19 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
         central->left = 0; central->top = 0; central->right = os_window->viewport_width;
         central->bottom = os_window->viewport_height;
     }
+#ifdef _WIN32
+    // Reserve a title-bar strip at the very top for the win32 custom frame. The
+    // strip shows the acrylic window background and hosts the caption buttons;
+    // the terminal (and a top tab bar) sit below it. ~36 logical px = 27pt.
+    if (!(OPT(hide_window_decorations) & 1)) {
+        long strip = pt_to_px_for_os_window(27.0, os_window);
+        if (strip > (long)os_window->viewport_height) strip = os_window->viewport_height;
+        if (tab_bar->bottom > tab_bar->top && OPT(tab_bar_edge) == TOP_EDGE) {
+            tab_bar->top += strip; tab_bar->bottom += strip;
+        }
+        central->top = MIN(central->top + strip, central->bottom);
+    }
+#endif
 }
 
 void

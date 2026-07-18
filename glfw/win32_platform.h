@@ -40,6 +40,8 @@ typedef struct _GLFWwindowWin32 {
     int     numer, denom;     // aspect ratio
     float   opacity;
     int     blur;             // background_blur radius (0 = off)
+    bool    customFrame;      // reclaim the caption for an acrylic custom title bar
+    HWND    captionButtons;   // layered overlay hosting min/max/close
 } _GLFWwindowWin32;
 
 // Per-monitor Win32 state.
