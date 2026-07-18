@@ -69,7 +69,7 @@ typedef struct _GLFWlibraryWin32 {
     HDEVNOTIFY   deviceNotificationHandle;
     int          acquiredMonitorCount;
     char*        clipboardString;
-    short int    keycodes[512];
+    int          keycodes[512];
     short int    scancodes[512];
     char         keynames[512][5];
 
