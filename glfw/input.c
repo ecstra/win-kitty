@@ -1119,10 +1119,10 @@ GLFWAPI void glfwUpdateIMEState(GLFWwindow* handle, const GLFWIMEUpdateEvent *ev
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT();
-#if defined(_GLFW_X11) || defined(_GLFW_WAYLAND) || defined(_GLFW_COCOA)
+#if defined(_GLFW_X11) || defined(_GLFW_WAYLAND) || defined(_GLFW_COCOA) || defined(_GLFW_WIN32)
     _glfwPlatformUpdateIMEState(window, ev);
 #else
-    (void)window; (void)which; (void)a; (void)b; (void)c; (void)d;
+    (void)window; (void)ev;
 #endif
 }
 

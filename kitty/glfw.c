@@ -1524,6 +1524,9 @@ init_window_chrome_state(WindowChromeState *s, color_type active_window_bg, floa
     s->resizable = OPT(macos_window_resizable);
 #else
     if (global_state.is_wayland) { SET_TCOL(OPT(wayland_titlebar_color)); }
+#ifdef _WIN32
+    else { s->color = active_window_bg; s->use_system_color = false; }
+#endif
 #endif
     s->background_blur = should_blur ? OPT(background_blur) : 0;
     s->hide_window_decorations = OPT(hide_window_decorations);
@@ -1552,6 +1555,11 @@ apply_window_chrome_state(GLFWwindow *w, WindowChromeState new_state, int width,
             glfwSetWindowAttrib(w, GLFW_DECORATED, !hide_window_decorations);
             glfwSetWindowSize(w, width, height);
         }
+#ifdef _WIN32
+        // Publish the background colour so the win32 backend can match the
+        // caption to it. glfwSetWindowBlur re-reads this and restyles the caption.
+        { char tb[16]; snprintf(tb, sizeof tb, "%06x", (unsigned)(new_state.color & 0xffffff)); setenv("KITTY_TITLEBAR_RGB", tb, 1); }
+#endif
         glfwSetWindowBlur(w, new_state.background_blur);
         if (global_state.is_wayland) {
             if (glfwWaylandSetTitlebarColor) glfwWaylandSetTitlebarColor(w, new_state.color, new_state.use_system_color);

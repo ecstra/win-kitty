@@ -24,6 +24,7 @@ from .constants import (
     clear_handled_signals,
     glfw_path,
     is_macos,
+    is_windows,
     is_quick_access_terminal_app,
     is_wayland,
     kitten_exe,
@@ -104,7 +105,7 @@ def init_glfw_module(glfw_module: str = 'wayland', debug_keyboard: bool = False,
 
 
 def init_glfw(opts: Options, debug_keyboard: bool = False, debug_rendering: bool = False) -> str:
-    glfw_module = 'cocoa' if is_macos else ('wayland' if is_wayland(opts) else 'x11')
+    glfw_module = 'cocoa' if is_macos else ('win32' if is_windows else ('wayland' if is_wayland(opts) else 'x11'))
     init_glfw_module(glfw_module, debug_keyboard, debug_rendering, wayland_enable_ime=opts.wayland_enable_ime)
     return glfw_module
 
@@ -165,16 +166,20 @@ def get_icon128_path(base_path: str) -> str:
 
 def set_window_icon() -> None:
     custom_icon_path = get_custom_window_icon()[1]
-    is_x11 = not is_macos and not is_wayland()
+    is_x11 = not is_macos and not is_windows and not is_wayland()
+    # X11 wants a rasterized icon set on the window. On Windows the icon is
+    # embedded in kitty.exe (taskbar/alt-tab) and the title bar stays icon-free,
+    # so no per-window icon is set here.
+    wants_raster_icon = is_x11
     try:
         if custom_icon_path is not None:
             custom_icon128_path = get_icon128_path(custom_icon_path)
-            if is_x11 and safe_mtime(custom_icon128_path) is not None:
+            if wants_raster_icon and safe_mtime(custom_icon128_path) is not None:
                 set_default_window_icon(custom_icon128_path)
             else:
                 set_default_window_icon(custom_icon_path)
         else:
-            if is_x11:
+            if wants_raster_icon:
                 set_default_window_icon(get_icon128_path(logo_png_file))
     except ValueError as err:
         log_error(err)

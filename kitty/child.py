@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, DefaultDict, Optional, TypedDict
 
 import kitty.fast_data_types as fast_data_types
 
-from .constants import handled_signals, is_freebsd, is_macos, kitten_exe, kitty_base_dir, shell_path, terminfo_dir
+from .constants import handled_signals, is_freebsd, is_macos, is_windows, kitten_exe, kitty_base_dir, shell_path, terminfo_dir
 from .types import run_once
 from .utils import cmdline_for_hold, log_error, resolved_shell, which
 
@@ -337,6 +337,8 @@ class Child:
     def fork(self) -> int | None:
         if self.forked:
             return None
+        if is_windows:
+            return self._fork_windows()
         opts = fast_data_types.get_options()
         self.forked = True
         master, slave = openpty()
@@ -422,6 +424,29 @@ class Child:
                 log_error("Could not move child process into a systemd scope: " + str(err))
         return pid
 
+    def _fork_windows(self) -> int | None:
+        # Windows has no fork/openpty. Spawn the child through a ConPTY (see
+        # child.c). open_pty returns a readable fd carrying the child's output
+        # plus a writable fd for its input, and a pty id used to spawn/resize.
+        opts = fast_data_types.get_options()
+        self.forked = True
+        argv = list(self.argv) or list(resolved_shell(opts))
+        self.final_env, _ = self.get_final_env()
+        env = tuple(f'{k}={v}' for k, v in self.final_env.items())
+        exe = which(argv[0]) or argv[0]
+        self.final_exe = exe
+        self.final_argv0 = argv[0]
+        read_fd, write_fd, pty_id = fast_data_types.open_pty(80, 24)
+        pid = fast_data_types.spawn(pty_id, exe, self.cwd or os.getcwd(), tuple(argv), env)
+        self.pid = pid
+        self.pty_id = pty_id
+        self.windows_write_fd = write_fd
+        self.child_fd = read_fd
+        self.terminal_ready_fd = -1  # ConPTY has no ready-signal pipe
+        with suppress(OSError):
+            os.set_blocking(read_fd, False)
+        return pid
+
     def __del__(self) -> None:
         fd = getattr(self, 'terminal_ready_fd', -1)
         if fd > -1:
@@ -429,7 +454,8 @@ class Child:
         self.terminal_ready_fd = -1
 
     def mark_terminal_ready(self) -> None:
-        os.close(self.terminal_ready_fd)
+        if self.terminal_ready_fd > -1:
+            os.close(self.terminal_ready_fd)
         self.terminal_ready_fd = -1
 
     def cmdline_of_pid(self, pid: int) -> list[str]:

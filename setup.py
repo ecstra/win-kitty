@@ -425,6 +425,9 @@ def get_binary_arch(path: str) -> BinaryArch:
         bits = {0xfeedface: 32, 0xfeedfacf: 64}[s]
         cpu_type &= 0xff
         isa = {0x7: ISA.AMD64, 0xc: ISA.ARM64}[cpu_type]
+    elif sig[:2] == b'MZ':  # Windows PE/COFF (local port patch: assume host x86-64)
+        bits = 64
+        isa = ISA.AMD64
     else:
         raise SystemExit(f'Unknown binary format with signature: {sig[:4]!r}')
     return BinaryArch(bits=bits, isa=isa)
@@ -521,6 +524,8 @@ def init_env(
         cppflags.append('-DDEBUG_{}'.format(el.upper().replace('-', '_')))
     has_copy_file_range = test_compile(cc, src='#define _GNU_SOURCE 1\n#include <unistd.h>\nint main() { copy_file_range(1, NULL, 2, NULL, 0, 0); return 0; }')
     werror = '' if ignore_compiler_warnings else '-pedantic-errors -Werror'
+    if is_windows:
+        werror = ''
     sanitize_flag = ' '.join(sanitize_args)
     env_cflags = shlex.split(os.environ.get('CFLAGS', ''))
     env_cppflags = shlex.split(os.environ.get('CPPFLAGS', ''))
@@ -633,6 +638,11 @@ def init_env(
 def kitty_env(args: Options) -> Env:
     ans = env.copy()
     cflags = ans.cflags
+    if is_windows:
+        cflags.append('-mno-ms-bitfields')
+        cflags.extend(('-include', 'kitty/wincompat/win_prelude.h'))
+        cflags.append('-Ikitty/wincompat')
+        ans.cppflags.append('-DBASE64_STATIC_DEFINE')  # base64 is linked statically, not as a DLL
     cflags.append('-pthread')
     cppflags = ans.cppflags
     # We add 4000 to the primary version because vim turns on SGR mouse mode
@@ -668,6 +678,11 @@ def kitty_env(args: Options) -> Env:
         # Apple deprecated OpenGL in Mojave (10.14) silence the endless
         # warnings about it
         cppflags.append('-DGL_SILENCE_DEPRECATION')
+    elif is_windows:
+        platform_libs = []
+        for dep in ('cairo', 'fontconfig', 'freetype2'):
+            cflags.extend(pkg_config(dep, '--cflags-only-I'))
+            platform_libs.extend(pkg_config(dep, '--libs'))
     else:
         cflags.extend(pkg_config('cairo-fc', '--cflags-only-I'))
         platform_libs = []
@@ -675,12 +690,14 @@ def kitty_env(args: Options) -> Env:
     cflags.extend(pkg_config('harfbuzz', '--cflags-only-I'))
     platform_libs.extend(pkg_config('harfbuzz', '--libs'))
     pylib = get_python_flags(args, cflags)
-    gl_libs = ['-framework', 'OpenGL'] if is_macos else pkg_config('gl', '--libs')
+    gl_libs = ['-framework', 'OpenGL'] if is_macos else (['-lopengl32'] if is_windows else pkg_config('gl', '--libs'))
     libpng = pkg_config('libpng', '--libs')
     lcms2 = pkg_config('lcms2', '--libs')
     ans.ldpaths += pylib + platform_libs + gl_libs + libpng + lcms2 + libcrypto_ldflags + xxhash[1]
     if is_macos:
         ans.ldpaths.extend('-framework Cocoa'.split())
+    elif is_windows:
+        ans.ldpaths += '-lgdi32 -luser32 -ldwmapi -lws2_32 -lshell32 -limm32 -ladvapi32'.split()
     elif not is_openbsd:
         ans.ldpaths += ['-lrt']
         if '-ldl' not in ans.ldpaths:
@@ -703,11 +720,15 @@ def run_tool(cmd: Union[str, List[str]], desc: Optional[str] = None) -> None:
         # On Windows, it's generally safer to pass a single string to Popen with shell=True
         # for commands that might involve shell built-ins or complex paths.
         if isinstance(cmd, list):
-            wcmd_to_execute = shlex.join(cmd)
+            # Popen applies correct Windows quoting to an argv list. shell=True with
+            # shlex.join emits POSIX single quotes that cmd.exe keeps literally.
+            wcmd_to_execute = subprocess.list2cmdline(cmd)
+            print(desc or wcmd_to_execute)
+            p = subprocess.Popen(cmd)
         else:
             wcmd_to_execute = cmd
-        print(desc or wcmd_to_execute)
-        p = subprocess.Popen(wcmd_to_execute, shell=True)
+            print(desc or wcmd_to_execute)
+            p = subprocess.Popen(cmd, shell=True)
     else:
         # On Unix-like systems, passing a list is generally preferred for security and clarity.
         if isinstance(cmd, str):
@@ -783,6 +804,12 @@ def get_source_specific_defines(env: Env, src: str) -> Tuple[str, List[str], Opt
             env.vcs_rev = get_vcs_rev()
         return src, [], [f'KITTY_VCS_REV="{env.vcs_rev}"', f'WRAPPED_KITTENS="{wrapped_kittens()}"']
     if src.startswith('3rdparty/base64/'):
+        if is_windows:
+            # base64's own _xgetbv clashes with the mingw intrinsic pulled in by the
+            # force-included prelude. Disable its SIMD; the scalar codec is correct.
+            return src, ['3rdparty/base64',], [
+                'HAVE_AVX512=0', 'HAVE_AVX2=0', 'HAVE_AVX=0', 'HAVE_SSE42=0',
+                'HAVE_SSE41=0', 'HAVE_SSSE3=0', 'HAVE_SSE3=0', 'HAVE_NEON32=0', 'HAVE_NEON64=0']
         return src, ['3rdparty/base64',], base64_defines(env.binary_arch.isa)
     if src == 'kitty/screen.c':
         return src, [], [f'PRIMARY_VERSION={env.primary_version}', f'SECONDARY_VERSION={env.secondary_version}', f'XT_VERSION="{env.xt_version}"']
@@ -876,6 +903,21 @@ def parallel_run(items: List[Command]) -> None:
         nonlocal failed
         if not workers:
             return
+        if is_windows:
+            # os.wait() is POSIX only; drive completion off the Popen objects.
+            while True:
+                for pid, (compile_cmd, w) in list(workers.items()):
+                    rc = w.poll() if w is not None else 0
+                    if rc is None:
+                        continue
+                    workers.pop(pid, None)
+                    if rc != 0:
+                        if failed is None:
+                            failed = compile_cmd
+                    elif compile_cmd.on_success is not None:
+                        compile_cmd.on_success()
+                    return
+                time.sleep(0.005)
         pid, s = os.wait()
         compile_cmd, w = workers.pop(pid, (None, None))
         if compile_cmd is None:
@@ -973,7 +1015,7 @@ def compile_c_extension(
 ) -> None:
     prefix = os.path.basename(module)
     objects = [
-        os.path.join(build_dir, f'{prefix}-{src.replace("/", "-")}.o')
+        os.path.join(build_dir, f'{prefix}-{src.replace(os.sep, "-").replace("/", "-")}.o')
         for src in sources
     ]
 
@@ -985,7 +1027,7 @@ def compile_c_extension(
             cppflags.extend(map(define, defines))
         cflags = get_source_specific_cflags(kenv, src)
         cmd = kenv.cc + ['-MMD'] + cppflags + [f'-I{x}' for x in include_paths] + cflags
-        cmd += ['-c', src] + ['-o', dest]
+        cmd += ['-c', src.replace(os.sep, '/')] + ['-o', dest]
         key = CompileKey(original_src, os.path.basename(dest))
         desc = f'Compiling {emphasis(desc_prefix + src)} ...'
         compilation_database.add_command(desc, cmd, partial(newer, dest, *dependecies_for(src, dest, headers)), key=key, keyfile=src)
@@ -1002,7 +1044,7 @@ def compile_c_extension(
     cmd = kenv.cc + linker_cflags + kenv.ldflags + objects + kenv.ldpaths + ['-o', dest]
 
     def on_success() -> None:
-        os.rename(dest, real_dest)
+        os.replace(dest, real_dest)  # os.rename won't overwrite an existing target on Windows
 
     compilation_database.add_command(desc, cmd, partial(newer, real_dest, *objects), on_success=on_success, key=LinkKey(f'{module}.so'))
     if is_macos and build_dsym:
@@ -1020,6 +1062,8 @@ def find_c_files() -> Tuple[List[str], List[str]]:
     } if is_macos else {
         'core_text.m', 'cocoa_window.m', 'macos_process_info.c'
     }
+    if is_windows:
+        exclude |= {'systemd.c', 'simd-string-128.c', 'simd-string-256.c'}
     for x in sorted(os.listdir(d)):
         ext = os.path.splitext(x)[1]
         if ext in ('.c', '.m') and os.path.basename(x) not in exclude:
@@ -1027,6 +1071,10 @@ def find_c_files() -> Tuple[List[str], List[str]]:
         elif ext == '.h':
             headers.append(os.path.join('kitty', x))
     ans.append('kitty/vt-parser-dump.c')
+    if is_windows:
+        ans.append('kitty/wincompat/wincompat.c')
+        ans.append('kitty/wincompat/dnd_stub.c')
+        ans.append('kitty/wincompat/simd_scalar.c')
 
     # ringbuf
     ans.append('3rdparty/ringbuf/ringbuf.c')
@@ -1039,7 +1087,7 @@ def find_c_files() -> Tuple[List[str], List[str]]:
 
 
 def compile_glfw(compilation_database: CompilationDatabase, build_dsym: bool = False) -> None:
-    modules = 'cocoa' if is_macos else 'x11 wayland'
+    modules = 'cocoa' if is_macos else ('win32' if is_windows else 'x11 wayland')
     for module in modules.split():
         try:
             genv = glfw.init_env(env, pkg_config, pkg_version, at_least_version, test_compile, module)
@@ -1066,10 +1114,16 @@ def compile_glfw(compilation_database: CompilationDatabase, build_dsym: bool = F
 def kittens_env(args: Options) -> Env:
     kenv = env.copy()
     cflags = kenv.cflags
+    if is_windows:
+        cflags.append('-mno-ms-bitfields')
+        cflags.extend(('-include', 'kitty/wincompat/win_prelude.h'))
+        cflags.append('-Ikitty/wincompat')
     cflags.append('-pthread')
     cflags.append('-Ikitty')
     pylib = get_python_flags(args, cflags)
     kenv.ldpaths += pylib
+    if is_windows:
+        kenv.ldpaths += '-lws2_32 -ladvapi32'.split()
     return kenv
 
 
@@ -1229,6 +1283,9 @@ def update_go_generated_files(args: Options, kitty_exe: str) -> None:
     if args.skip_code_generation:
         print('Skipping generation of Go files due to command line option', flush=True)
         return
+    if is_windows:
+        print('Skipping Go code generation on Windows (the kitten Go tool is not yet ported)', flush=True)
+        return
     # update all the various auto-generated go files, if needed
     if args.verbose:
         print('Updating Go generated files...', flush=True)
@@ -1370,7 +1427,11 @@ def read_bool_options(path: str = 'kitty/cli.py') -> Tuple[str, ...]:
 
 def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 'source') -> str:
     cflags = ['-Wall']
-    if not args.ignore_compiler_warnings:
+    if is_windows:
+        cflags.append('-mno-ms-bitfields')
+        cflags.extend(('-include', 'kitty/wincompat/win_prelude.h'))
+        cflags.append('-Ikitty/wincompat')
+    if not args.ignore_compiler_warnings and not is_windows:
         cflags.extend(('-pedantic-errors', '-Werror'))
     if c_std:
         cflags.append(c_std)
@@ -1413,7 +1474,7 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
         klp = src_base
     else:
         raise SystemExit(f'Unknown bundle type: {bundle_type}')
-    cppflags.append(f'-DKITTY_LIB_PATH="{klp}"')
+    cppflags.append(f'-DKITTY_LIB_PATH="{klp.replace(os.sep, "/")}"')
     pylib = get_python_flags(args, cflags, for_main_executable=True)
     cppflags += shlex.split(os.environ.get('CPPFLAGS', ''))
     cflags += shlex.split(os.environ.get('CFLAGS', ''))
@@ -1432,17 +1493,35 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
     objects = []
     headers = glob.glob('kitty/launcher/*.h')
     cppflags.append('-DKITTY_VERSION="' + '.'.join(map(str, version)) + '"')
-    for src in ('kitty/launcher/main.c', 'kitty/launcher/single-instance.c', 'kitty/launcher/cmdline.c'):
+    launcher_sources = ['kitty/launcher/main.c', 'kitty/launcher/single-instance.c', 'kitty/launcher/cmdline.c']
+    if is_windows:
+        launcher_sources.append('kitty/wincompat/wincompat.c')
+    for src in launcher_sources:
         obj = os.path.join(build_dir, src.replace('/', '-').replace('.c', '.o'))
         objects.append(obj)
         cmd = env.cc + cppflags + cflags + ['-c', src, '-o', obj]
         key = CompileKey(src, os.path.basename(obj))
         args.compilation_database.add_command(
             f'Compiling {emphasis(src)} ...', cmd, partial(newer, obj, src, *dependecies_for(src, obj, headers)), key=key, keyfile=src)
-    dest = kitty_exe = os.path.join(launcher_dir, 'kitty')
+    if is_windows:
+        # Embed the kitty.ico resource so the .exe (and thus taskbar/alt-tab)
+        # carries the kitty icon, leaving the title bar itself icon-free.
+        rc = 'kitty/launcher/kitty.rc'
+        rc_obj = os.path.join(build_dir, 'kitty-launcher-kitty-rc.o')
+        objects.append(rc_obj)
+        rc_cmd = ['windres', rc, '-O', 'coff', '-o', rc_obj]
+        args.compilation_database.add_command(
+            f'Compiling {emphasis(rc)} ...', rc_cmd,
+            partial(newer, rc_obj, rc, 'kitty/launcher/kitty.ico'), key=CompileKey(rc, os.path.basename(rc_obj)), keyfile=rc)
+    dest = kitty_exe = os.path.join(launcher_dir, 'kitty.exe' if is_windows else 'kitty')
     link_targets.append(os.path.abspath(dest))
     desc = f'Linking {emphasis("launcher")} ...'
-    cmd = env.cc + ldflags + objects + libs + pylib + ['-o', dest]
+    win_libs = '-lws2_32 -ladvapi32 -luser32 -lshell32'.split() if is_windows else []
+    # A GUI terminal must be a GUI-subsystem binary. As a console-subsystem
+    # executable, Windows allocates a console for kitty and the ConPTY child
+    # attaches to it instead of staying headless inside the pseudoconsole.
+    win_subsystem = ['-mwindows'] if is_windows else []
+    cmd = env.cc + ldflags + objects + libs + pylib + win_libs + win_subsystem + ['-o', dest]
     args.compilation_database.add_command(desc, cmd, partial(newer, dest, *objects), key=LinkKey('kitty'))
     if args.build_dsym and is_macos:
         desc = f'Linking dSYM {emphasis("launcher")} ...'

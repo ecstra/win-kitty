@@ -132,10 +132,9 @@
       "win32_init.c",
       "win32_joystick.c",
       "win32_monitor.c",
-      "win32_time.c",
-      "win32_thread.c",
       "win32_window.c",
       "wgl_context.c",
+      "momentum-scroll.c",
       "egl_context.c",
       "osmesa_context.c"
     ]

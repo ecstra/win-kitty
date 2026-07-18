@@ -204,18 +204,44 @@ class Atexit:
 
     def __init__(self) -> None:
         self.worker: subprocess.Popen[bytes] | None = None
+        self.worker_unavailable = False
+        self.pending: list[str] = []
 
     def _write_line(self, line: str) -> None:
         if '\n' in line:
             raise ValueError('Newlines not allowed in atexit arguments: {path!r}')
+        if self.worker_unavailable:
+            self.pending.append(line)
+            return
         w = self.worker
         if w is None:
-            w = self.worker = subprocess.Popen([kitten_exe(), '__atexit__'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, close_fds=True)
+            try:
+                w = self.worker = subprocess.Popen([kitten_exe(), '__atexit__'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, close_fds=True)
+            except OSError:
+                # The kitten worker is unavailable (e.g. not built on Windows).
+                # Clean these paths up in-process at exit instead.
+                import atexit
+                self.worker_unavailable = True
+                atexit.register(self._cleanup_pending)
+                self.pending.append(line)
+                return
             assert w.stdin is not None
             os.set_inheritable(w.stdin.fileno(), False)
         assert w.stdin is not None
         w.stdin.write((line + '\n').encode())
         w.stdin.flush()
+
+    def _cleanup_pending(self) -> None:
+        import shutil
+        for line in self.pending:
+            cmd, _, path = line.partition(' ')
+            try:
+                if cmd == 'unlink':
+                    os.unlink(path)
+                elif cmd == 'rmtree':
+                    shutil.rmtree(path, ignore_errors=True)
+            except OSError:
+                pass
 
     def unlink(self, path: str) -> None:
         self._write_line(f'unlink {path}')
@@ -1416,9 +1442,13 @@ class Boss:
             run_update_check(get_options().update_check_interval * 60 * 60)
             self.update_check_started = True
         if opts.auto_reload_config >= 0 and not hasattr(self, 'config_reload_watcher_process') and opts.all_config_paths:
-            self.config_reload_watcher_process = subprocess.Popen(
-                [kitten_exe(), '__watch_conf__', str(os.getpid()), str(int(opts.auto_reload_config * 1000))] +
-                list(opts.all_config_paths), stdin=subprocess.PIPE)
+            try:
+                self.config_reload_watcher_process = subprocess.Popen(
+                    [kitten_exe(), '__watch_conf__', str(os.getpid()), str(int(opts.auto_reload_config * 1000))] +
+                    list(opts.all_config_paths), stdin=subprocess.PIPE)
+            except OSError:
+                # The kitten tool is unavailable (e.g. not built on Windows); skip config watching.
+                self.config_reload_watcher_process = None
 
     def handle_window_title_bar_mouse(self, os_window_id: int, window_id: int, x: float, y: float, button: int, modifiers: int, action: int) -> None:
         if tm := self.os_window_map.get(os_window_id):

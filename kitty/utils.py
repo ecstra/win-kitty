@@ -28,6 +28,7 @@ from .constants import (
     config_dir,
     is_macos,
     is_wayland,
+    is_windows,
     kitten_exe,
     runtime_dir,
     shell_path,
@@ -291,7 +292,7 @@ def end_startup_notification_x11(ctx: 'StartupCtx') -> None:
 
 
 def init_startup_notification(window_handle: int | None, startup_id: str | None = None) -> Optional['StartupCtx']:
-    if is_macos or is_wayland():
+    if is_macos or is_windows or is_wayland():
         return None
     if window_handle is None:
         log_error('Could not perform startup notification as window handle not present')
@@ -314,7 +315,7 @@ def init_startup_notification(window_handle: int | None, startup_id: str | None 
 def end_startup_notification(ctx: Optional['StartupCtx']) -> None:
     if not ctx:
         return
-    if is_macos or is_wayland():
+    if is_macos or is_windows or is_wayland():
         return
     try:
         end_startup_notification_x11(ctx)

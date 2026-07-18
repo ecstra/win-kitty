@@ -1798,6 +1798,10 @@ set_mode_from_const(Screen *self, unsigned int mode, bool val) {
             self->modes.mINBAND_RESIZE_NOTIFICATION = val;
             if (val) CALLBACK("notify_child_of_resize", NULL);
             break;
+        case 9001 << 5:
+            // win32-input-mode, enabled unconditionally by the Windows ConPTY.
+            // kitty uses the extended keyboard protocol instead, so ignore it.
+            break;
         default:
             private = mode >= 1 << 5;
             if (private) mode >>= 5;
