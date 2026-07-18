@@ -331,6 +331,7 @@ static DWORD windowStyle(const _GLFWwindow* window) {
 // acrylic-blurred backdrop behind the window's translucent pixels.
 typedef enum {
     ACCENT_DISABLED = 0,
+    ACCENT_ENABLE_TRANSPARENTGRADIENT = 2,  // translucent, no blur
     ACCENT_ENABLE_BLURBEHIND = 3,
     ACCENT_ENABLE_ACRYLICBLURBEHIND = 4,
 } ACCENT_STATE;
@@ -430,8 +431,9 @@ static void cbPaint(HWND overlay) {
             fam = NULL; GdipCreateFontFamilyFromName(L"Segoe MDL2 Assets", NULL, &fam);
         }
         void* font = NULL;
-        // ~40% of the 30px button (Windows proportion); 10px em renders too thin.
-        if (fam) GdipCreateFont(fam, (float) MulDiv(12, dpi, 96), 0 /* regular */, 2 /* pixel */, &font);
+        // Bold (style 1) thickens the otherwise hairline icon strokes; 10px keeps
+        // the glyph compact in the 30px button.
+        if (fam) GdipCreateFont(fam, (float) MulDiv(10, dpi, 96), 1 /* bold */, 2 /* pixel */, &font);
         void* fmt = NULL;
         if (GdipCreateStringFormat(0, 0, &fmt) == 0) {
             GdipSetStringFormatAlign(fmt, 1 /* center */);
@@ -471,7 +473,10 @@ static void cbPaint(HWND overlay) {
             ULONG gcol = hot ? 0xFFFFFFFFu : 0xFFE6E6E6u;
             void* gbrush = NULL;
             if (font && fmt && GdipCreateSolidFill(gcol, &gbrush) == 0) {
-                GpRectF layout = { (float) bx, (float) top, (float) bw, (float) bh };
+                // GDI+ centers the text line box, whose leading sits above the
+                // glyph ink, so the icon looks high; nudge it down to visually center.
+                float nudge = (float) MulDiv(1, dpi, 96);
+                GpRectF layout = { (float) bx, (float) top + nudge, (float) bw, (float) bh };
                 GdipDrawString(g, glyph, 1, font, &layout, fmt, gbrush);
                 GdipDeleteBrush(gbrush);
             }
@@ -598,12 +603,15 @@ static void updateWindowComposition(_GLFWwindow* window) {
     }
     if (!_glfw.win32.user32.SetWindowCompositionAttribute) return;
     ACCENT_POLICY policy = {0};
+    // The Windows accent API can only turn acrylic blur on or off (there is no
+    // blur-radius control), so background_blur acts as a toggle here: any value
+    // > 0 enables acrylic; 0 gives plain translucency (no blur).
     if (window->win32.blur > 0) {
         // DWM disables acrylic blur for maximized windows, so fall back to the
         // classic blur-behind (which does render when zoomed) in that state.
         policy.AccentState = IsZoomed(hwnd) ? ACCENT_ENABLE_BLURBEHIND : ACCENT_ENABLE_ACRYLICBLURBEHIND;
     }
-    else if (window->win32.transparent) policy.AccentState = ACCENT_ENABLE_BLURBEHIND;
+    else if (window->win32.transparent) policy.AccentState = ACCENT_ENABLE_TRANSPARENTGRADIENT;
     else policy.AccentState = ACCENT_DISABLED;
     policy.GradientColor = 0x00000000;  // no tint; the terminal's bg alpha does the rest
     WIN_COMP_ATTR_DATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
