@@ -603,23 +603,16 @@ static void updateWindowComposition(_GLFWwindow* window) {
     }
     if (!_glfw.win32.user32.SetWindowCompositionAttribute) return;
     ACCENT_POLICY policy = {0};
-    // The Windows accent API can only turn acrylic blur on or off (there is no
-    // blur-radius control), so background_blur acts as a toggle here: any value
-    // > 0 enables acrylic; 0 gives plain translucency (no blur).
-    if (window->win32.blur > 0) {
-        // DWM disables acrylic blur for maximized windows, so fall back to the
-        // classic blur-behind (which does render when zoomed) in that state.
-        policy.AccentState = IsZoomed(hwnd) ? ACCENT_ENABLE_BLURBEHIND : ACCENT_ENABLE_ACRYLICBLURBEHIND;
-    }
-    else if (window->win32.transparent) policy.AccentState = ACCENT_ENABLE_TRANSPARENTGRADIENT;
+    // background_blur is a toggle on Windows (the accent API has no blur-radius
+    // control): > 0 enables blur, 0 disables it. Per-pixel transparency for a GL
+    // window is produced by the blur compositor, so with blur off the window is
+    // opaque. Use classic blur-behind (not acrylic) because acrylic is disabled by
+    // DWM for maximized windows, which makes the blur flip on/off across the
+    // maximize<->restore transition; blur-behind stays consistent in every state.
+    if (window->win32.blur > 0) policy.AccentState = ACCENT_ENABLE_BLURBEHIND;
     else policy.AccentState = ACCENT_DISABLED;
     policy.GradientColor = 0x00000000;  // no tint; the terminal's bg alpha does the rest
     WIN_COMP_ATTR_DATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
-    // Toggle off first so DWM re-composites cleanly across maximize/restore
-    // transitions (otherwise the accent can get stuck disabled after unzoom).
-    ACCENT_POLICY off = {0};
-    WIN_COMP_ATTR_DATA offdata = { WCA_ACCENT_POLICY, &off, sizeof(off) };
-    _glfw.win32.user32.SetWindowCompositionAttribute(hwnd, &offdata);
     _glfw.win32.user32.SetWindowCompositionAttribute(hwnd, &data);
 }
 
