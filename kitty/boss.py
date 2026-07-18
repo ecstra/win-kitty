@@ -2195,7 +2195,11 @@ class Boss:
             if opts.remember_window_position and not is_wayland() and not self.os_window_map:
                 self.cached_values['window-pos'] = x, y
                 self.cached_values['monitor-workarea'] = glfw_get_monitor_workarea()
-            self.cached_values['window-size'] = viewport_width, viewport_height
+            # Only record the size when NOT maximized, so it holds the real
+            # (restore) size. Otherwise a window closed while maximized would save
+            # the full-screen size and restore to full screen on next launch.
+            if not is_maximized:
+                self.cached_values['window-size'] = viewport_width, viewport_height
             self.cached_values['window-maximized'] = is_maximized
         if tm is not None:
             tm.destroy()
