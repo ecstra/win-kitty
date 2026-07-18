@@ -470,8 +470,9 @@ static void cbPaint(HWND overlay) {
                                    : 3;
             void* bmp = cbIconBitmap(iconIdx);
             if (bmp) {
-                int gsz = MulDiv(18, dpi, 96);   // glyph box within the 30px button
-                int gx = bx + (bw - gsz) / 2, gy = top + (bh - gsz) / 2;
+                int gsz = MulDiv(16, dpi, 96);   // glyph box within the 30px button
+                int gx = bx + (bw - gsz) / 2;
+                int gy = top + (bh - gsz) / 2 + MulDiv(1, dpi, 96);  // +1px: sits 1px high otherwise
                 GdipDrawImageRectI(g, bmp, gx, gy, gsz, gsz);
             }
         }
@@ -484,10 +485,11 @@ static void cbPaint(HWND overlay) {
         px[0] = (uint8_t)(px[0] * a / 255); px[1] = (uint8_t)(px[1] * a / 255); px[2] = (uint8_t)(px[2] * a / 255);
         px += 4;
     }
-    RECT wr; GetWindowRect(overlay, &wr);
-    POINT dst = { wr.left, wr.top }, srcp = { 0, 0 }; SIZE sz = { W, H };
+    POINT srcp = { 0, 0 }; SIZE sz = { W, H };
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-    UpdateLayeredWindow(overlay, screen, &dst, &sz, dc, &srcp, 0, &bf, ULW_ALPHA);
+    // pptDst = NULL: position/size is owned by SetWindowPos (child coords); here we
+    // only refresh the per-pixel-alpha content.
+    UpdateLayeredWindow(overlay, screen, NULL, &sz, dc, &srcp, 0, &bf, ULW_ALPHA);
     SelectObject(dc, oldbm); DeleteObject(dib); DeleteDC(dc); ReleaseDC(NULL, screen);
 }
 
@@ -539,8 +541,11 @@ static void ensureCaptionButtons(_GLFWwindow* window) {
         wc.hCursor = LoadCursorW(NULL, (LPCWSTR) IDC_ARROW); wc.lpszClassName = CAPTION_CLASS;
         RegisterClassExW(&wc); classReady = true;
     }
-    HWND overlay = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-        CAPTION_CLASS, L"", WS_POPUP, 0, 0, 10, 10,
+    // A child (not popup) window so DWM animates it together with the main
+    // window during minimize/maximize/restore instead of snapping it ahead.
+    // WS_EX_LAYERED child windows are supported on Windows 8+.
+    HWND overlay = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE,
+        CAPTION_CLASS, L"", WS_CHILD, 0, 0, 10, 10,
         window->win32.handle, NULL, _glfw.win32.instance, NULL);
     if (!overlay) return;
     CaptionState* st = calloc(1, sizeof(CaptionState));
@@ -559,10 +564,10 @@ static void positionCaptionButtons(_GLFWwindow* window) {
     int strip = titlebarHeightPx(owner);
     int bw, bh, gap, pad; cbLayout(overlay, &bw, &bh, &gap, &pad);
     int W = pad * 2 + CB_COUNT * bw + (CB_COUNT - 1) * gap;
-    // top-right of the client area, in screen coords
+    // top-right of the client area; as a child window these are parent-client
+    // coordinates, so the buttons ride along with the parent through animations.
     RECT cr; GetClientRect(owner, &cr);
-    POINT tr = { cr.right, cr.top }; ClientToScreen(owner, &tr);
-    SetWindowPos(overlay, HWND_TOP, tr.x - W, tr.y, W, strip,
+    SetWindowPos(overlay, HWND_TOP, cr.right - W, cr.top, W, strip,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
     cbPaint(overlay);
 }
@@ -574,6 +579,11 @@ static void positionCaptionButtons(_GLFWwindow* window) {
 static void styleTitlebar(_GLFWwindow* window) {
     HWND hwnd = window->win32.handle;
     if (!hwnd || !_glfw.win32.dwmapi.SetWindowAttribute) return;
+    // Disable DWM's own non-client (caption) rendering from the start. We draw a
+    // custom frame, and in glass transparency DWM would otherwise paint its
+    // standard caption over ours (a title-bar flash on open, or a phantom bar).
+    DWORD ncrp = 1;  // DWMNCRP_DISABLED
+    _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 2 /* DWMWA_NCRENDERING_POLICY */, &ncrp, sizeof(ncrp));
     BOOL dark = TRUE;
     _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
     DWORD round = 2 /* DWMWCP_ROUND */;
@@ -593,11 +603,8 @@ static void updateWindowComposition(_GLFWwindow* window) {
     if (_glfw.win32.dwmapi.SetWindowAttribute) {
         DWORD backdrop = 1;  // DWMSBT_NONE
         _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
-        // In glass mode the extended frame makes DWM paint the standard caption
-        // (a phantom title bar / caption buttons) over our custom frame. Disable
-        // DWM non-client rendering there; otherwise leave it to the window style.
-        DWORD ncrp = (wantTransparent && !wantBlur) ? 1 /* DWMNCRP_DISABLED */ : 0 /* DWMNCRP_USEWINDOWSTYLE */;
-        _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 2 /* DWMWA_NCRENDERING_POLICY */, &ncrp, sizeof(ncrp));
+        // (DWM non-client rendering is disabled once in styleTitlebar so the
+        // standard caption never renders, in any mode.)
     }
     // Two independent translucency mechanisms:
     //  * blur on  -> accent blur-behind (translucent + blurred), consistent in
