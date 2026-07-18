@@ -605,11 +605,13 @@ static void updateWindowComposition(_GLFWwindow* window) {
         _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
         // (DWM non-client rendering is disabled once in styleTitlebar so the
         // standard caption never renders, in any mode.)
+        // Host-backdrop brush: sample the desktop behind the window and blur it
+        // uniformly on a redirection surface. Unlike plain blur-behind (which
+        // darkens toward the edges) and acrylic (which DWM drops when maximized),
+        // this stays even and consistent across every window state.
+        BOOL hostBackdrop = wantBlur ? TRUE : FALSE;
+        _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 17 /* DWMWA_USE_HOSTBACKDROPBRUSH */, &hostBackdrop, sizeof(hostBackdrop));
     }
-    // Two independent translucency mechanisms:
-    //  * blur on  -> accent blur-behind (translucent + blurred), consistent in
-    //    every window state (acrylic is dropped by DWM when maximized, so we do
-    //    not use it).
     //  * blur off + transparent -> extend the DWM frame across the whole client
     //    ("sheet of glass") so the GL per-pixel alpha shows the desktop with no
     //    blur (this is how "acrylic off" transparency works).
@@ -619,7 +621,9 @@ static void updateWindowComposition(_GLFWwindow* window) {
     }
     if (!_glfw.win32.user32.SetWindowCompositionAttribute) return;
     ACCENT_POLICY policy = {0};
-    policy.AccentState = wantBlur ? ACCENT_ENABLE_BLURBEHIND : ACCENT_DISABLED;
+    // Acrylic (uniform) paired with the host-backdrop brush above; falls back to
+    // blur-behind automatically on systems where acrylic is unavailable.
+    policy.AccentState = wantBlur ? ACCENT_ENABLE_ACRYLICBLURBEHIND : ACCENT_DISABLED;
     policy.GradientColor = 0x00000000;  // no tint; the terminal's bg alpha does the rest
     WIN_COMP_ATTR_DATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
     _glfw.win32.user32.SetWindowCompositionAttribute(hwnd, &data);
