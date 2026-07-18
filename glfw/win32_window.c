@@ -48,6 +48,21 @@ static int getKeyMods(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Custom title bar (frame reclaimed so the caption shares the acrylic surface)
+// ---------------------------------------------------------------------------
+
+#define KITTY_TITLEBAR_LOGICAL_PX 36
+#define KITTY_RESIZE_BORDER_LOGICAL_PX 6
+
+static UINT windowDpi(HWND hWnd) {
+    return _glfw.win32.user32.GetDpiForWindow ? _glfw.win32.user32.GetDpiForWindow(hWnd) : 96;
+}
+static int titlebarHeightPx(HWND hWnd) { return MulDiv(KITTY_TITLEBAR_LOGICAL_PX, windowDpi(hWnd), 96); }
+
+static void ensureCaptionButtons(_GLFWwindow* window);      // fwd
+static void positionCaptionButtons(_GLFWwindow* window);    // fwd
+
+// ---------------------------------------------------------------------------
 // Window procedure
 // ---------------------------------------------------------------------------
 
@@ -58,6 +73,41 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     if (!window) return DefWindowProcW(hWnd, uMsg, wParam, lParam);
 
     switch (uMsg) {
+        case WM_NCCALCSIZE: {
+            // Reclaim the whole window as client area so the caption shares the
+            // (acrylic) GL surface. Resize is provided by WM_NCHITTEST below.
+            if (!wParam || !window->win32.customFrame) break;
+            NCCALCSIZE_PARAMS* p = (NCCALCSIZE_PARAMS*) lParam;
+            if (IsZoomed(hWnd)) {
+                // Maximized: inset by the frame so nothing is clipped off-screen.
+                int fx = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                int fy = GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                p->rgrc[0].left += fx; p->rgrc[0].right -= fx;
+                p->rgrc[0].top += fy; p->rgrc[0].bottom -= fy;
+            }
+            return 0;  // client == window rect (no standard frame drawn)
+        }
+
+        case WM_NCHITTEST: {
+            if (!window->win32.customFrame) break;
+            RECT rc; GetWindowRect(hWnd, &rc);
+            int x = GET_X_LPARAM(lParam) - rc.left, y = GET_Y_LPARAM(lParam) - rc.top;
+            int w = rc.right - rc.left, h = rc.bottom - rc.top;
+            int b = MulDiv(KITTY_RESIZE_BORDER_LOGICAL_PX, windowDpi(hWnd), 96);
+            if (!IsZoomed(hWnd)) {
+                bool t = y < b, bo = y >= h - b, l = x < b, r = x >= w - b;
+                if (t && l) return HTTOPLEFT;    if (t && r) return HTTOPRIGHT;
+                if (bo && l) return HTBOTTOMLEFT; if (bo && r) return HTBOTTOMRIGHT;
+                if (t) return HTTOP; if (bo) return HTBOTTOM; if (l) return HTLEFT; if (r) return HTRIGHT;
+            }
+            if (y < titlebarHeightPx(hWnd)) return HTCAPTION;  // draggable title strip
+            return HTCLIENT;
+        }
+
+        case WM_WINDOWPOSCHANGED:
+            positionCaptionButtons(window);
+            break;  // let DefWindowProc run too
+
         case WM_CLOSE:
             _glfwInputWindowCloseRequest(window);
             return 0;
@@ -241,6 +291,10 @@ typedef struct { ACCENT_STATE AccentState; DWORD AccentFlags; DWORD GradientColo
 typedef struct { DWORD Attrib; PVOID pvData; SIZE_T cbData; } WIN_COMP_ATTR_DATA;
 #define WCA_ACCENT_POLICY 19
 
+// Caption button overlay: implemented further below. Stubs for now.
+static void ensureCaptionButtons(_GLFWwindow* window) { (void) window; }
+static void positionCaptionButtons(_GLFWwindow* window) { (void) window; }
+
 // kitty publishes its configured background colour in KITTY_TITLEBAR_RGB
 // (0xRRGGBB hex) so the caption can match it without a cross-module glfw call.
 static COLORREF titlebarColorref(void) {
@@ -320,8 +374,15 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
         if (!_glfwCreateContextWGL(window, ctxconfig, fbconfig)) return false;
         if (!_glfwRefreshContextAttribs(window, ctxconfig)) return false;
     }
+    window->win32.customFrame = window->decorated && !window->monitor;
     if (window->win32.transparent) updateWindowComposition(window);
     styleTitlebar(window);
+    if (window->win32.customFrame) {
+        ensureCaptionButtons(window);
+        // Trigger a frame recalculation now that customFrame is set.
+        SetWindowPos(window->win32.handle, NULL, 0, 0, 0, 0,
+                     SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     return true;
 }
 
