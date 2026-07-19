@@ -1476,6 +1476,12 @@ hangup(pid_t pid) {
 
 static void
 cleanup_child(ssize_t i) {
+#ifdef _WIN32
+    // Release the pty entry before its read fd is closed and the number reused,
+    // otherwise a later child that reuses the fd gets its input misrouted.
+    extern void windows_pty_close_for(int read_fd);
+    windows_pty_close_for(children[i].fd);
+#endif
     safe_close(children[i].fd, __FILE__, __LINE__);
     hangup(children[i].pid);
 }
