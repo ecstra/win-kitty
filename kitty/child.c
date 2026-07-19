@@ -500,6 +500,24 @@ windows_pty_write_fd_for(int read_fd) {
     return -1;
 }
 
+/* Release the pty whose read side is read_fd, when the child-monitor removes the
+ * child. Without this the entry leaks: its stale read_fd later shadows a child
+ * that reuses the fd number, so windows_pty_write_fd_for hands back a dead write
+ * fd and that child receives no input. Also closes the write (input) fd, which
+ * nothing else owns. The caller closes read_fd itself. */
+void
+windows_pty_close_for(int read_fd) {
+    for (int i = 0; i < MAX_PTYS; i++) {
+        if (ptys[i].in_use && ptys[i].read_fd == read_fd) {
+            if (pClosePseudoConsole && ptys[i].hpc) pClosePseudoConsole(ptys[i].hpc);
+            if (ptys[i].process) CloseHandle(ptys[i].process);
+            if (ptys[i].write_fd >= 0) _close(ptys[i].write_fd);
+            memset(&ptys[i], 0, sizeof(PtyEntry));
+            return;
+        }
+    }
+}
+
 /* Resize the pseudoconsole backing the pty whose read side is read_fd. Used by
  * the child-monitor's TIOCSWINSZ path (there is no ioctl on Windows). */
 int
