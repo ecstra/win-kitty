@@ -264,6 +264,80 @@ start_windows_reload_listener(void) {
         if (t) CloseHandle(t);
     }
 }
+
+/* Graphics-protocol side channel. Windows ConPTY (conhost) re-renders the child's
+ * output into a text grid and drops escape sequences it does not understand, so
+ * the kitty graphics protocol APC (\x1b_G...) written by a kitten never survives
+ * the trip to kitty. Instead a kitten sends the transmit command straight to kitty
+ * over this named pipe; we inject it into the target window's parser below, on the
+ * io_loop thread, exactly like bytes read from a child. The image is then placed
+ * with unicode placeholders, which are plain text and pass through conhost intact.
+ * The pipe name embeds kitty's pid (the kitten knows it via KITTY_PID); the first
+ * 8 bytes of each message are the target window id (little-endian), the rest is the
+ * raw graphics command. */
+#define GFX_QUEUE_SZ 64
+typedef struct { id_type window_id; uint8_t *data; size_t sz; } GfxInjection;
+static GfxInjection gfx_queue[GFX_QUEUE_SZ];
+static unsigned gfx_queue_count = 0;
+static pthread_mutex_t gfx_queue_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool gfx_listener_started = false;
+
+static DWORD WINAPI
+graphics_pipe_waiter(LPVOID param) {
+    (void)param;
+    char name[64];
+    snprintf(name, sizeof(name), "\\\\.\\pipe\\kitty-gfx-%lu", (unsigned long)GetCurrentProcessId());
+    while (true) {
+        HANDLE pipe = CreateNamedPipeA(name, PIPE_ACCESS_INBOUND,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES,
+            0, 1u << 16, 0, NULL);
+        if (pipe == INVALID_HANDLE_VALUE) return 0;
+        if (!ConnectNamedPipe(pipe, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
+            CloseHandle(pipe); continue;
+        }
+        size_t cap = 1u << 16, used = 0;
+        uint8_t *data = malloc(cap);
+        while (data) {
+            if (used == cap) {
+                uint8_t *nd = realloc(data, cap * 2);
+                if (!nd) { free(data); data = NULL; break; }
+                data = nd; cap *= 2;
+            }
+            DWORD got = 0;
+            if (!ReadFile(pipe, data + used, (DWORD)(cap - used), &got, NULL) || got == 0) break;
+            used += got;
+        }
+        if (data && used > 8) {
+            id_type window_id = 0;
+            for (unsigned i = 0; i < 8; i++) window_id |= ((id_type)data[i]) << (8u * i);
+            size_t dsz = used - 8;
+            uint8_t *payload = malloc(dsz);
+            if (payload) {
+                memcpy(payload, data + 8, dsz);
+                pthread_mutex_lock(&gfx_queue_lock);
+                if (gfx_queue_count < GFX_QUEUE_SZ) {
+                    gfx_queue[gfx_queue_count++] = (GfxInjection){.window_id = window_id, .data = payload, .sz = dsz};
+                    payload = NULL;
+                }
+                pthread_mutex_unlock(&gfx_queue_lock);
+                free(payload);  /* non-NULL only if the queue was full */
+                windows_wakeup_child_monitor();
+            }
+        }
+        free(data);
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+    }
+    return 0;
+}
+
+static void
+start_windows_graphics_listener(void) {
+    if (gfx_listener_started) return;
+    gfx_listener_started = true;
+    HANDLE t = CreateThread(NULL, 0, graphics_pipe_waiter, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+}
 #endif
 
 static void* io_loop(void *data);
@@ -324,6 +398,7 @@ start(PyObject *s, PyObject *a UNUSED) {
     if (ret != 0) return PyErr_Format(PyExc_OSError, "Failed to start I/O thread with error: %s", strerror(ret));
 #ifdef _WIN32
     start_windows_reload_listener();
+    start_windows_graphics_listener();
 #endif
 
     Py_RETURN_NONE;
@@ -1742,6 +1817,43 @@ write_to_child(int fd, Screen *screen) {
     screen_mutex(unlock, write);
 }
 
+#ifdef _WIN32
+/* Drain graphics commands the pipe waiter queued and feed each into its target
+ * window's parser. Runs on the io_loop thread, so filling the parser write buffer
+ * here is serialized with read_bytes() the same way. */
+static void
+drain_graphics_injections(ChildMonitor *self, bool *data_received) {
+    GfxInjection local[GFX_QUEUE_SZ];
+    unsigned count;
+    pthread_mutex_lock(&gfx_queue_lock);
+    count = gfx_queue_count;
+    for (unsigned i = 0; i < count; i++) local[i] = gfx_queue[i];
+    gfx_queue_count = 0;
+    pthread_mutex_unlock(&gfx_queue_lock);
+    for (unsigned i = 0; i < count; i++) {
+        Screen *screen = NULL;
+        for (size_t c = 0; c < self->count; c++) {
+            if (children[c].id == local[i].window_id) { screen = children[c].screen; break; }
+        }
+        if (screen) {
+            size_t off = 0;
+            while (off < local[i].sz) {
+                size_t space = 0;
+                uint8_t *buf = vt_parser_create_write_buffer(screen->vt_parser, &space);
+                if (!space) break;
+                size_t n = local[i].sz - off;
+                if (n > space) n = space;
+                memcpy(buf, local[i].data + off, n);
+                vt_parser_commit_write(screen->vt_parser, n);
+                off += n;
+            }
+            *data_received = true;
+        }
+        free(local[i].data);
+    }
+}
+#endif
+
 static void*
 io_loop(void *data) {
     // The I/O thread loop
@@ -1829,6 +1941,9 @@ io_loop(void *data) {
                 perror("Call to poll() failed");
             }
         }
+#ifdef _WIN32
+        drain_graphics_injections(self, &data_received);
+#endif
 #define WAKEUP { wakeup_main_loop(); last_main_loop_wakeup_at = now; has_pending_wakeups = false; }
         // we only wakeup the main loop after input_delay as wakeup is an expensive operation
         // on some platforms, such as cocoa

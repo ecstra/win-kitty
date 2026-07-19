@@ -106,9 +106,12 @@ func (self *Term) restore_console() {
 func SetReadTimeout(d time.Duration) TermiosOperation { return func(*Term) {} }
 
 func IsTerminal(fd uintptr) bool {
-	// A kitten always talks to kitty over its stdio, so treat the standard fds as
-	// a terminal.
-	return fd <= 2
+	// os.Stdin/Stdout/Stderr .Fd() return the underlying console HANDLE on Windows,
+	// not 0/1/2, so a fd<=2 check is always false and misfires (e.g. icat then
+	// treats the console stdin as piped image data and decodes empty -> EOF). A
+	// handle is a terminal iff it is a console; pipes and files are not.
+	var mode uint32
+	return windows.GetConsoleMode(windows.Handle(fd), &mode) == nil
 }
 
 func WrapTerm(fd int, name string, operations ...TermiosOperation) (self *Term, err error) {
