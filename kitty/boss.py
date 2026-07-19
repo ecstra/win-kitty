@@ -2413,6 +2413,17 @@ class Boss:
                 # child.c open_pty): their VT output reaches kitty untouched, so no
                 # flicker, and kitty gets EOF on exit so the overlay closes.
                 env['KITTY_KITTEN_NO_PTY'] = '1'
+                if data:
+                    # An overlay kitten's single stdin pipe carries keyboard input,
+                    # so _fork_windows cannot also feed it stdin data (a kitten like
+                    # hints would read its own keystrokes forever). Hand the data over
+                    # via a temp file the kitten reads and deletes, leaving the stdin
+                    # pipe free for keys.
+                    import tempfile
+                    dfd, dpath = tempfile.mkstemp(prefix='kitty-kitten-stdin-')
+                    with os.fdopen(dfd, 'wb') as df:
+                        df.write(data)
+                    env['KITTY_STDIN_DATA_FILE'] = dpath
             if is_wrapped:
                 cmd = [kitten_exe(), kitten]
                 env['KITTEN_RUNNING_AS_UI'] = '1'
