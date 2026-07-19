@@ -186,12 +186,27 @@ def setup_powershell_env(env: dict[str, str], argv: list[str]) -> None:
     argv.extend(('-NoExit', '-Command', f". '{script}'"))
 
 
+def setup_cmd_env(env: dict[str, str], argv: list[str]) -> None:
+    # cmd.exe has no prompt hook, but its PROMPT variable expands $E to ESC on
+    # Windows 10 plus. Build a prompt that emits an OSC 133;A mark then an OSC 2
+    # title set to the current path ($P), followed by the usual "path>" prompt.
+    # $E\ is the string terminator that ends each OSC.
+    existing = env.get('PROMPT') or '$P$G'
+    if ']133;A' in existing or ']2;' in existing:
+        return  # inherited a prompt that already carries the escape codes
+    ksi = env.get('KITTY_SHELL_INTEGRATION', '')
+    mark = '' if 'no-prompt-mark' in ksi else '$E]133;A$E\\'
+    title = '' if 'no-title' in ksi else '$E]2;$P$E\\'
+    env['PROMPT'] = mark + title + existing
+
+
 ENV_MODIFIERS = {
     'fish': setup_fish_env,
     'zsh': setup_zsh_env,
     'bash': setup_bash_env,
     'pwsh': setup_powershell_env,
     'powershell': setup_powershell_env,
+    'cmd': setup_cmd_env,
 }
 
 ENV_SERIALIZERS: dict[str, Callable[[dict[str, str]], str]] = {
