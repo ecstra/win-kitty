@@ -31,3 +31,6 @@ bypy/b
 bypy/virtual-machines.conf
 _codeql_detected_source_root
 *.pyd
+
+# Local Windows-port task list
+WINDOWS_TODO.md
