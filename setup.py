@@ -1357,7 +1357,7 @@ def build_static_kittens(
         ld_flags.append('-s')
         ld_flags.append('-w')
     cmd += ['-ldflags', ' '.join(binary_data_flags + ld_flags)]
-    dest = os.path.join(destination_dir or launcher_dir, 'kitten')
+    dest = os.path.join(destination_dir or launcher_dir, 'kitten.exe' if is_windows else 'kitten')
     if for_platform:
         dest += f'-{for_platform[0]}-{for_platform[1]}'
     src = os.path.abspath('tools/cmd')
