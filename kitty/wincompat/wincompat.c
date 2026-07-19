@@ -237,19 +237,35 @@ getpwuid(uid_t uid) {
 }
 struct passwd *getpwnam(const char *name) { (void)name; return getpwuid(0); }
 
-/* ---- mmap: anonymous only (kitty uses it for scratch buffers) ------------- */
+/* ---- mmap: anonymous scratch buffers + read-only file mappings ------------ */
 #include "sys/mman.h"
 void *
 mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
-    (void)addr; (void)fd; (void)offset;
+    (void)addr;
     if (flags & MAP_ANONYMOUS) {
         DWORD protect = (prot & PROT_WRITE) ? PAGE_READWRITE : PAGE_READONLY;
         void *p = VirtualAlloc(NULL, length, MEM_COMMIT | MEM_RESERVE, protect);
         return p ? p : MAP_FAILED;
     }
-    return MAP_FAILED;   /* file-backed mmap not implemented yet */
+    /* File-backed mapping (the graphics protocol reads image files this way). The
+     * offset is 0 for those; a non-zero offset must be a multiple of the
+     * allocation granularity, which MapViewOfFile enforces. */
+    HANDLE fh = (HANDLE)_get_osfhandle(fd);
+    if (fh == INVALID_HANDLE_VALUE || fh == (HANDLE)(intptr_t)-2) return MAP_FAILED;
+    DWORD page = (prot & PROT_WRITE) ? PAGE_READWRITE : PAGE_READONLY;
+    DWORD access = (prot & PROT_WRITE) ? FILE_MAP_WRITE : FILE_MAP_READ;
+    HANDLE mh = CreateFileMappingW(fh, NULL, page, 0, 0, NULL);
+    if (!mh) return MAP_FAILED;
+    void *p = MapViewOfFile(mh, access, (DWORD)((ULONGLONG)offset >> 32), (DWORD)((ULONGLONG)offset & 0xFFFFFFFFu), length);
+    CloseHandle(mh);  /* the view keeps the mapping alive */
+    return p ? p : MAP_FAILED;
 }
-int munmap(void *addr, size_t length) { (void)length; return VirtualFree(addr, 0, MEM_RELEASE) ? 0 : -1; }
+int munmap(void *addr, size_t length) {
+    (void)length;
+    /* File view (MapViewOfFile) vs anonymous (VirtualAlloc) - try the view first. */
+    if (UnmapViewOfFile(addr)) return 0;
+    return VirtualFree(addr, 0, MEM_RELEASE) ? 0 : -1;
+}
 int msync(void *addr, size_t length, int flags) { (void)addr;(void)length;(void)flags; return 0; }
 int mlock(const void *addr, size_t len) { (void)addr;(void)len; return 0; }
 int munlock(const void *addr, size_t len) { (void)addr;(void)len; return 0; }
