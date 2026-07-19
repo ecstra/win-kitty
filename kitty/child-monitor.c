@@ -228,6 +228,15 @@ wakeup_io_loop(ChildMonitor *self, bool in_signal_handler) {
     wakeup_loop(&self->io_loop_data, in_signal_handler, "io_loop");
 }
 
+#ifdef _WIN32
+/* Called from child.c's process-exit thread-pool callback (the Windows stand-in
+ * for SIGCHLD). Wake the io_loop so it reaps exited children. */
+void
+windows_wakeup_child_monitor(void) {
+    if (the_monitor) wakeup_io_loop(the_monitor, false);
+}
+#endif
+
 static void* io_loop(void *data);
 static void* talk_loop(void *data);
 static void send_response_to_peer(id_type peer_id, const char *msg, size_t msg_sz, bool is_async_response);
@@ -1605,6 +1614,43 @@ reap_children(ChildMonitor *self, bool enable_close_on_child_death) {
     }
 }
 
+#ifdef _WIN32
+/* Windows has no SIGCHLD and no waitpid(-1), so nothing triggers reap_children
+ * above. The io_loop calls this each pass instead. It checks every live child's
+ * process handle and marks the exited ones for removal, reaching the same end
+ * state as the pty EOF path on Unix. One non-blocking wait per child, and child.c
+ * wakes the loop the moment a child exits.
+ *
+ * A ConPTY never reports EOF, so this is the only signal that a shell has exited.
+ * That means the window always closes on shell exit, regardless of
+ * close_on_child_death (Windows cannot tell whether a backgrounded process still
+ * holds the console, which is the case that option exists to preserve). */
+static void
+windows_reap_children(ChildMonitor *self) {
+    extern bool windows_pty_child_exited(int read_fd, int *status);
+    children_mutex(lock);
+    for (size_t i = 0; i < self->count; i++) {
+        int status = 0;
+        if (children[i].pid <= 0 || children[i].needs_removal) continue;
+        if (!windows_pty_child_exited(children[i].fd, &status)) continue;
+        children[i].needs_removal = true;
+        children[i].exit_status = status;
+        children[i].child_died = true;
+        // mirror mark_monitored_pids inline (we already hold children_lock)
+        for (ssize_t j = (ssize_t)monitored_pids_count - 1; j >= 0; j--) {
+            if (children[i].pid == monitored_pids[j]) {
+                if (reaped_pids_count < arraysz(reaped_pids)) {
+                    reaped_pids[reaped_pids_count].status = status;
+                    reaped_pids[reaped_pids_count++].pid = children[i].pid;
+                }
+                remove_i_from_array(monitored_pids, (size_t)j, monitored_pids_count);
+            }
+        }
+    }
+    children_mutex(unlock);
+}
+#endif
+
 #ifdef KITTY_PRINT_BYTES_SENT_TO_CHILD
 static void
 print_text(const unsigned char *text, ssize_t sz) {
@@ -1676,6 +1722,11 @@ io_loop(void *data) {
     set_thread_name("KittyChildMon");
 
     while (LIKELY(!self->shutting_down)) {
+#ifdef _WIN32
+        // Detect exited children (no SIGCHLD here) so remove_children below closes
+        // their window. child.c wakes this loop when a process exits.
+        windows_reap_children(self);
+#endif
         children_mutex(lock);
         remove_children(self);
         add_children(self);
