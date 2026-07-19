@@ -278,6 +278,7 @@ typedef struct {
     HANDLE child_stdin;  /* pipe mode: child's stdin (inherited at spawn) */
     HANDLE child_stdout; /* pipe mode: child's stdout (inherited at spawn) */
     HANDLE process;      /* child process handle, for reaping */
+    HANDLE wait_handle;  /* RegisterWaitForSingleObject registration on process */
     int    read_fd;      /* CRT fd wrapping out_read */
     int    write_fd;     /* CRT fd wrapping in_write */
 } PtyEntry;
@@ -424,6 +425,15 @@ open_pty(PyObject *self UNUSED, PyObject *args) {
     return Py_BuildValue("iii", read_fd, write_fd, id);
 }
 
+/* Fires on a thread-pool thread when a spawned child exits. Windows has no
+ * SIGCHLD, so this stands in for it. It wakes the child monitor's io_loop, which
+ * then reaps the child (see windows_pty_child_exited) and closes its window. */
+static VOID CALLBACK
+child_exit_callback(PVOID ctx UNUSED, BOOLEAN timed_out UNUSED) {
+    extern void windows_wakeup_child_monitor(void);
+    windows_wakeup_child_monitor();
+}
+
 /* spawn(pty_id, exe, cwd, argv_tuple, env_tuple) -> pid */
 static PyObject*
 spawn(PyObject *self UNUSED, PyObject *args) {
@@ -488,7 +498,12 @@ spawn(PyObject *self UNUSED, PyObject *args) {
     if (!ok) { PyErr_SetFromWindowsErr((int)err); return NULL; }
 
     CloseHandle(pi.hThread);
-    ptys[id].process = pi.hProcess;   /* kept for reaping (Stage 4) */
+    ptys[id].process = pi.hProcess;   /* kept for reaping */
+    /* ConPTY keeps the output pipe open after the child exits (no EOF), so kitty
+     * cannot learn a shell exited by watching the pipe. Register a one-shot wait
+     * on the process instead. The callback wakes the io_loop to reap it. */
+    ptys[id].wait_handle = NULL;
+    RegisterWaitForSingleObject(&ptys[id].wait_handle, pi.hProcess, child_exit_callback, NULL, INFINITE, WT_EXECUTEONLYONCE);
     return PyLong_FromUnsignedLong(GetProcessId(pi.hProcess));
 }
 
@@ -500,6 +515,30 @@ windows_pty_write_fd_for(int read_fd) {
     return -1;
 }
 
+/* True if the child on the pty whose read side is read_fd has exited, filling in
+ * *status with its exit code. Uses the stored process HANDLE (not OpenProcess by
+ * pid) so a reused pid can never be mistaken for the still-live child. This is
+ * the Windows stand-in for waitpid(), called by the io_loop to reap children.
+ *
+ * Only ConPTY ptys (hpc != NULL) are reaped this way. A pseudoconsole keeps its
+ * output pipe open after the child exits, so there is no EOF to close a shell's
+ * window. Pipe-mode kittens are left alone. Their pipe does EOF on exit, and that
+ * path drains the child's final output (its result) before closing. Reaping them
+ * here would race ahead of that drain and lose the result. */
+bool
+windows_pty_child_exited(int read_fd, int *status) {
+    for (int i = 0; i < MAX_PTYS; i++) {
+        if (ptys[i].in_use && ptys[i].read_fd == read_fd) {
+            if (!ptys[i].process || !ptys[i].hpc) return false;
+            if (WaitForSingleObject(ptys[i].process, 0) != WAIT_OBJECT_0) return false;
+            DWORD code = 0; GetExitCodeProcess(ptys[i].process, &code);
+            if (status) *status = (int)(code & 0xff);
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Release the pty whose read side is read_fd, when the child-monitor removes the
  * child. Without this the entry leaks: its stale read_fd later shadows a child
  * that reuses the fd number, so windows_pty_write_fd_for hands back a dead write
@@ -509,6 +548,9 @@ void
 windows_pty_close_for(int read_fd) {
     for (int i = 0; i < MAX_PTYS; i++) {
         if (ptys[i].in_use && ptys[i].read_fd == read_fd) {
+            /* Cancel the exit wait (waiting for any in-flight callback) before the
+             * process handle it watches is closed. */
+            if (ptys[i].wait_handle) UnregisterWaitEx(ptys[i].wait_handle, INVALID_HANDLE_VALUE);
             if (pClosePseudoConsole && ptys[i].hpc) pClosePseudoConsole(ptys[i].hpc);
             if (ptys[i].process) CloseHandle(ptys[i].process);
             if (ptys[i].write_fd >= 0) _close(ptys[i].write_fd);
@@ -553,6 +595,7 @@ close_pty(PyObject *self UNUSED, PyObject *args) {
     int id;
     if (!PyArg_ParseTuple(args, "i", &id)) return NULL;
     if (id < 0 || id >= MAX_PTYS || !ptys[id].in_use) Py_RETURN_NONE;
+    if (ptys[id].wait_handle) UnregisterWaitEx(ptys[id].wait_handle, INVALID_HANDLE_VALUE);
     if (pClosePseudoConsole && ptys[id].hpc) pClosePseudoConsole(ptys[id].hpc);
     if (ptys[id].process) CloseHandle(ptys[id].process);
     /* read_fd/write_fd own out_read/in_write via _open_osfhandle; the fd owner
