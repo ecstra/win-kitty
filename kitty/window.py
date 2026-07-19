@@ -1522,6 +1522,21 @@ class Window:
         if pty_size[0] > -1 and self.screen.in_band_resize_notification:
             self.screen.send_escape_code_to_child(ESC_CSI, f'48;{pty_size[0]};{pty_size[1]};{pty_size[3]};{pty_size[2]}t')
 
+    def windows_conpty_flush(self) -> None:
+        # A full-screen program running in this window's Windows pseudoconsole has
+        # just switched back to the main screen (exited). conhost withholds the
+        # shell's next output (its prompt) until it receives ConPTY input, so it
+        # does not repaint until the user presses a key. Send a harmless Backspace
+        # a moment later: on the fresh, empty prompt it edits nothing, but conhost
+        # treats it as input and flushes the held output. Only meaningful on
+        # Windows, where the shell runs in a pseudoconsole.
+        if getattr(self.child, 'pty_id', None) is None:
+            return
+
+        def nudge(timer_id: int | None = None) -> None:
+            self.write_to_child(b'\x7f')
+        add_timer(nudge, 0.08, False)
+
     def color_control(self, code: int, value: str | bytes | memoryview = '') -> None:
         response = color_control(self.screen.color_profile, code, value)
         if response:
