@@ -32,6 +32,7 @@ from .constants import (
     appname,
     clear_handled_signals,
     config_dir,
+    is_windows,
     kitten_exe,
     unserialize_launch_flag,
     wakeup_io_loop,
@@ -753,7 +754,10 @@ class Window:
         self.needs_attention = False
         self.ignore_focus_changes = self.initial_ignore_focus_changes
         self.override_title = override_title
-        self.default_title = os.path.basename(child.argv[0] or appname)
+        # On Windows the shell reports no useful title on its own (conhost sends
+        # the exe path, which is filtered in title_changed), so fall back to a
+        # neutral name until shell integration reports the folder.
+        self.default_title = 'New Tab' if is_windows else os.path.basename(child.argv[0] or appname)
         self.child_title = self.default_title
         self.title_stack: Deque[str] = deque(maxlen=10)
         self.user_vars: dict[str, str] = {}
@@ -1442,7 +1446,14 @@ class Window:
             update_ime_position_for_window(self.id, False, -1)
 
     def title_changed(self, new_title: memoryview | None, is_base64: bool = False) -> None:
-        self.child_title = process_title_from_child(new_title or memoryview(b''), is_base64, self.default_title)
+        title = process_title_from_child(new_title or memoryview(b''), is_base64, self.default_title)
+        if is_windows and title and os.path.isabs(title) and title.lower().endswith('.exe'):
+            # conhost sets the console title to the running exe's full path, which
+            # arrives here as an OSC title. A bare absolute path to an .exe is never
+            # a title a program sets deliberately, so ignore it and keep the default
+            # showing until the shell reports something real (its folder).
+            return
+        self.child_title = title
         self.call_watchers(self.watchers.on_title_change, {'title': self.child_title, 'from_child': True})
         if self.override_title is None:
             self.title_updated()
