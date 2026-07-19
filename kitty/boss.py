@@ -2406,6 +2406,8 @@ class Boss:
                 'OVERLAID_WINDOW_LINES': str(w.screen.lines),
                 'OVERLAID_WINDOW_COLS': str(w.screen.columns),
             }
+            if os.environ.get('KITTEN_INPUT_LOG'):  # opt-in input diagnostic for the Go kittens
+                env['KITTEN_INPUT_LOG'] = os.environ['KITTEN_INPUT_LOG']
             if is_windows:
                 # Run kittens over plain pipes rather than a pseudoconsole (see
                 # child.c open_pty): their VT output reaches kitty untouched, so no

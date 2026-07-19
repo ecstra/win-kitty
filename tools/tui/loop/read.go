@@ -5,6 +5,7 @@ package loop
 import (
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -16,6 +17,14 @@ import (
 var _ = fmt.Print
 
 func (self *Loop) dispatch_input_data(data []byte) error {
+	// Opt-in diagnostic: set KITTEN_INPUT_LOG to a file path to record every chunk
+	// of input the kitten receives from the terminal. Used to debug key handling.
+	if p := os.Getenv("KITTEN_INPUT_LOG"); p != "" {
+		if f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			fmt.Fprintf(f, "%q\n", string(data))
+			f.Close()
+		}
+	}
 	if self.OnReceivedData != nil {
 		err := self.OnReceivedData(data)
 		if err != nil {
