@@ -312,10 +312,6 @@ def local_docs() -> str:
 def wrapped_kitten_names() -> frozenset[str]:
     import kitty.fast_data_types as f
     ans = frozenset(f.wrapped_kitten_names())
-    if is_windows:
-        # These kittens have Python implementations that run through the console
-        # launcher. The Go tool they would otherwise use is not built on Windows.
-        ans = ans - {'ask'}
     return ans
 
 
