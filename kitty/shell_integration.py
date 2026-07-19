@@ -172,10 +172,26 @@ def fish_serialize_env(env: dict[str, str]) -> str:
     return '\n'.join(ans)
 
 
+def setup_powershell_env(env: dict[str, str], argv: list[str]) -> None:
+    # PowerShell has no ENV or ZDOTDIR style startup hook, so dot-source the
+    # integration script by appending it to the launch command. Skip when the
+    # shell is run non-interactively (an explicit command or script was given),
+    # since -Command would consume the rest of the line.
+    non_interactive = {'c', 'command', 'f', 'file', 'e', 'ec', 'encodedcommand', 'commandwithargs', 'cwa'}
+    for a in argv[1:]:
+        if a.lstrip('-/').lower() in non_interactive:
+            return
+    script = os.path.join(shell_integration_dir, 'powershell', 'kitty.ps1')
+    # -Command must come last as its value is the remainder of the line.
+    argv.extend(('-NoExit', '-Command', f". '{script}'"))
+
+
 ENV_MODIFIERS = {
     'fish': setup_fish_env,
     'zsh': setup_zsh_env,
     'bash': setup_bash_env,
+    'pwsh': setup_powershell_env,
+    'powershell': setup_powershell_env,
 }
 
 ENV_SERIALIZERS: dict[str, Callable[[dict[str, str]], str]] = {
