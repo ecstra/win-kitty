@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/kovidgoyal/kitty"
 	"github.com/kovidgoyal/kitty/tools/cli/markup"
 	"github.com/kovidgoyal/kitty/tools/tty"
@@ -223,15 +221,7 @@ func (self *Command) ShowHelpWithCommandString(cs string) {
 	formatter := markup.New(tty.IsTerminal(os.Stdout.Fd()))
 	screen_width := 80
 	if formatter.EscapeCodesAllowed() {
-		var sz *unix.Winsize
-		var tty_size_err error
-		for {
-			sz, tty_size_err = unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)
-			if tty_size_err != unix.EINTR {
-				break
-			}
-		}
-		if tty_size_err == nil && sz.Col < 80 {
+		if sz, tty_size_err := tty.GetSize(int(os.Stdout.Fd())); tty_size_err == nil && sz.Col < 80 {
 			screen_width = int(sz.Col)
 		}
 	}

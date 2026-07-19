@@ -20,8 +20,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/tui/graphics"
 	"github.com/kovidgoyal/kitty/tools/utils"
 	"github.com/kovidgoyal/kitty/tools/utils/style"
-
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -59,7 +57,7 @@ var files_channel chan input_arg
 var output_channel chan *image_data
 var num_of_items int
 var keep_going *atomic.Bool
-var screen_size *unix.Winsize
+var screen_size *tty.Winsize
 var fit_mode fit_t
 
 func send_output(imgd *image_data) {
@@ -194,7 +192,7 @@ func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 		if len(parts) != 4 {
 			return 1, fmt.Errorf("Invalid size specification: %s", opts.UseWindowSize)
 		}
-		screen_size = &unix.Winsize{}
+		screen_size = &tty.Winsize{}
 		var t uint64
 		if t, err = strconv.ParseUint(parts[0], 10, 16); err != nil || t < 1 {
 			return 1, fmt.Errorf("Invalid size specification: %s with error: %w", opts.UseWindowSize, err)
