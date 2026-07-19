@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/kovidgoyal/kitty/kittens/ssh"
@@ -184,9 +185,12 @@ func main(_ *cli.Command, opts_ *Options, args []string) (rc int, err error) {
 		return "", nil
 	}
 	lp.OnCapabilitiesReceived = func(tc loop.TerminalCapabilities) error {
-		if !tc.KeyboardProtocol {
+		if !tc.KeyboardProtocol && runtime.GOOS != "windows" {
 			return fmt.Errorf("This terminal does not support the kitty keyboard protocol, or you are running inside a terminal multiplexer that is blocking querying for kitty keyboard protocol support. The diff kitten cannot function without it.")
 		}
+		// On Windows the pseudoconsole (conhost) does not relay the kitty
+		// keyboard-protocol reply even though kitty itself supports it. Legacy key
+		// input still works for navigating the diff, so continue.
 		h.on_capabilities_received(tc)
 		return nil
 	}
