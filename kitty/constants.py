@@ -93,6 +93,19 @@ def kitten_exe() -> str:
     return os.path.join(os.path.dirname(kitty_exe()), 'kitten.exe' if is_windows else 'kitten')
 
 
+@run_once
+def kitten_host_exe() -> str:
+    # GUI-subsystem kitty.exe cannot attach to the pseudoconsole it is spawned
+    # into, so a Python kitten launched through it has no console and no stdio. On
+    # Windows kittens run through a console-subsystem twin of the launcher, which
+    # does attach to the pty. Elsewhere the normal kitty binary hosts them.
+    if is_windows:
+        host = os.path.join(os.path.dirname(kitty_exe()), 'kitty-console.exe')
+        if os.access(host, os.X_OK):
+            return host
+    return kitty_exe()
+
+
 def _get_config_dir() -> str:
     cdir = kitty_run_data.get('config_dir', '')
     if cdir:

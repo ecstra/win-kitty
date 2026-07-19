@@ -53,6 +53,7 @@ from .constants import (
     is_wayland,
     is_windows,
     kitten_exe,
+    kitten_host_exe,
     kitty_exe,
     logo_png_file,
     supports_primary_selection,
@@ -2405,7 +2406,7 @@ class Boss:
                 if w is not None:
                     env['KITTY_BASIC_COLORS'] = json.dumps(w.screen.color_profile.basic_colors())
             else:
-                cmd = [kitty_exe(), '+runpy', 'from kittens.runner import main; main()']
+                cmd = [kitten_host_exe(), '+runpy', 'from kittens.runner import main; main()']
                 env['PYTHONWARNINGS'] = 'ignore'
             remote_control_fd = -1
             if end_kitten.allow_remote_control:

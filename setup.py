@@ -1523,6 +1523,16 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
     win_subsystem = ['-mwindows'] if is_windows else []
     cmd = env.cc + ldflags + objects + libs + pylib + win_libs + win_subsystem + ['-o', dest]
     args.compilation_database.add_command(desc, cmd, partial(newer, dest, *objects), key=LinkKey('kitty'))
+    if is_windows:
+        # A console-subsystem twin of the launcher. GUI-subsystem kitty.exe cannot
+        # attach to the pseudoconsole it is spawned into, so a Python kitten run
+        # through it has no console and no stdio. This console build attaches to
+        # the pty, giving kittens the console I/O their TUI loop needs.
+        console_dest = os.path.join(launcher_dir, 'kitty-console.exe')
+        link_targets.append(os.path.abspath(console_dest))
+        ccmd = env.cc + ldflags + objects + libs + pylib + win_libs + ['-o', console_dest]
+        args.compilation_database.add_command(
+            f'Linking {emphasis("console launcher")} ...', ccmd, partial(newer, console_dest, *objects), key=LinkKey('kitty-console'))
     if args.build_dsym and is_macos:
         desc = f'Linking dSYM {emphasis("launcher")} ...'
         dsym = f'{dest}.dSYM/Contents/Resources/DWARF/{os.path.basename(dest)}'
