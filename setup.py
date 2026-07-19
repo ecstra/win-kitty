@@ -1075,6 +1075,7 @@ def find_c_files() -> Tuple[List[str], List[str]]:
         ans.append('kitty/wincompat/wincompat.c')
         ans.append('kitty/wincompat/dnd_stub.c')
         ans.append('kitty/wincompat/simd_scalar.c')
+        ans.append('kitty/wincompat/win_process_info.c')
 
     # ringbuf
     ans.append('3rdparty/ringbuf/ringbuf.c')

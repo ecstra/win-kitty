@@ -58,6 +58,13 @@ else:
                 raise ValueError(f'Failed to find cwd of process with pid: {pid}')
             ans = cp.stdout.decode('utf-8', 'replace').split()[1]
             return os.path.realpath(ans, strict=True)
+    elif is_windows:
+        from kitty.fast_data_types import cwd_of_process as _win_cwd
+
+        def cwd_of_process(pid: int) -> str:
+            # Reads the process PEB, so no /proc dependency. realpath resolves any
+            # substituted-drive or short-name components for a stable title.
+            return os.path.realpath(_win_cwd(pid), strict=True)
     else:
         def cwd_of_process(pid: int) -> str:
             # We use realpath instead of readlink to match macOS behavior where
