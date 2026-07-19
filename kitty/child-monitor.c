@@ -235,6 +235,35 @@ void
 windows_wakeup_child_monitor(void) {
     if (the_monitor) wakeup_io_loop(the_monitor, false);
 }
+
+/* Windows has no SIGUSR1, so a config-reload request (e.g. from the themes
+ * kitten after it writes the chosen theme) is delivered via a per-process named
+ * event. A dedicated thread waits on it and sets the same flag the SIGUSR1
+ * handler would on POSIX, then wakes the io_loop. The event name embeds kitty's
+ * pid so the kitten, which knows it via KITTY_PID, can open and signal it. */
+static HANDLE reload_event = NULL;
+
+static DWORD WINAPI
+reload_event_waiter(LPVOID param) {
+    HANDLE ev = (HANDLE)param;
+    while (WaitForSingleObject(ev, INFINITE) == WAIT_OBJECT_0) {
+        reload_config_signal_received = true;
+        windows_wakeup_child_monitor();
+    }
+    return 0;
+}
+
+static void
+start_windows_reload_listener(void) {
+    if (reload_event) return;
+    wchar_t name[64];
+    _snwprintf(name, sizeof(name) / sizeof(name[0]), L"Local\\kitty-reload-%lu", (unsigned long)GetCurrentProcessId());
+    reload_event = CreateEventW(NULL, FALSE, FALSE, name);  /* auto-reset, initially non-signaled */
+    if (reload_event) {
+        HANDLE t = CreateThread(NULL, 0, reload_event_waiter, reload_event, 0, NULL);
+        if (t) CloseHandle(t);
+    }
+}
 #endif
 
 static void* io_loop(void *data);
@@ -293,6 +322,9 @@ start(PyObject *s, PyObject *a UNUSED) {
     }
     ret = pthread_create(&self->io_thread, NULL, io_loop, self);
     if (ret != 0) return PyErr_Format(PyExc_OSError, "Failed to start I/O thread with error: %s", strerror(ret));
+#ifdef _WIN32
+    start_windows_reload_listener();
+#endif
 
     Py_RETURN_NONE;
 }
