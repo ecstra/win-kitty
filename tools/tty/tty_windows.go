@@ -124,7 +124,39 @@ func WrapTerm(fd int, name string, operations ...TermiosOperation) (self *Term, 
 	return
 }
 
+// open_console_handle opens a console pseudo-file (CONIN$/CONOUT$) with sharing so
+// it works even while the shell already holds the console.
+func open_console_handle(name string, access uint32) (*os.File, error) {
+	p, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.CreateFile(p, access, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(h), name), nil
+}
+
 func OpenControllingTerm(operations ...TermiosOperation) (self *Term, err error) {
+	// The Windows equivalent of /dev/tty is the console itself, opened as
+	// CONIN$/CONOUT$. Open it directly so terminal I/O works even when stdin or
+	// stdout are redirected (e.g. `echo x | kitten clipboard`, where stdin is a
+	// pipe and reading it would hit EOF instead of the terminal). Overlay kittens
+	// run over pipes with no console, so GetConsoleMode fails there and we fall
+	// back to the stdio kitty talks to them over.
+	var mode uint32
+	if windows.GetConsoleMode(windows.Handle(os.Stdout.Fd()), &mode) == nil {
+		access := uint32(windows.GENERIC_READ | windows.GENERIC_WRITE)
+		if in, ierr := open_console_handle("CONIN$", access); ierr == nil {
+			if out, oerr := open_console_handle("CONOUT$", access); oerr == nil {
+				self = &Term{in: in, out: out, owns_file: true}
+				_ = self.ApplyOperations(TCSANOW, operations...)
+				return
+			}
+			in.Close()
+		}
+	}
 	self = &Term{in: os.Stdin, out: os.Stdout}
 	_ = self.ApplyOperations(TCSANOW, operations...)
 	return
@@ -145,8 +177,13 @@ func (self *Term) Fd() int {
 func (self *Term) Close() error {
 	self.restore_console()
 	var err error
-	if self.owns_file && self.in != nil {
-		err = self.in.Close()
+	if self.owns_file {
+		if self.out != nil && self.out != self.in {
+			self.out.Close()
+		}
+		if self.in != nil {
+			err = self.in.Close()
+		}
 	}
 	self.in, self.out = nil, nil
 	return err
