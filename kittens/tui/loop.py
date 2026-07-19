@@ -457,22 +457,40 @@ class Loop:
 
     def _loop_impl_windows(self, handler: Handler, term_manager: TermManager, image_manager: ImageManagerType | None = None) -> str | None:
         # Windows asyncio cannot wait on a console handle, so a reader thread
-        # blocks on the console and hands bytes back through the loop, while
-        # writes go straight to the console (they do not block meaningfully).
+        # blocks on the console and hands bytes back through the loop.
         import threading
+
+        from .loop_win32 import cancel_console_read
         self.write_buf = []
         console = term_manager.console
         assert console is not None
         tb: str | None = None
+        flush_scheduled = False
 
-        def schedule_write(data: bytes) -> None:
+        def flush() -> None:
+            # Coalesce a whole frame into one console write. Writing each fragment
+            # as it arrives let kitty render the half-cleared screen between them,
+            # which showed up as flicker on every keystroke.
+            nonlocal flush_scheduled
+            flush_scheduled = False
+            if not self.write_buf:
+                return
+            data = b''.join(self.write_buf)
+            self.write_buf = []
             try:
                 console.write(data)
             except Exception:
                 handler.terminal_io_ended = True
                 self.quit(1)
                 return
-            self.asyncio_loop.call_soon(handler.on_writing_finished)
+            handler.on_writing_finished()
+
+        def schedule_write(data: bytes) -> None:
+            nonlocal flush_scheduled
+            self.write_buf.append(data)
+            if not flush_scheduled:
+                flush_scheduled = True
+                self.asyncio_loop.call_soon(flush)
 
         def handle_exception(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
             nonlocal tb
@@ -490,16 +508,15 @@ class Loop:
 
         def reader() -> None:
             while not stop_reading.is_set():
+                data = console.read()
+                if stop_reading.is_set():
+                    return
                 try:
-                    data = console.read()
-                except Exception:
-                    data = b''
-                try:
-                    if data:
-                        self.asyncio_loop.call_soon_threadsafe(self._win_feed, handler, data)
-                    else:
+                    if data is None:
                         self.asyncio_loop.call_soon_threadsafe(self._win_eof, handler)
                         return
+                    if data:
+                        self.asyncio_loop.call_soon_threadsafe(self._win_feed, handler, data)
                 except RuntimeError:
                     return  # the loop was stopped during shutdown
 
@@ -509,7 +526,11 @@ class Loop:
             reader_thread = threading.Thread(target=reader, name='kitten-console-reader', daemon=True)
             reader_thread.start()
             self.asyncio_loop.run_forever()
+            # Unblock the reader's console read so the process can exit cleanly and
+            # kitty closes the overlay. A blocked read would otherwise hang exit.
             stop_reading.set()
+            cancel_console_read(reader_thread)
+            reader_thread.join(timeout=1.0)
         return tb
 
     def loop_impl(self, handler: Handler, term_manager: TermManager, image_manager: ImageManagerType | None = None) -> str | None:
