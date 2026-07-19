@@ -218,7 +218,9 @@ class Atexit:
         w = self.worker
         if w is None:
             try:
-                w = self.worker = subprocess.Popen([kitten_exe(), '__atexit__'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, close_fds=True)
+                w = self.worker = subprocess.Popen(
+                    [kitten_exe(), '__atexit__'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, close_fds=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if is_windows else 0)
             except OSError:
                 # The kitten worker is unavailable (e.g. not built on Windows).
                 # Clean these paths up in-process at exit instead.
@@ -1447,7 +1449,8 @@ class Boss:
             try:
                 self.config_reload_watcher_process = subprocess.Popen(
                     [kitten_exe(), '__watch_conf__', str(os.getpid()), str(int(opts.auto_reload_config * 1000))] +
-                    list(opts.all_config_paths), stdin=subprocess.PIPE)
+                    list(opts.all_config_paths), stdin=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NO_WINDOW if is_windows else 0)
             except OSError:
                 # The kitten tool is unavailable (e.g. not built on Windows); skip config watching.
                 self.config_reload_watcher_process = None
