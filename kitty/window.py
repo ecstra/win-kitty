@@ -2380,6 +2380,11 @@ class Window:
     def paste(self, text: str) -> None:
         self.paste_with_actions(text)
 
+    @ac('cp', 'Select all text on the screen and in the scrollback')
+    def select_all(self) -> None:
+        self.screen.select_all()
+        self.refresh()
+
     @ac('cp', 'Copy the selected text from the active window to the clipboard')
     def copy_to_clipboard(self) -> None:
         text = self.text_for_selection()

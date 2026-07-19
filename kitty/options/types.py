@@ -871,6 +871,8 @@ defaults.watcher = {}
 defaults.map = [
     # copy_to_clipboard
     KeyDefinition(trigger=SingleKey(mods=256, key=99), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='copy_to_clipboard'),
+    # select_all
+    KeyDefinition(trigger=SingleKey(mods=256, key=97), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='select_all'),
     # paste_from_clipboard
     KeyDefinition(trigger=SingleKey(mods=256, key=118), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='paste_from_clipboard'),
     # paste_from_selection
@@ -1013,14 +1015,6 @@ defaults.map = [
     KeyDefinition(trigger=SingleKey(mods=256, key=57365), definition='edit_config_file'),
     # kitty_shell
     KeyDefinition(trigger=SingleKey(mods=256, key=57344), definition='kitty_shell window'),
-    # increase_background_opacity
-    KeyDefinition(is_sequence=True, trigger=SingleKey(mods=256, key=97), rest=(SingleKey(key=109),), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='set_background_opacity +0.1'),
-    # decrease_background_opacity
-    KeyDefinition(is_sequence=True, trigger=SingleKey(mods=256, key=97), rest=(SingleKey(key=108),), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='set_background_opacity -0.1'),
-    # full_background_opacity
-    KeyDefinition(is_sequence=True, trigger=SingleKey(mods=256, key=97), rest=(SingleKey(key=49),), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='set_background_opacity 1'),
-    # reset_background_opacity
-    KeyDefinition(is_sequence=True, trigger=SingleKey(mods=256, key=97), rest=(SingleKey(key=100),), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='set_background_opacity default'),
     # reset_terminal
     KeyDefinition(trigger=SingleKey(mods=256, key=57349), definition='clear_terminal reset active'),
     # reload_config_file
