@@ -5109,6 +5109,29 @@ start_selection(Screen *self, PyObject *args) {
 }
 
 static PyObject*
+select_all(Screen *self, PyObject *a UNUSED) {
+    screen_pause_rendering(self, false, 0);
+    ensure_space_for(&self->selections, items, Selection, 1, capacity, 1, false);
+    memset(self->selections.items, 0, sizeof(Selection));
+    self->selections.count = 1;
+    self->selections.in_progress = false;
+    self->selections.extend_mode = EXTEND_CELL;
+    Selection *s = self->selections.items;
+    s->last_rendered.y = INT_MAX;
+    // Absolute y is boundary.y - scrolled_by, so a start scroll of the whole
+    // history count anchors the start at the oldest scrollback line. The end runs
+    // to the bottom-right cell of the last screen line (end in the right half of
+    // the cell so that cell is included).
+    s->start_scrolled_by = self->historybuf->count;
+    s->start.in_left_half_of_cell = true;
+    s->end.x = self->columns ? self->columns - 1 : 0;
+    s->end.y = self->lines ? self->lines - 1 : 0;
+    s->input_start = s->start;
+    s->input_current = s->end;
+    Py_RETURN_NONE;
+}
+
+static PyObject*
 is_rectangle_select(Screen *self, PyObject *a UNUSED) {
     if (self->selections.count && self->selections.items[0].rectangle_select) Py_RETURN_TRUE;
     Py_RETURN_FALSE;
@@ -6363,6 +6386,7 @@ static PyMethodDef methods[] = {
     MND(reset_tab_stops, METH_NOARGS)
     MND(start_selection, METH_VARARGS)
     MND(update_selection, METH_VARARGS)
+    MND(select_all, METH_NOARGS)
     {"clear_selection", (PyCFunction)clear_selection_, METH_NOARGS, ""},
     MND(reverse_index, METH_NOARGS)
     MND(mark_as_dirty, METH_NOARGS)
