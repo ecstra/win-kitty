@@ -437,8 +437,10 @@ class Child:
         # plus a writable fd for its input, and a pty id used to spawn/resize.
         opts = fast_data_types.get_options()
         self.forked = True
-        argv = list(self.argv) or list(resolved_shell(opts))
+        # get_final_env runs shell integration, which may append to self.argv (for
+        # example the PowerShell integration), so read argv only after it.
         self.final_env, _ = self.get_final_env()
+        argv = list(self.argv) or list(resolved_shell(opts))
         env = tuple(f'{k}={v}' for k, v in self.final_env.items())
         exe = which(argv[0]) or argv[0]
         self.final_exe = exe
