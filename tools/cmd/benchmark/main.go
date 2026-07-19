@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kovidgoyal/kitty/tools/cli"
@@ -16,8 +17,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/tui/graphics"
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
 	"github.com/kovidgoyal/kitty/tools/utils"
-
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -103,7 +102,7 @@ func benchmark_data(description string, data string, opts Options) (duration tim
 	for !bytes.Contains(read_data, q) {
 		n, err := term.Read(buf)
 		if err != nil {
-			if (errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EINTR)) && n == 0 {
+			if (errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EINTR)) && n == 0 {
 				continue
 			}
 			break

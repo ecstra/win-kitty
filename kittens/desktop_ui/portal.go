@@ -338,7 +338,7 @@ func IsDir(x string) bool {
 
 var WritableDataDirs = sync.OnceValue(func() (ans []string) {
 	for _, x := range DataDirs() {
-		if err := os.MkdirAll(x, 0o755); err == nil && unix.Access(x, unix.W_OK) == nil {
+		if err := os.MkdirAll(x, 0o755); err == nil && utils.Access(x, utils.AccessWrite) == nil {
 			ans = append(ans, x)
 		}
 	}
@@ -396,7 +396,7 @@ func enable_portal() (err error) {
 	for _, x := range WritableDataDirs() {
 		// Find-or-create the first available xdg-desktop-portals/portals directory
 		q := filepath.Join(x, "xdg-desktop-portal", "portals")
-		if (unix.Access(q, unix.W_OK) == nil && IsDir(q)) || (os.MkdirAll(q, 0o755) == nil) {
+		if (utils.Access(q, utils.AccessWrite) == nil && IsDir(q)) || (os.MkdirAll(q, 0o755) == nil) {
 			portals_dir = q
 			break
 		}

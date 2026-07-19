@@ -209,7 +209,7 @@ func edit_in_kitty(path string, opts *Options) (exit_code int, err error) {
 	}
 	add_encoded := func(key, val string) { add(key, encode(val)) }
 
-	if unix.Access(path, unix.R_OK|unix.W_OK) != nil {
+	if utils.Access(path, utils.AccessRead|utils.AccessWrite) != nil {
 		return 1, fmt.Errorf("%s is not readable and writeable", path)
 	}
 	cwd, err := os.Getwd()

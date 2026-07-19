@@ -12,8 +12,6 @@ import (
 	"runtime"
 	"strings"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/kovidgoyal/kitty/kittens/ask"
 	"github.com/kovidgoyal/kitty/tools/cli"
 	"github.com/kovidgoyal/kitty/tools/cli/markup"
@@ -65,7 +63,7 @@ func confirm_and_run_exe(args []string) (rc int, err error) {
 		if exe == "" {
 			return 1, fmt.Errorf("Failed to find the script interpreter: %s", args[0])
 		}
-		if err = unix.Exec(exe, []string{exe}, os.Environ()); err != nil {
+		if err = utils.Exec(exe, []string{exe}, os.Environ()); err != nil {
 			rc = 1
 		}
 	} else {
@@ -83,7 +81,7 @@ func confirm_and_run_shebang(args []string, confirm_policy ConfirmPolicy) (rc in
 	case ConfirmAlways:
 		do_confirm = true
 	case ConfirmIfNeeded:
-		do_confirm = unix.Access(script_path, unix.X_OK) != nil
+		do_confirm = utils.Access(script_path, utils.AccessExec) != nil
 	}
 	if do_confirm {
 		response, err := ask_for_permission(script_path)
@@ -136,7 +134,7 @@ func confirm_and_run_shebang(args []string, confirm_policy ConfirmPolicy) (rc in
 	if exe == "" {
 		return 1, fmt.Errorf("Failed to find the script interpreter: %s", args[0])
 	}
-	err = unix.Exec(exe, args, os.Environ())
+	err = utils.Exec(exe, args, os.Environ())
 	if err != nil {
 		rc = 1
 	}

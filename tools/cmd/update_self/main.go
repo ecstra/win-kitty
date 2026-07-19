@@ -13,8 +13,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/tty"
 	"github.com/kovidgoyal/kitty/tools/tui"
 	"github.com/kovidgoyal/kitty/tools/utils"
-
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -65,7 +63,7 @@ func update_self(version string) (err error) {
 		}
 	}
 	fmt.Print("Updated to: ")
-	return unix.Exec(exe, []string{"kitten", "--version"}, os.Environ())
+	return utils.Exec(exe, []string{"kitten", "--version"}, os.Environ())
 }
 
 func EntryPoint(root *cli.Command) *cli.Command {

@@ -22,7 +22,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/utils"
 
 	"github.com/shirou/gopsutil/v4/process"
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -79,7 +78,7 @@ func geninclude(path string) (string, error) {
 	cmd := exec.Command(path)
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "KITTY_OS="+kitty_os())
-	if strings.HasSuffix(path, ".py") && unix.Access(path, unix.X_OK) != nil {
+	if strings.HasSuffix(path, ".py") && utils.Access(path, utils.AccessExec) != nil {
 		if utils.KittyExe() == "" || strings.HasPrefix(path, ":") {
 			cmd = exec.Command("python", path)
 		} else {
@@ -442,7 +441,7 @@ func ReloadConfigInKitty(in_parent_only bool) error {
 			if p, err := process.NewProcess(int32(pid)); err == nil {
 				if exe, eerr := p.Exe(); eerr == nil {
 					if c, err := p.CmdlineSlice(); err == nil && is_kitty_gui_cmdline(exe, c...) {
-						return p.SendSignal(unix.SIGUSR1)
+						return send_reload_signal(p)
 					}
 				}
 			}
@@ -461,7 +460,7 @@ func ReloadConfigInKitty(in_parent_only bool) error {
 					if p, err := process.NewProcess(int32(pid)); err == nil {
 						if cmdline, err := p.CmdlineSlice(); err == nil {
 							if exe, err := p.Exe(); err == nil && is_kitty_gui_cmdline(exe, cmdline...) {
-								_ = p.SendSignal(unix.SIGUSR1)
+								_ = send_reload_signal(p)
 							}
 						}
 					}
@@ -482,7 +481,7 @@ func ReadKittyConfig(line_handler func(key, val string) error, override_effectiv
 	}
 	if _, err := strconv.Atoi(kp); err == nil && kitty_conf_path == "" {
 		effective_config_path := filepath.Join(utils.CacheDir(), "effective-config", kp)
-		if unix.Access(effective_config_path, unix.R_OK) == nil {
+		if utils.Access(effective_config_path, utils.AccessRead) == nil {
 			kitty_conf_path = effective_config_path
 		}
 	}

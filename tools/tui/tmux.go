@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/shirou/gopsutil/v4/process"
-	"golang.org/x/sys/unix"
 
 	"github.com/kovidgoyal/kitty/tools/utils"
 )
@@ -34,7 +33,7 @@ func tmux_socket_address() (socket string) {
 	if !found {
 		return ""
 	}
-	if unix.Access(addr, unix.R_OK|unix.W_OK) != nil {
+	if utils.Access(addr, utils.AccessRead|utils.AccessWrite) != nil {
 		return ""
 	}
 	pid_str, _, _ = strings.Cut(pid_str, ",")
