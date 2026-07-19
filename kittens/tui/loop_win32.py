@@ -97,6 +97,25 @@ kernel32.SetConsoleCP.restype = wintypes.BOOL
 kernel32.SetConsoleCP.argtypes = (wintypes.UINT,)
 kernel32.SetConsoleOutputCP.restype = wintypes.BOOL
 kernel32.SetConsoleOutputCP.argtypes = (wintypes.UINT,)
+kernel32.OpenThread.restype = wintypes.HANDLE
+kernel32.OpenThread.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+kernel32.CancelSynchronousIo.restype = wintypes.BOOL
+kernel32.CancelSynchronousIo.argtypes = (wintypes.HANDLE,)
+
+THREAD_TERMINATE = 0x0001
+
+
+def cancel_console_read(thread: object) -> None:
+    # Cancel a console ReadFile the reader thread is blocked in, so the kitten can
+    # exit promptly instead of hanging on shutdown. CancelSynchronousIo needs a
+    # thread handle with THREAD_TERMINATE rights.
+    tid = getattr(thread, 'native_id', None)
+    if not tid:
+        return
+    h = kernel32.OpenThread(THREAD_TERMINATE, False, tid)
+    if h:
+        kernel32.CancelSynchronousIo(h)
+        kernel32.CloseHandle(h)
 
 
 def _open_handle(name: str, access: int) -> int:
@@ -147,13 +166,15 @@ class WinConsole:
                 kernel32.CloseHandle(h)
         self.hin = self.hout = INVALID_HANDLE_VALUE
 
-    def read(self, n: int = READ_BUF_SIZE) -> bytes:
+    def read(self, n: int = READ_BUF_SIZE) -> bytes | None:
+        # Blocking read. Returns the bytes read, or None when the read failed
+        # (handle closed, or cancelled on shutdown) so the caller can stop.
         if n > READ_BUF_SIZE:
             n = READ_BUF_SIZE
         nread = wintypes.DWORD(0)
         ok = kernel32.ReadFile(self.hin, self._read_buf, n, ctypes.byref(nread), None)
         if not ok:
-            return b''  # handle closed or aborted on shutdown: report end of input
+            return None
         return self._read_buf.raw[:nread.value]
 
     def write(self, data: bytes | str) -> None:
