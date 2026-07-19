@@ -17,11 +17,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"unicode/utf8"
 
 	"github.com/shirou/gopsutil/v4/process"
-	"golang.org/x/sys/unix"
 )
 
 var Sep = string(os.PathSeparator)
@@ -115,7 +113,7 @@ func ConfigDirForName(name string) (config_dir string) {
 		if loc != "" {
 			q := filepath.Join(loc, "kitty")
 			if _, err := os.Stat(filepath.Join(q, name)); err == nil {
-				if unix.Access(q, unix.W_OK) == nil {
+				if Access(q, AccessWrite) == nil {
 					config_dir = q
 					return
 				}
@@ -164,8 +162,7 @@ func macos_user_cache_dir() string {
 		if err != nil {
 			return false
 		}
-		stat, ok := s.Sys().(syscall.Stat_t)
-		return ok && s.IsDir() && int(stat.Uid) == os.Geteuid() && s.Mode().Perm() == 0o700 && unix.Access(m, unix.X_OK|unix.W_OK|unix.R_OK) == nil
+		return fileinfo_uid_matches_euid(s) && s.IsDir() && s.Mode().Perm() == 0o700 && Access(m, AccessExec|AccessWrite|AccessRead) == nil
 	}
 
 	if tdir := strings.TrimRight(os.Getenv("TMPDIR"), "/"); filepath.Base(tdir) == "T" {
@@ -201,7 +198,7 @@ var RuntimeDir = sync.OnceValue(func() (runtime_dir string) {
 	candidate = strings.TrimRight(candidate, "/")
 	if candidate == "" {
 		q := fmt.Sprintf("/run/user/%d", os.Geteuid())
-		if s, err := os.Stat(q); err == nil && s.IsDir() && unix.Access(q, unix.X_OK|unix.R_OK|unix.W_OK) == nil {
+		if s, err := os.Stat(q); err == nil && s.IsDir() && Access(q, AccessExec|AccessRead|AccessWrite) == nil {
 			candidate = q
 		} else {
 			candidate = filepath.Join(CacheDir(), "run")
