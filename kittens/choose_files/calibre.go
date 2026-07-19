@@ -20,7 +20,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/utils"
 	"github.com/kovidgoyal/kitty/tools/utils/humanize"
 	"github.com/kovidgoyal/kitty/tools/utils/images"
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -86,7 +85,7 @@ var calibre_server = sync.OnceValues(func() (ans *calibre_server_process, err er
 		ans.stdout.Close()
 		return nil, err
 	}
-	ans.proc.SysProcAttr = &unix.SysProcAttr{Setsid: true}
+	set_process_session_leader(ans.proc)
 	if err = ans.proc.Start(); err != nil {
 		err = fmt.Errorf("calibre-debug executable not found in PATH, you must install the calibre program to preview these file types: %w", err)
 		return

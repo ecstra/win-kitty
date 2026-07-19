@@ -12,7 +12,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/icons"
 	"github.com/kovidgoyal/kitty/tools/utils/humanize"
 	"github.com/kovidgoyal/kitty/tools/utils/images"
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -37,7 +36,7 @@ func (c cmd_renderer) Render(path string) (m map[string][]byte, mi metadata, img
 	cmdline := append(c.cmdline, path)
 	cmd := exec.Command(cmdline[0], cmdline[1:]...)
 	cmd.Stdin = nil
-	cmd.SysProcAttr = &unix.SysProcAttr{Setsid: true}
+	set_process_session_leader(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
