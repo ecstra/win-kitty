@@ -144,8 +144,69 @@ int _glfwPlatformGetNativeKeyForKey(uint32_t key) {
 // Clipboard (UTF-8 text via CF_UNICODETEXT)
 // ---------------------------------------------------------------------------
 
+// Pull all of kitty's data for a mime type into a freshly malloc'd buffer, via
+// the clipboard iterator API (the same protocol get_clipboard_data uses on X11).
+// Returns the byte count. *out holds the buffer, which the caller frees, or NULL.
+static size_t
+pull_clipboard_data(const _GLFWClipboardData *cd, const char *mime, char **out) {
+    *out = NULL;
+    if (!cd->get_data) return 0;
+    GLFWDataChunk chunk = cd->get_data(mime, NULL, cd->ctype);
+    void *iter = chunk.iter;
+    if (!iter) return 0;
+    char *buf = NULL; size_t sz = 0, cap = 0;
+    while (true) {
+        chunk = cd->get_data(mime, iter, cd->ctype);
+        if (!chunk.sz) break;
+        if (cap < sz + chunk.sz) {
+            size_t want = sz + 4 * chunk.sz;
+            cap = cap * 2 > want ? cap * 2 : want;
+            char *nb = realloc(buf, cap);
+            if (!nb) { free(buf); cd->get_data(NULL, iter, cd->ctype); return 0; }
+            buf = nb;
+        }
+        memcpy(buf + sz, chunk.data, chunk.sz);
+        sz += chunk.sz;
+        if (chunk.free) chunk.free((void*)chunk.free_data);
+    }
+    cd->get_data(NULL, iter, cd->ctype);   // finalize / release the iterator
+    *out = buf;
+    return sz;
+}
+
+// Windows has an eager clipboard (unlike X11/Wayland's lazy selection ownership),
+// so grab kitty's text now and hand it to the OS as CF_UNICODETEXT. There is no
+// primary selection on Windows, so only GLFW_CLIPBOARD is honoured.
 void _glfwPlatformSetClipboard(GLFWClipboardType t) {
-    (void) t;   // kitty pushes data lazily via the write callback model; no-op here
+    if (t != GLFW_CLIPBOARD) return;
+    const _GLFWClipboardData *cd = &_glfw.clipboard;
+    const char *mime = NULL;
+    for (size_t i = 0; i < cd->num_mime_types; i++) {
+        const char *m = cd->mime_types[i];
+        if (!m) continue;
+        if (strcmp(m, "text/plain;charset=utf-8") == 0) { mime = m; break; }  // best
+        if (!mime && strcmp(m, "text/plain") == 0) mime = m;                  // acceptable
+    }
+    if (!mime) return;   // nothing text-like on offer (e.g. an image copy)
+    char *utf8 = NULL;
+    size_t sz = pull_clipboard_data(cd, mime, &utf8);
+    if (!utf8) return;   // empty selection or pull failed
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8, (int)sz, NULL, 0);
+    HGLOBAL hmem = GlobalAlloc(GMEM_MOVEABLE, ((size_t)wlen + 1) * sizeof(WCHAR));
+    if (hmem) {
+        WCHAR *wide = GlobalLock(hmem);
+        if (wide) {
+            if (wlen) MultiByteToWideChar(CP_UTF8, 0, utf8, (int)sz, wide, wlen);
+            wide[wlen] = 0;
+            GlobalUnlock(hmem);
+            if (OpenClipboard(_glfw.win32.helperWindowHandle)) {
+                EmptyClipboard();
+                if (!SetClipboardData(CF_UNICODETEXT, hmem)) GlobalFree(hmem);  // we still own it if it fails
+                CloseClipboard();
+            } else GlobalFree(hmem);
+        } else GlobalFree(hmem);
+    }
+    free(utf8);
 }
 
 void _glfwPlatformGetClipboard(GLFWClipboardType clipboard_type, const char* mime_type, GLFWclipboardwritedatafun write_data, void* object) {
