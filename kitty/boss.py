@@ -2352,6 +2352,10 @@ class Boss:
     ) -> Any:
         from kittens.runner import CLIOnlyKitten, KittenMetadata, create_kitten_handler
         is_wrapped = kitten in wrapped_kitten_names()
+        if is_windows and is_wrapped and not os.access(kitten_exe(), os.X_OK):
+            # The Go kitten tool is not built on Windows, so the wrapped path
+            # cannot spawn. Run the kitten through the Python console launcher.
+            is_wrapped = False
         if window is None:
             w = self.active_window
             tab = self.active_tab
@@ -2399,6 +2403,11 @@ class Boss:
                 'OVERLAID_WINDOW_LINES': str(w.screen.lines),
                 'OVERLAID_WINDOW_COLS': str(w.screen.columns),
             }
+            if is_windows:
+                # Run kittens over plain pipes rather than a pseudoconsole (see
+                # child.c open_pty): their VT output reaches kitty untouched, so no
+                # flicker, and kitty gets EOF on exit so the overlay closes.
+                env['KITTY_KITTEN_NO_PTY'] = '1'
             if is_wrapped:
                 cmd = [kitten_exe(), kitten]
                 env['KITTEN_RUNNING_AS_UI'] = '1'
