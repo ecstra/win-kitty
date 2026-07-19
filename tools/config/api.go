@@ -355,7 +355,8 @@ func is_kitty_gui_cmdline(exe string, cmd ...string) bool {
 	if len(cmd) == 0 {
 		return false
 	}
-	if filepath.Base(exe) != "kitty" {
+	// On Windows the launcher is kitty.exe; strip the suffix so it matches too.
+	if strings.TrimSuffix(filepath.Base(exe), ".exe") != "kitty" {
 		return false
 	}
 	if len(cmd) == 1 {
