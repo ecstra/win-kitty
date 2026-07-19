@@ -16,8 +16,6 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/kovidgoyal/kitty"
 	"github.com/kovidgoyal/kitty/tools/cli"
 	"github.com/kovidgoyal/kitty/tools/crypto"
@@ -323,7 +321,7 @@ func get_password(password string, password_file string, password_env string, us
 				}
 				ttyf, err := os.Open(tty.Ctermid())
 				if err == nil {
-					err = unix.Dup2(int(ttyf.Fd()), int(os.Stdin.Fd())) //nolint ineffassign err is returned indicating duping failed
+					err = utils.Dup2(int(ttyf.Fd()), int(os.Stdin.Fd())) //nolint ineffassign err is returned indicating duping failed
 					ttyf.Close()
 				}
 			}
