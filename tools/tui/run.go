@@ -4,7 +4,6 @@ package tui
 
 import (
 	"fmt"
-	"github.com/kovidgoyal/kitty"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -13,8 +12,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/kovidgoyal/kitty"
+
 	"github.com/shirou/gopsutil/v4/process"
-	"golang.org/x/sys/unix"
 
 	"github.com/kovidgoyal/kitty/tools/config"
 	"github.com/kovidgoyal/kitty/tools/tty"
@@ -113,7 +113,7 @@ func ResolveShell(shell string) []string {
 		shell_cmd = []string{shell}
 	}
 	exe := utils.FindExe(shell_cmd[0])
-	if unix.Access(exe, unix.X_OK) != nil {
+	if utils.Access(exe, utils.AccessExec) != nil {
 		shell_cmd = []string{"/bin/sh"}
 	}
 	return shell_cmd
@@ -197,7 +197,7 @@ func RunShell(shell_cmd []string, shell_integration_env_var_val, cwd string) (er
 	if cwd != "" {
 		_ = os.Chdir(cwd)
 	}
-	return unix.Exec(utils.FindExe(exe), shell_cmd, env)
+	return utils.Exec(utils.FindExe(exe), shell_cmd, env)
 }
 
 var debugprintln = tty.DebugPrintln
@@ -211,8 +211,8 @@ func RunCommandRestoringTerminalToSaneStateAfter(cmd []string) {
 	c.Stderr = os.Stderr
 	term, err := tty.OpenControllingTerm()
 	if err == nil {
-		var state_before unix.Termios
-		if term.Tcgetattr(&state_before) == nil {
+		restore := save_term_state(term)
+		if restore != nil {
 			if _, err = term.WriteString(loop.SAVE_PRIVATE_MODE_VALUES); err != nil {
 				fmt.Fprintln(os.Stderr, "failed to write to controlling terminal with error:", err)
 				return
@@ -223,7 +223,7 @@ func RunCommandRestoringTerminalToSaneStateAfter(cmd []string) {
 					"\x1b[=u", // reset kitty keyboard protocol to legacy
 					"\x1bP@kitty-restore-cursor-appearance|\a",
 				}, ""))
-				_ = term.Tcsetattr(tty.TCSANOW, &state_before)
+				restore()
 				term.Close()
 			}()
 		} else {

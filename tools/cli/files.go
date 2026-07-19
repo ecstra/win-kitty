@@ -10,8 +10,6 @@ import (
 	"slices"
 	"strings"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/kovidgoyal/kitty/tools/utils"
 )
 
@@ -124,7 +122,7 @@ func CompleteExecutablesInPath(prefix string, paths ...string) []string {
 		entries, err := os.ReadDir(dir)
 		if err == nil {
 			for _, e := range entries {
-				if strings.HasPrefix(e.Name(), prefix) && !e.IsDir() && unix.Access(filepath.Join(dir, e.Name()), unix.X_OK) == nil {
+				if strings.HasPrefix(e.Name(), prefix) && !e.IsDir() && utils.Access(filepath.Join(dir, e.Name()), utils.AccessExec) == nil {
 					ans = append(ans, e.Name())
 				}
 			}
@@ -288,13 +286,13 @@ func CompleteExecutableFirstArg(completions *Completions, word string, arg_num i
 				entries, err := os.ReadDir(entry.Abspath)
 				if err == nil {
 					for _, x := range entries {
-						if x.IsDir() || unix.Access(filepath.Join(entry.Abspath, x.Name()), unix.X_OK) == nil {
+						if x.IsDir() || utils.Access(filepath.Join(entry.Abspath, x.Name()), utils.AccessExec) == nil {
 							mg.AddMatch(entry.CompletionCandidate)
 							break
 						}
 					}
 				}
-			} else if unix.Access(entry.Abspath, unix.X_OK) == nil {
+			} else if utils.Access(entry.Abspath, utils.AccessExec) == nil {
 				mg.AddMatch(entry.CompletionCandidate)
 			}
 		}, "")

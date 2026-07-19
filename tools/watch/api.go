@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/sgtdi/fswatcher"
-	"golang.org/x/sys/unix"
 
 	"github.com/kovidgoyal/kitty/tools/cli"
 	"github.com/kovidgoyal/kitty/tools/config"
@@ -140,7 +139,7 @@ func watch_for_config_changes(ctx context.Context, action func() error, debounce
 	opts := []fswatcher.WatcherOpt{fswatcher.WithCooldown(debounce_time)}
 	watched_dirs := utils.NewSet[string]()
 	for _, dir := range desired_dirs.AsSlice() {
-		if unix.Access(dir, unix.R_OK|unix.X_OK) == nil {
+		if utils.Access(dir, utils.AccessRead|utils.AccessExec) == nil {
 			opts = append(opts, fswatcher.WithPath(dir, fswatcher.WithDepth(fswatcher.WatchTopLevel)))
 			watched_dirs.Add(dir)
 		}
@@ -165,7 +164,7 @@ func watch_for_config_changes(ctx context.Context, action func() error, debounce
 	// desired is dropped.
 	sync_watched_dirs := func() {
 		desired_dirs.ForEach(func(d string) {
-			if !watched_dirs.Has(d) && unix.Access(d, unix.R_OK|unix.X_OK) == nil {
+			if !watched_dirs.Has(d) && utils.Access(d, utils.AccessRead|utils.AccessExec) == nil {
 				if err := w.AddPath(d, fswatcher.WithDepth(fswatcher.WatchTopLevel)); err == nil {
 					watched_dirs.Add(d)
 				}
@@ -218,10 +217,6 @@ func watch_for_kitty_config_changes(action func() error, debounce_time time.Dura
 		cancel()
 	}()
 	return watch_for_config_changes(ctx, action, debounce_time, config_paths)
-}
-
-func signal_kitty_to_reload_config(kitty_pid int) error {
-	return unix.Kill(kitty_pid, unix.SIGUSR1)
 }
 
 func EntryPoint(root *cli.Command) {

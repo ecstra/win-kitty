@@ -186,7 +186,7 @@ func resolve_file_spec(spec string, is_glob bool) ([]string, error) {
 		}
 		return files, nil
 	}
-	err := unix.Access(ans, unix.R_OK)
+	err := utils.Access(ans, utils.AccessRead)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("%s does not exist", spec)

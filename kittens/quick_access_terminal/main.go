@@ -10,8 +10,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/cli"
 	"github.com/kovidgoyal/kitty/tools/config"
 	"github.com/kovidgoyal/kitty/tools/utils"
-
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -107,7 +105,7 @@ func main(cmd *cli.Command, opts *Options, args []string) (rc int, err error) {
 	}
 
 	argv = append(argv, args...)
-	err = unix.Exec(kitty_exe, argv, os.Environ())
+	err = utils.Exec(kitty_exe, argv, os.Environ())
 	rc = 1
 	return
 }

@@ -9,9 +9,8 @@ import (
 	"io"
 	"os"
 	"strings"
+	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/kovidgoyal/kitty/tools/simdstring"
 )
@@ -102,7 +101,7 @@ func read_input(input_file *os.File, input_file_name string, input_channel chan<
 				total_read += int64(n)
 				process_chunk(buf)
 			}
-			if err == unix.EAGAIN || err == unix.EINTR {
+			if err == syscall.EAGAIN || err == syscall.EINTR {
 				err = nil
 			}
 		}

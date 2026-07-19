@@ -667,7 +667,7 @@ func run_ssh(ssh_args, server_args, found_extra_args []string, ssh_config_channe
 		if err != nil {
 			return 1, fmt.Errorf("Could not parse delegate command: %#v with error: %w", host_opts.Delegate, err)
 		}
-		return 1, unix.Exec(utils.FindExe(delegate_cmd[0]), utils.Concat(delegate_cmd, ssh_args, server_args), os.Environ())
+		return 1, utils.Exec(utils.FindExe(delegate_cmd[0]), utils.Concat(delegate_cmd, ssh_args, server_args), os.Environ())
 	}
 	master_is_alive, master_checked := false, false
 	var control_master_args []string
@@ -854,12 +854,12 @@ func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 			if invargs.Msg != "" {
 				fmt.Fprintln(os.Stderr, invargs.Msg)
 			}
-			return 1, unix.Exec(SSHExe(), []string{"ssh"}, os.Environ())
+			return 1, utils.Exec(SSHExe(), []string{"ssh"}, os.Environ())
 		}
 		return 1, err
 	}
 	if passthrough {
-		return 1, unix.Exec(SSHExe(), utils.Concat([]string{"ssh"}, ssh_args, server_args), os.Environ())
+		return 1, utils.Exec(SSHExe(), utils.Concat([]string{"ssh"}, ssh_args, server_args), os.Environ())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

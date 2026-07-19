@@ -13,7 +13,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/cmd/completion"
 	"github.com/kovidgoyal/kitty/tools/cmd/tool"
 	"github.com/kovidgoyal/kitty/tools/utils"
-	"golang.org/x/sys/unix"
 )
 
 func KittenMain(args ...string) int {
@@ -38,7 +37,7 @@ func KittenMain(args ...string) int {
 			if !filepath.IsAbs(exe) {
 				exe = utils.Which(exe)
 			}
-			if err := unix.Exec(exe, append([]string{filepath.Base(exe), "+kitten"}, args...), os.Environ()); err != nil {
+			if err := utils.Exec(exe, append([]string{filepath.Base(exe), "+kitten"}, args...), os.Environ()); err != nil {
 				return 1, fmt.Errorf("failed to run python kitten: %s as could not run kitty executable, with error: %w", args[0], err)
 			}
 		}

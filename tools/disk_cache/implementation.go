@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/kovidgoyal/kitty/tools/utils"
@@ -36,20 +35,10 @@ func (s *file_state) equal(o *file_state) bool {
 func get_file_state(fi fs.FileInfo) *file_state {
 	// The Sys() method returns the underlying data source (can be nil).
 	// For Unix-like systems, it's a *syscall.Stat_t.
-	stat, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		// For non-Unix systems, you might not have an inode.
-		// In that case, you can fall back to using only size and mod time.
-		return &file_state{
-			Size:    fi.Size(),
-			ModTime: fi.ModTime(),
-			Inode:   0, // Inode not available
-		}
-	}
 	return &file_state{
 		Size:    fi.Size(),
 		ModTime: fi.ModTime(),
-		Inode:   stat.Ino,
+		Inode:   file_inode(fi),
 	}
 }
 
