@@ -1784,7 +1784,16 @@ set_mode_from_const(Screen *self, unsigned int mode, bool val) {
         case TOGGLE_ALT_SCREEN_2:
         case ALTERNATE_SCREEN:
             if (val && self->linebuf == self->main_linebuf) screen_toggle_screen_buffer(self, mode == ALTERNATE_SCREEN, mode == ALTERNATE_SCREEN);
-            else if (!val && self->linebuf != self->main_linebuf) screen_toggle_screen_buffer(self, mode == ALTERNATE_SCREEN, mode == ALTERNATE_SCREEN);
+            else if (!val && self->linebuf != self->main_linebuf) {
+                screen_toggle_screen_buffer(self, mode == ALTERNATE_SCREEN, mode == ALTERNATE_SCREEN);
+#ifdef _WIN32
+                // A full-screen program in a Windows pseudoconsole just switched
+                // back to the main screen. conhost withholds the shell's following
+                // output (its prompt) until it receives input, so ask the window to
+                // nudge the pseudoconsole and force a flush.
+                CALLBACK("windows_conpty_flush", NULL);
+#endif
+            }
             break;
         case 7727 << 5:
             log_error("Application escape mode is not supported, the extended keyboard protocol should be used instead");
