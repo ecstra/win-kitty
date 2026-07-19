@@ -6,6 +6,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 // ---------------------------------------------------------------------------
 // Key translation: Win32 virtual key -> kitty functional key
@@ -959,7 +960,11 @@ void _glfwPlatformRequestDropUpdate(_GLFWwindow* window) { (void) window; }
 ssize_t _glfwPlatformReadAvailableDropData(GLFWwindow* w, GLFWDropEvent* ev, char* buffer, size_t sz) { (void) w; (void) ev; (void) buffer; (void) sz; return -1; }
 void _glfwPlatformEndDrop(GLFWwindow* w, GLFWDragOperationType op) { (void) w; (void) op; }
 int _glfwPlatformRequestDropData(_GLFWwindow* window, const char* mime) { (void) window; (void) mime; return -1; }
-int _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) { (void) window; (void) thumbnail; return false; }
+// Drag and drop is not implemented on Windows. Report it as unsupported (not 0,
+// which glfwStartDrag reads as success) so kitty cleans up its drag state instead
+// of waiting forever for a drop. Without this, dragging a tab wedges the tab bar
+// and blocks all later mouse dragging until restart.
+int _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) { (void) window; (void) thumbnail; return ENOTSUP; }
 void _glfwPlatformCancelDrag(_GLFWwindow* window) { (void) window; }
 void _glfwPlatformFreeDragSourceData(void) {}
 int _glfwPlatformDragDataReady(const char* mime_type, const char* data, size_t sz, int type) { (void) mime_type; (void) data; (void) sz; (void) type; return false; }
