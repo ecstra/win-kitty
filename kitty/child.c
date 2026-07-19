@@ -239,6 +239,12 @@ typedef VOID* HPCON;
 #ifndef PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
 #define PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE 0x00020016
 #endif
+#ifndef PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+#define PROC_THREAD_ATTRIBUTE_HANDLE_LIST 0x00020002
+#endif
+#ifndef CREATE_NO_WINDOW
+#define CREATE_NO_WINDOW 0x08000000
+#endif
 #ifndef CLD_EXITED
 #define CLD_EXITED    1
 #define CLD_KILLED    2
@@ -266,12 +272,14 @@ load_conpty(void) {
 #define MAX_PTYS 128
 typedef struct {
     bool   in_use;
-    HPCON  hpc;
-    HANDLE in_write;   /* parent writes child stdin here */
-    HANDLE out_read;   /* parent reads child stdout here */
-    HANDLE process;    /* child process handle, for reaping */
-    int    read_fd;    /* CRT fd wrapping out_read */
-    int    write_fd;   /* CRT fd wrapping in_write */
+    HPCON  hpc;          /* pseudoconsole, or NULL in pipe mode (kittens) */
+    HANDLE in_write;     /* parent writes child stdin here */
+    HANDLE out_read;     /* parent reads child stdout here */
+    HANDLE child_stdin;  /* pipe mode: child's stdin (inherited at spawn) */
+    HANDLE child_stdout; /* pipe mode: child's stdout (inherited at spawn) */
+    HANDLE process;      /* child process handle, for reaping */
+    int    read_fd;      /* CRT fd wrapping out_read */
+    int    write_fd;     /* CRT fd wrapping in_write */
 } PtyEntry;
 static PtyEntry ptys[MAX_PTYS];
 
@@ -340,12 +348,18 @@ build_env_block(PyObject *env_p) {
     return buf;
 }
 
-/* open_pty(cols, rows) -> (read_fd, write_fd, pty_id) */
+/* open_pty(cols, rows, use_pty=True) -> (read_fd, write_fd, pty_id)
+ *
+ * use_pty True gives a real pseudoconsole (for shells). use_pty False gives a
+ * plain pipe pair with no console (for kittens): the child is a VT program, so
+ * a pseudoconsole only gets in the way. Pipes send the child's escape codes to
+ * kitty untouched (the synchronized-update sequence survives, so no flicker) and
+ * give kitty EOF the moment the child exits, so its window closes. */
 static PyObject*
 open_pty(PyObject *self UNUSED, PyObject *args) {
-    int cols = 80, rows = 24;
-    if (!PyArg_ParseTuple(args, "ii", &cols, &rows)) return NULL;
-    if (!load_conpty()) { PyErr_SetString(PyExc_RuntimeError, "ConPTY unavailable (needs Windows 10 1809+)"); return NULL; }
+    int cols = 80, rows = 24, use_pty = 1;
+    if (!PyArg_ParseTuple(args, "ii|p", &cols, &rows, &use_pty)) return NULL;
+    if (use_pty && !load_conpty()) { PyErr_SetString(PyExc_RuntimeError, "ConPTY unavailable (needs Windows 10 1809+)"); return NULL; }
     // Prepare the process, once, so ConPTY children attach to the pseudoconsole:
     //  1. Detach any inherited console (kitty is a GUI app; a console would be
     //     inherited by the child instead of the pty).
@@ -369,25 +383,43 @@ open_pty(PyObject *self UNUSED, PyObject *args) {
     if (id < 0) { PyErr_SetString(PyExc_RuntimeError, "too many open ptys"); return NULL; }
 
     HANDLE in_read = NULL, in_write = NULL, out_read = NULL, out_write = NULL;
-    if (!CreatePipe(&in_read, &in_write, NULL, 0) || !CreatePipe(&out_read, &out_write, NULL, 0)) {
-        PyErr_SetFromWindowsErr(0);
-        if (in_read) CloseHandle(in_read); if (in_write) CloseHandle(in_write);
-        if (out_read) CloseHandle(out_read); if (out_write) CloseHandle(out_write);
-        return NULL;
-    }
     HPCON hpc = NULL;
-    COORD size = { (SHORT)cols, (SHORT)rows };
-    HRESULT hr = pCreatePseudoConsole(size, in_read, out_write, 0, &hpc);
-    CloseHandle(in_read); CloseHandle(out_write);  /* owned by the console now */
-    if (FAILED(hr)) {
-        CloseHandle(in_write); CloseHandle(out_read);
-        PyErr_Format(PyExc_OSError, "CreatePseudoConsole failed: 0x%08lx", (unsigned long)hr);
-        return NULL;
+    HANDLE child_stdin = NULL, child_stdout = NULL;
+    if (use_pty) {
+        if (!CreatePipe(&in_read, &in_write, NULL, 0) || !CreatePipe(&out_read, &out_write, NULL, 0)) {
+            PyErr_SetFromWindowsErr(0);
+            if (in_read) CloseHandle(in_read); if (in_write) CloseHandle(in_write);
+            if (out_read) CloseHandle(out_read); if (out_write) CloseHandle(out_write);
+            return NULL;
+        }
+        COORD size = { (SHORT)cols, (SHORT)rows };
+        HRESULT hr = pCreatePseudoConsole(size, in_read, out_write, 0, &hpc);
+        CloseHandle(in_read); CloseHandle(out_write);  /* owned by the console now */
+        if (FAILED(hr)) {
+            CloseHandle(in_write); CloseHandle(out_read);
+            PyErr_Format(PyExc_OSError, "CreatePseudoConsole failed: 0x%08lx", (unsigned long)hr);
+            return NULL;
+        }
+    } else {
+        /* Pipe mode: the child's ends must be inheritable, kitty's ends must not,
+         * so the child does not keep kitty's read/write handles alive (that would
+         * defeat the EOF-on-exit that closes the window). */
+        SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+        if (!CreatePipe(&in_read, &in_write, &sa, 0) || !CreatePipe(&out_read, &out_write, &sa, 0)) {
+            PyErr_SetFromWindowsErr(0);
+            if (in_read) CloseHandle(in_read); if (in_write) CloseHandle(in_write);
+            if (out_read) CloseHandle(out_read); if (out_write) CloseHandle(out_write);
+            return NULL;
+        }
+        SetHandleInformation(in_write, HANDLE_FLAG_INHERIT, 0);
+        SetHandleInformation(out_read, HANDLE_FLAG_INHERIT, 0);
+        child_stdin = in_read; child_stdout = out_write;  /* spawn passes these as the child stdio */
     }
     int read_fd  = _open_osfhandle((intptr_t)out_read, _O_RDONLY | _O_BINARY);
     int write_fd = _open_osfhandle((intptr_t)in_write, _O_WRONLY | _O_BINARY);
     ptys[id].in_use = true; ptys[id].hpc = hpc;
     ptys[id].in_write = in_write; ptys[id].out_read = out_read; ptys[id].process = NULL;
+    ptys[id].child_stdin = child_stdin; ptys[id].child_stdout = child_stdout;
     ptys[id].read_fd = read_fd; ptys[id].write_fd = write_fd;
     return Py_BuildValue("iii", read_fd, write_fd, id);
 }
@@ -405,33 +437,53 @@ spawn(PyObject *self UNUSED, PyObject *args) {
     wchar_t *wexe = (exe && exe[0]) ? utf8_to_wide(exe) : NULL;
     if (!cmdline || !envblock) { free(cmdline); free(envblock); free(wcwd); free(wexe); return PyErr_NoMemory(); }
 
+    const bool pipe_mode = ptys[id].hpc == NULL;
     STARTUPINFOEXW si; ZeroMemory(&si, sizeof si); si.StartupInfo.cb = sizeof si;
     SIZE_T bytes = 0;
     InitializeProcThreadAttributeList(NULL, 1, 0, &bytes);
     si.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, bytes);
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof pi);
+    HANDLE inherit_list[2] = { ptys[id].child_stdin, ptys[id].child_stdout };
     BOOL ok = FALSE;
-    if (si.lpAttributeList &&
-        InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &bytes) &&
-        UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, ptys[id].hpc, sizeof(HPCON), NULL, NULL)) {
-        // Windows propagates the parent's standard handles to a child when
-        // STARTF_USESTDHANDLES is not set, and this overrides the pseudoconsole:
-        // if kitty's stdio is redirected (files/pipes) the child writes there
-        // instead of the pty. Blank our std handles across the spawn so the
-        // pseudoconsole is the only stdio the child can attach to, then restore.
-        HANDLE saved[3] = { GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE) };
-        SetStdHandle(STD_INPUT_HANDLE, NULL);
-        SetStdHandle(STD_OUTPUT_HANDLE, NULL);
-        SetStdHandle(STD_ERROR_HANDLE, NULL);
-        ok = CreateProcessW(wexe, cmdline, NULL, NULL, FALSE,
-                            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-                            envblock, wcwd, &si.StartupInfo, &pi);
-        SetStdHandle(STD_INPUT_HANDLE, saved[0]);
-        SetStdHandle(STD_OUTPUT_HANDLE, saved[1]);
-        SetStdHandle(STD_ERROR_HANDLE, saved[2]);
+    if (si.lpAttributeList && InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &bytes)) {
+        if (pipe_mode) {
+            // Kitten: hand the child exactly its two stdio pipe ends and nothing
+            // else. STARTF_USESTDHANDLES wires them as stdin/stdout, the handle
+            // list limits inheritance to just those, and CREATE_NO_WINDOW keeps
+            // the console-subsystem launcher from popping a console window.
+            if (UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit_list, sizeof inherit_list, NULL, NULL)) {
+                si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+                si.StartupInfo.hStdInput = ptys[id].child_stdin;
+                si.StartupInfo.hStdOutput = ptys[id].child_stdout;
+                si.StartupInfo.hStdError = ptys[id].child_stdout;
+                ok = CreateProcessW(wexe, cmdline, NULL, NULL, TRUE,
+                                    EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
+                                    envblock, wcwd, &si.StartupInfo, &pi);
+            }
+        } else if (UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, ptys[id].hpc, sizeof(HPCON), NULL, NULL)) {
+            // Windows propagates the parent's standard handles to a child when
+            // STARTF_USESTDHANDLES is not set, and this overrides the pseudoconsole:
+            // if kitty's stdio is redirected (files/pipes) the child writes there
+            // instead of the pty. Blank our std handles across the spawn so the
+            // pseudoconsole is the only stdio the child can attach to, then restore.
+            HANDLE saved[3] = { GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE) };
+            SetStdHandle(STD_INPUT_HANDLE, NULL);
+            SetStdHandle(STD_OUTPUT_HANDLE, NULL);
+            SetStdHandle(STD_ERROR_HANDLE, NULL);
+            ok = CreateProcessW(wexe, cmdline, NULL, NULL, FALSE,
+                                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                                envblock, wcwd, &si.StartupInfo, &pi);
+            SetStdHandle(STD_INPUT_HANDLE, saved[0]);
+            SetStdHandle(STD_OUTPUT_HANDLE, saved[1]);
+            SetStdHandle(STD_ERROR_HANDLE, saved[2]);
+        }
     }
     DWORD err = ok ? 0 : GetLastError();
     if (si.lpAttributeList) { DeleteProcThreadAttributeList(si.lpAttributeList); HeapFree(GetProcessHeap(), 0, si.lpAttributeList); }
+    // The child now holds its stdio ends; drop ours so the pipe reports EOF when
+    // the child exits (this is how kitty learns a kitten window should close).
+    if (ptys[id].child_stdin) { CloseHandle(ptys[id].child_stdin); ptys[id].child_stdin = NULL; }
+    if (ptys[id].child_stdout) { CloseHandle(ptys[id].child_stdout); ptys[id].child_stdout = NULL; }
     free(cmdline); free(envblock); free(wcwd); free(wexe);
     if (!ok) { PyErr_SetFromWindowsErr((int)err); return NULL; }
 
@@ -470,7 +522,7 @@ resize_pty(PyObject *self UNUSED, PyObject *args) {
     int id, cols, rows;
     if (!PyArg_ParseTuple(args, "iii", &id, &cols, &rows)) return NULL;
     if (id < 0 || id >= MAX_PTYS || !ptys[id].in_use) { PyErr_SetString(PyExc_ValueError, "invalid pty id"); return NULL; }
-    if (pResizePseudoConsole) {
+    if (pResizePseudoConsole && ptys[id].hpc) {  /* pipe-mode kittens have no console to resize */
         COORD size = { (SHORT)cols, (SHORT)rows };
         pResizePseudoConsole(ptys[id].hpc, size);
     }

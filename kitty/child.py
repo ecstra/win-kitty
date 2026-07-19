@@ -449,7 +449,11 @@ class Child:
                     cols, rows = max(1, central.width // cw), max(1, central.height // ch)
         except Exception:
             pass
-        read_fd, write_fd, pty_id = fast_data_types.open_pty(cols, rows)
+        # Kittens are VT programs: run them over plain pipes, not a pseudoconsole,
+        # so their escape codes reach kitty untouched (no flicker) and kitty sees
+        # EOF when they exit (their window closes).
+        use_pty = self.final_env.get('KITTY_KITTEN_NO_PTY') != '1'
+        read_fd, write_fd, pty_id = fast_data_types.open_pty(cols, rows, use_pty)
         pid = fast_data_types.spawn(pty_id, exe, self.cwd or os.getcwd(), tuple(argv), env)
         self.pid = pid
         self.pty_id = pty_id
