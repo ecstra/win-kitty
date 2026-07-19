@@ -9,19 +9,17 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/kovidgoyal/kitty"
 	"github.com/kovidgoyal/kitty/tools/tty"
 	"github.com/kovidgoyal/kitty/tools/utils"
 )
 
-var SIGNULL unix.Signal
+var SIGNULL syscall.Signal
 
 func new_loop() *Loop {
 	l := Loop{controlling_term: nil}
@@ -46,13 +44,7 @@ func new_loop() *Loop {
 }
 
 func is_temporary_error(err error) bool {
-	return errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, io.ErrShortWrite)
-}
-
-func kill_self(sig unix.Signal) {
-	_ = unix.Kill(os.Getpid(), sig)
-	// Give the signal time to be delivered
-	time.Sleep(20 * time.Millisecond)
+	return errors.Is(err, syscall.EINTR) || errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, io.ErrShortWrite)
 }
 
 func (self *Loop) set_pointer_shapes(ps []PointerShape) {
@@ -364,42 +356,9 @@ func (self *Loop) handle_end_of_bracketed_paste() error {
 	return nil
 }
 
-func (self *Loop) on_signal(s unix.Signal) error {
-	switch s {
-	case unix.SIGINT:
-		if self.OnSIGINT != nil {
-			if handled, err := self.OnSIGINT(); handled {
-				return err
-			}
-		}
-		return self.on_SIGINT()
-	case unix.SIGPIPE:
-		return self.on_SIGPIPE()
-	case unix.SIGWINCH:
-		return self.on_SIGWINCH()
-	case unix.SIGTERM:
-		if self.OnSIGTERM != nil {
-			if handled, err := self.OnSIGTERM(); handled {
-				return err
-			}
-		}
-		return self.on_SIGTERM()
-	case unix.SIGTSTP:
-		return self.on_SIGTSTP()
-	case unix.SIGHUP:
-		return self.on_SIGHUP()
-	default:
-		return nil
-	}
-}
-
 func (self *Loop) on_SIGINT() error {
-	self.death_signal = unix.SIGINT
+	self.death_signal = syscall.SIGINT
 	self.keep_going = false
-	return nil
-}
-
-func (self *Loop) on_SIGPIPE() error {
 	return nil
 }
 
@@ -421,22 +380,15 @@ func (self *Loop) on_SIGWINCH() error {
 }
 
 func (self *Loop) on_SIGTERM() error {
-	self.death_signal = unix.SIGTERM
-	self.keep_going = false
-	return nil
-}
-
-func (self *Loop) on_SIGHUP() error {
-	self.death_signal = unix.SIGHUP
+	self.death_signal = syscall.SIGTERM
 	self.keep_going = false
 	return nil
 }
 
 func (self *Loop) run() (err error) {
 	signal_channel := make(chan os.Signal, 256)
-	handled_signals := []os.Signal{unix.SIGINT, unix.SIGTERM, unix.SIGTSTP, unix.SIGHUP, unix.SIGWINCH, unix.SIGPIPE}
-	signal.Notify(signal_channel, handled_signals...)
-	defer signal.Reset(handled_signals...)
+	reset_signals := self.notify_signals(signal_channel)
+	defer reset_signals()
 
 	controlling_term, err := tty.OpenControllingTerm(tty.SetRaw)
 	if err != nil {
@@ -588,9 +540,7 @@ func (self *Loop) run() (err error) {
 			return err
 		}
 		err = controlling_term.SuspendAndRun(func() error {
-			_ = unix.Kill(os.Getpid(), unix.SIGSTOP)
-			time.Sleep(20 * time.Millisecond)
-			return nil
+			return suspend_process()
 		})
 		if err != nil {
 			return err
@@ -648,7 +598,7 @@ func (self *Loop) run() (err error) {
 		case rwerr := <-err_channel:
 			return fmt.Errorf("Failed doing I/O with terminal: %w", rwerr)
 		case s := <-signal_channel:
-			err = self.on_signal(s.(unix.Signal))
+			err = self.dispatch_signal(s)
 			if err != nil {
 				return err
 			}

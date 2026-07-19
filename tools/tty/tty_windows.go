@@ -94,7 +94,16 @@ func (self *Term) Close() error {
 	return err
 }
 
-func (self *Term) Read(b []byte) (int, error)        { return self.in.Read(b) }
+func (self *Term) Read(b []byte) (int, error) { return self.in.Read(b) }
+
+// CloseRead closes the read side so a blocking Read in another goroutine returns.
+// Windows pipes cannot be selected on, so this is how the loop stops its reader.
+func (self *Term) CloseRead() error {
+	if self.in != nil {
+		return self.in.Close()
+	}
+	return nil
+}
 func (self *Term) Write(b []byte) (int, error)       { return self.out.Write(b) }
 func (self *Term) WriteString(s string) (int, error) { return self.out.WriteString(s) }
 

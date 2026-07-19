@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/emmansun/base64"
-	"golang.org/x/sys/unix"
+	"syscall"
 
 	"github.com/kovidgoyal/go-parallel"
 	"github.com/kovidgoyal/kitty"
@@ -56,7 +56,7 @@ type Loop struct {
 	seen_inband_resize                     bool
 	escape_code_parser                     wcswidth.EscapeCodeParser
 	keep_going                             bool
-	death_signal                           unix.Signal
+	death_signal                           syscall.Signal
 	exit_code                              int
 	timers, timers_temp                    []*timer
 	timer_id_counter, write_msg_id_counter IdType
