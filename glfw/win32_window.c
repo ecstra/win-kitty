@@ -829,7 +829,14 @@ void _glfwPlatformMaximizeWindow(_GLFWwindow* window) { ShowWindow(window->win32
 void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen) { (void) move_to_active_screen; ShowWindow(window->win32.handle, SW_SHOWNA); }
 void _glfwPlatformHideWindow(_GLFWwindow* window) { ShowWindow(window->win32.handle, SW_HIDE); }
 void _glfwPlatformFocusWindow(_GLFWwindow* window) { SetForegroundWindow(window->win32.handle); SetFocus(window->win32.handle); }
-void _glfwPlatformRequestWindowAttention(_GLFWwindow* window) { FlashWindow(window->win32.handle, TRUE); }
+void _glfwPlatformRequestWindowAttention(_GLFWwindow* window) {
+    // Requesting attention on the focused window is a no-op on X11/macOS, but
+    // FlashWindow() flashes the taskbar button even when the window is already in
+    // the foreground. That makes every bell from a focused kitty (e.g. a kitten
+    // finishing) look like a background notification, so only flash when kitty is
+    // not the foreground window.
+    if (GetForegroundWindow() != window->win32.handle) FlashWindow(window->win32.handle, TRUE);
+}
 int _glfwPlatformWindowBell(_GLFWwindow* window) { (void) window; return MessageBeep(0xFFFFFFFF) ? true : false; }
 
 void _glfwPlatformSetWindowMonitor(_GLFWwindow* window, _GLFWmonitor* monitor, int xpos, int ypos, int width, int height, int refreshRate) {
