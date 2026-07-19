@@ -1890,6 +1890,19 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     }
     OSWindow *w = add_os_window();
     w->handle = glfw_window;
+    // The tab-bar VAO was created in add_os_window() before this window's handle
+    // existed, so it inherited whatever GL context happened to be current. VAOs are
+    // per-context and not shared, so a second OS window created at runtime lands its
+    // tab-bar VAO in the previously focused window's context, and binding it here
+    // renders another window's cell data. Recreate it now that the correct context
+    // is current. (Init-time windows happen to have the right context already.)
+    {
+        extern ssize_t create_cell_vao(void);
+        extern void remove_vao(ssize_t vao_idx);
+        make_os_window_context_current(w);
+        if (w->tab_bar_render_data.vao_idx > -1) remove_vao(w->tab_bar_render_data.vao_idx);
+        w->tab_bar_render_data.vao_idx = create_cell_vao();
+    }
     w->disallow_title_changes = disallow_override_title;
     if (lsc != NULL) {
         w->is_layer_shell = true;
