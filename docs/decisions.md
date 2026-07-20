@@ -2,9 +2,19 @@
 
 Why some of the Windows choices are the way they are. Read this for the reasoning behind a choice. The code and the other docs say what the system does.
 
-## Blur behind instead of acrylic
+## Always-on Gaussian blur instead of acrylic
 
-The undocumented acrylic accent, ACCENT_ENABLE_ACRYLICBLURBEHIND, is broken on Windows 11 for a plain Win32 or OpenGL window. It shows a flat tint, and DWM drops it when the window is maximized, which also caused a flash during the maximize animation. ACCENT_ENABLE_BLURBEHIND works in every state and is what the port uses. It has one tell. It gets lighter toward the edges of a maximized window, because the blur kernel runs out of samples past the screen edge. The proper fix is the DirectComposition host backdrop brush, the same acrylic material Windows Terminal uses, and that is left as a larger piece of work.
+The port uses ACCENT_ENABLE_BLURBEHIND, a plain Gaussian blur that stays applied whether or not the window is focused. It is not the frosted acrylic that Windows Terminal shows, and it has one tell: it gets lighter toward the edges of a maximized window, because the blur kernel runs out of samples past the screen edge. Acrylic was pursued at length and every window level path fails on an unpackaged OpenGL window:
+
+- The DWM system backdrop, DWMWA_SYSTEMBACKDROP_TYPE set to DWMSBT_TRANSIENTWINDOW, is real acrylic and looks correct while focused, but it goes opaque when the window is inactive (this is the acrylic material dropping, separate from the Mica inactive fallback), and it does not compose behind a DirectComposition surface.
+- Both accent blur states, BLURBEHIND and ACRYLICBLURBEHIND, render the same Gaussian blur on Windows 11 24H2. The acrylic material never appears, with any tint alpha. Microsoft neutered the private acrylic accent for non UWP windows years ago.
+- A separate borderless acrylic backdrop window pinned behind the main window shows real acrylic, but two independent top level windows cannot move in lockstep, so it trails the main window while dragging.
+
+The transparency itself is not the problem. Per pixel alpha holds across focus changes for the glass mode. What cannot be kept always on is the acrylic effect.
+
+Windows Terminal gets always on desktop acrylic because it is a packaged WinUI app whose acrylic and alpha both live in a composition tree via DesktopAcrylicController, where focus state cannot touch them, and it samples the desktop because it has package identity. wezterm uses the same DWM system backdrop this port tried and has the identical inactive opacity bug filed (wezterm issue 6979), so it is not a counterexample.
+
+Matching Windows Terminal therefore needs two things kitty lacks: a composition based render path (kitty renders with OpenGL, so its frames must go through a DirectComposition swapchain, proven to hold alpha when inactive only while it keeps presenting) and package identity for the host backdrop brush. Both belong with the installer and packaging work, so real acrylic is deferred to that phase rather than bolted on now.
 
 ## Keeping WS_CAPTION and hiding the frame
 

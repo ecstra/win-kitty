@@ -146,8 +146,8 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             _glfwInputFramebufferSize(window, width, height);
             _glfwInputWindowSize(window, width, height);
             positionCaptionButtons(window);
-            // DWM drops the acrylic accent when the window is maximized/restored;
-            // re-apply it on those transitions.
+            // Re-apply the accent on maximize/restore (DWM can drop it on those
+            // transitions).
             if (wParam == SIZE_MAXIMIZED || wParam == SIZE_RESTORED) updateWindowComposition(window);
             // The Win32 modal resize loop blocks our main loop, so render here to
             // keep the window live (otherwise DWM stretches the stale frame).
@@ -621,40 +621,57 @@ static void styleTitlebar(_GLFWwindow* window) {
     if (window->win32.captionButtons) cbPaint(window->win32.captionButtons);
 }
 
+// Transparency + blur on the window itself (no second window, so no drag ghost).
+//
+// This is an ALWAYS-ON Gaussian blur, not frosted acrylic. Real Windows-Terminal
+// acrylic is not reachable on an unpackaged OpenGL window; every window-level path was
+// tried and each fails:
+//   * the DWM system backdrop (DWMSBT_TRANSIENTWINDOW) is genuine acrylic but goes
+//     opaque when the window is inactive, and does not compose with a DirectComposition
+//     surface;
+//   * BOTH accent blur states (BLURBEHIND and ACRYLICBLURBEHIND) render the same plain
+//     Gaussian blur on Win11 24H2 -- the acrylic material never shows;
+//   * a separate acrylic backdrop window trails the main window while dragging.
+// WT gets always-on desktop acrylic because it is a *packaged* WinUI app whose acrylic
+// and alpha live in a composition tree (DesktopAcrylicController). Matching it needs a
+// composition render path plus package identity, which belongs with the installer /
+// packaging work -- revisit it there. Until then this uses the one blur that stays
+// applied whether or not the window is focused: the accent blur-behind.
+//
+// Two modes:
+//   * glass (transparent, no blur): an empty-region DwmEnableBlurBehindWindow gives
+//     per-pixel alpha with no blur.
+//   * blur  (transparent + blur):   the accent blur-behind gives per-pixel alpha plus
+//     the Gaussian blur, and keeps both when the window is inactive (the empty-region
+//     blur-behind alpha, by contrast, is dropped by DWM on deactivation).
 static void updateWindowComposition(_GLFWwindow* window) {
     HWND hwnd = window->win32.handle;
     if (!hwnd) return;
     const bool wantBlur = window->win32.blur > 0;
     const bool wantTransparent = window->win32.transparent;
-    // Never use the Win11 system backdrop: it does not compose with the GL
-    // surface and, when maximized, paints a second region-limited blur.
-    const bool glassMode = wantTransparent && !wantBlur;
+    const bool blur = wantTransparent && wantBlur;
+    const bool glass = wantTransparent && !wantBlur;
+    // Never the Win11 system backdrop (opaque when inactive; does not compose with GL).
+    // Dark caption/border is set separately in styleTitlebar().
     if (_glfw.win32.dwmapi.SetWindowAttribute) {
         DWORD backdrop = 1;  // DWMSBT_NONE
         _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
     }
-    // Transparency WITHOUT blur: enable DWM blur-behind with an *empty* blur
-    // region. That turns on per-pixel alpha compositing but applies no blur, and
-    // crucially does NOT extend the frame -- so DWM never draws its own caption
-    // over our custom frame. (DwmExtendFrameIntoClientArea, the "sheet of glass"
-    // approach, is what pulled in the phantom title bar; disabling non-client
-    // rendering to hide it forced the classic win98 frame instead.)
     if (_glfw.win32.dwmapi.EnableBlurBehindWindow) {
         DWM_BLURBEHIND bb; memset(&bb, 0, sizeof bb);
         bb.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
-        bb.fEnable = glassMode ? TRUE : FALSE;
-        bb.hRgnBlur = glassMode ? CreateRectRgn(0, 0, -1, -1) : NULL;  // empty -> no blur
+        bb.fEnable = glass ? TRUE : FALSE;
+        bb.hRgnBlur = glass ? CreateRectRgn(0, 0, -1, -1) : NULL;  // empty -> no blur
         _glfw.win32.dwmapi.EnableBlurBehindWindow(hwnd, &bb);
         if (bb.hRgnBlur) DeleteObject(bb.hRgnBlur);
     }
-    if (!_glfw.win32.user32.SetWindowCompositionAttribute) return;
-    ACCENT_POLICY policy = {0};
-    // Blur on -> accent blur-behind (translucent + blurred). Blur off -> no accent
-    // (the empty-region blur-behind above provides the plain transparency).
-    policy.AccentState = wantBlur ? ACCENT_ENABLE_BLURBEHIND : ACCENT_DISABLED;
-    policy.GradientColor = 0x00000000;  // no tint; the terminal's bg alpha does the rest
-    WIN_COMP_ATTR_DATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
-    _glfw.win32.user32.SetWindowCompositionAttribute(hwnd, &data);
+    if (_glfw.win32.user32.SetWindowCompositionAttribute) {
+        ACCENT_POLICY policy = {0};
+        policy.AccentState = blur ? ACCENT_ENABLE_BLURBEHIND : ACCENT_DISABLED;
+        policy.GradientColor = 0x00000000;  // no tint; the terminal's bg alpha does the rest
+        WIN_COMP_ATTR_DATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
+        _glfw.win32.user32.SetWindowCompositionAttribute(hwnd, &data);
+    }
 }
 
 int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconfig,
