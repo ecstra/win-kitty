@@ -717,6 +717,13 @@ class TabBar:
         self.screen.color_profile.default_fg = color_from_int(fg)
         self.screen.color_profile.default_bg = color_from_int(bg)
 
+    def set_default_bg(self, bg: Color) -> None:
+        # When the tab bar follows the terminal background (tab_bar_background unset),
+        # track the active window's live background so the strip previews OSC-driven
+        # colour changes (e.g. the themes kitten) immediately, not only on apply.
+        self.draw_data = self.draw_data._replace(default_bg=bg)
+        self.screen.color_profile.default_bg = bg
+
     @property
     def current_colors(self) -> dict[str, Color]:
         return {

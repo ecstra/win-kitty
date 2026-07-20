@@ -1870,18 +1870,32 @@ class Boss:
                 return tab
         return None
 
+    def sync_tab_bar_and_chrome_bg(self, tm: 'TabManager') -> None:
+        # Keep the tab bar strip and the window chrome (titlebar + its buttons)
+        # tracking the active window's background when they follow the terminal
+        # background (tab_bar_background unset), so they update on tab switches, window
+        # focus changes and live theme previews, not only when a theme is applied.
+        aw = tm.active_window
+        if aw is not None and not get_options().tab_bar_background:
+            bg = aw.screen.color_profile.default_bg
+            if tm.tab_bar.draw_data.default_bg != bg:
+                tm.tab_bar.set_default_bg(bg)
+                tm.update_tab_bar_data()
+                tm.mark_tab_bar_dirty()
+        set_os_window_chrome(tm.os_window_id)
+
     def default_bg_changed_for(self, window_id: int, via_escape_code: bool = False) -> None:
         w = self.window_id_map.get(window_id)
         if w is not None:
             w.on_color_scheme_preference_change(via_escape_code=via_escape_code)
             tm = self.os_window_map.get(w.os_window_id)
             if tm is not None:
+                self.sync_tab_bar_and_chrome_bg(tm)
                 tm.update_tab_bar_data()
                 tm.mark_tab_bar_dirty()
                 t = tm.tab_for_id(w.tab_id)
                 if t is not None:
                     t.relayout_borders()
-                set_os_window_chrome(w.os_window_id)
 
     def dispatch_action(
         self,

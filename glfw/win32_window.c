@@ -380,17 +380,43 @@ extern int WINAPI GdipSetInterpolationMode(void*, int);
 
 // Lazily create (and cache) the GDI+ bitmap for a caption icon from its embedded
 // BGRA pixels. idx: 0 minimize, 1 maximize, 2 restore, 3 close.
-static void* cbIconBitmap(int idx) {
-    static void* cache[4] = { NULL, NULL, NULL, NULL };
+static void* cbIconBitmap(int idx, bool dark) {
+    static void* cacheLight[4] = { NULL, NULL, NULL, NULL };
+    static void* cacheDark[4] = { NULL, NULL, NULL, NULL };
     if (idx < 0 || idx > 3) return NULL;
+    void** cache = dark ? cacheDark : cacheLight;
     if (!cache[idx]) {
         const unsigned char* data[4] = { CB_ICON_MIN, CB_ICON_MAX, CB_ICON_RESTORE, CB_ICON_CLOSE };
         void* bmp = NULL;
+        const void* pixels = data[idx];
+        if (dark) {
+            // The embedded glyphs are white; zero the colour channels (keep alpha)
+            // to make them dark for light captions. GdipCreateBitmapFromScan0
+            // references (does not copy) the pixels, so this copy is kept alive for
+            // the process by the cache. Layout is BGRA, alpha at byte 3.
+            size_t n = (size_t) CB_ICON_W * CB_ICON_H * 4;
+            unsigned char* copy = (unsigned char*) malloc(n);
+            if (!copy) return NULL;
+            memcpy(copy, data[idx], n);
+            for (size_t p = 0; p < n; p += 4) { copy[p] = 0; copy[p + 1] = 0; copy[p + 2] = 0; }
+            pixels = copy;
+        }
         // PixelFormat32bppARGB = 0x0026200A
-        if (GdipCreateBitmapFromScan0(CB_ICON_W, CB_ICON_H, CB_ICON_W * 4, 0x0026200A, (void*) data[idx], &bmp) == 0)
+        if (GdipCreateBitmapFromScan0(CB_ICON_W, CB_ICON_H, CB_ICON_W * 4, 0x0026200A, (void*) pixels, &bmp) == 0)
             cache[idx] = bmp;
+        else if (dark) free((void*) pixels);
     }
     return cache[idx];
+}
+
+// A light caption (near-white theme background) needs dark button glyphs. The
+// caption colour is published by kitty as KITTY_TITLEBAR_RGB (the window bg).
+static bool cbCaptionIsLight(void) {
+    const char* rgb = getenv("KITTY_TITLEBAR_RGB");
+    if (!rgb || strlen(rgb) < 6) return false;
+    unsigned long v = strtoul(rgb, NULL, 16);
+    int r = (int)((v >> 16) & 255), g = (int)((v >> 8) & 255), b = (int)(v & 255);
+    return (r * 299 + g * 587 + b * 114) / 1000 >= 128;  // Rec. 601 luma midpoint
 }
 
 typedef struct { _GLFWwindow* owner; int hovered; int pressed; } CaptionState;
@@ -441,6 +467,7 @@ static void cbPaint(HWND overlay) {
         GdipSetInterpolationMode(g, 7 /* HighQualityBicubic: crisp icon downscale */);
         int top = (H - bh) / 2;
         float rad = (float) MulDiv(7, dpi, 96);
+        bool light_caption = cbCaptionIsLight();
         for (int i = 0; i < CB_COUNT; i++) {
             int bx = pad + i * (bw + gap);
             bool hot = st->hovered == i;
@@ -469,7 +496,9 @@ static void cbPaint(HWND overlay) {
             int iconIdx = (i == 0) ? 0
                         : (i == 1) ? (IsZoomed(st->owner->win32.handle) ? 2 : 1)
                                    : 3;
-            void* bmp = cbIconBitmap(iconIdx);
+            // Dark glyphs on a light caption; but keep the close glyph white while
+            // its hover fill is red so the X stays visible.
+            void* bmp = cbIconBitmap(iconIdx, light_caption && !(i == 2 && hot));
             if (bmp) {
                 int gsz = MulDiv(16, dpi, 96);   // glyph box within the 30px button
                 int gx = bx + (bw - gsz) / 2;
@@ -586,6 +615,10 @@ static void styleTitlebar(_GLFWwindow* window) {
     _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &round, sizeof(round));
     COLORREF border = 0x00000000 /* thin black edge, like a normal window */;
     _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, &border, sizeof(border));
+    // Repaint the custom caption buttons so their glyph colour tracks a caption
+    // colour change (e.g. a live theme preview restyles via set_os_window_chrome),
+    // not only window events like resize/focus/hover.
+    if (window->win32.captionButtons) cbPaint(window->win32.captionButtons);
 }
 
 static void updateWindowComposition(_GLFWwindow* window) {
