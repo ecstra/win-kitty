@@ -84,7 +84,27 @@ func AtomicWriteFile(path string, data io.Reader, perm os.FileMode) (err error) 
 	// file before renaming it over the destination (this is fine on POSIX too).
 	closeTemp()
 	if err = os.Rename(tempname, path); err != nil {
-		return
+		// On Windows, Rename (MoveFileEx with REPLACE_EXISTING) fails with
+		// ERROR_ACCESS_DENIED when the destination is read-only or carries
+		// restrictive attributes left by another process -- e.g. switching the
+		// shell between MSYS2 and PowerShell can leave a cached file unwritable.
+		// Clear the destination and retry, automating the "just delete the file"
+		// workaround. Gated on a permission error so a cross-device rename (which
+		// removing the destination could not fix) still surfaces its real error.
+		if errors.Is(err, fs.ErrPermission) {
+			if st, statErr := os.Stat(path); statErr == nil && !st.IsDir() {
+				renameErr := err
+				os.Chmod(path, 0o600)
+				if rmErr := os.Remove(path); rmErr == nil {
+					err = os.Rename(tempname, path)
+				} else {
+					err = renameErr // keep the more informative rename error
+				}
+			}
+		}
+		if err != nil {
+			return
+		}
 	}
 	renamed = true
 	return
