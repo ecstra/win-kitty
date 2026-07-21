@@ -129,6 +129,12 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             // always take (the window opens with an opaque grey backdrop until
             // interacted with); re-apply once the window is actually active.
             if (window->win32.transparent) updateWindowComposition(window);
+            // Clear any pending taskbar attention flash now that the user is
+            // looking at the window (see _glfwPlatformRequestWindowAttention).
+            {
+                FLASHWINFO fi = { .cbSize = sizeof(fi), .hwnd = window->win32.handle, .dwFlags = FLASHW_STOP, .uCount = 0, .dwTimeout = 0 };
+                FlashWindowEx(&fi);
+            }
             _glfwInputWindowFocus(window, true);
             return 0;
         case WM_KILLFOCUS:
@@ -880,12 +886,18 @@ void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen) { 
 void _glfwPlatformHideWindow(_GLFWwindow* window) { ShowWindow(window->win32.handle, SW_HIDE); }
 void _glfwPlatformFocusWindow(_GLFWwindow* window) { SetForegroundWindow(window->win32.handle); SetFocus(window->win32.handle); }
 void _glfwPlatformRequestWindowAttention(_GLFWwindow* window) {
-    // Requesting attention on the focused window is a no-op on X11/macOS, but
-    // FlashWindow() flashes the taskbar button even when the window is already in
-    // the foreground. That makes every bell from a focused kitty (e.g. a kitten
-    // finishing) look like a background notification, so only flash when kitty is
-    // not the foreground window.
-    if (GetForegroundWindow() != window->win32.handle) FlashWindow(window->win32.handle, TRUE);
+    // Requesting attention on the focused window is a no-op on X11/macOS, but on
+    // Windows it flashes the taskbar button even when the window is foreground, so
+    // only flash when kitty is not the foreground window (a bell from a focused
+    // kitty, e.g. a kitten finishing, should not look like a background alert).
+    // Use FlashWindowEx with FLASHW_TIMERNOFG so the flash stops on its own once
+    // the window is brought to the foreground. The old FlashWindow(handle, TRUE)
+    // did a single invert that got STUCK as a persistent taskbar highlight until
+    // the window was next activated -- that is the "keeps notifying after the
+    // kitten closed" bug. WM_SETFOCUS also issues FLASHW_STOP to clear it.
+    if (GetForegroundWindow() == window->win32.handle) return;
+    FLASHWINFO fi = { .cbSize = sizeof(fi), .hwnd = window->win32.handle, .dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG, .uCount = 0, .dwTimeout = 0 };
+    FlashWindowEx(&fi);
 }
 int _glfwPlatformWindowBell(_GLFWwindow* window) { (void) window; return MessageBeep(0xFFFFFFFF) ? true : false; }
 
