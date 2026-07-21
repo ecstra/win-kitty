@@ -650,7 +650,7 @@ static void updateWindowComposition(_GLFWwindow* window) {
     const bool wantBlur = window->win32.blur > 0;
     const bool wantTransparent = window->win32.transparent;
     const bool blur = wantTransparent && wantBlur;
-    const bool glass = wantTransparent && !wantBlur;
+    const bool glass = wantTransparent && !blur;
     // Never the Win11 system backdrop (opaque when inactive; does not compose with GL).
     // Dark caption/border is set separately in styleTitlebar().
     if (_glfw.win32.dwmapi.SetWindowAttribute) {
