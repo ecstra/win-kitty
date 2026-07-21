@@ -4,6 +4,13 @@ If you live in the terminal, *kitty* is made for **you**!
 
 See https://sw.kovidgoyal.net/kitty/[the kitty website].
 
+'''
+
+*Native Windows port* (runs natively on Windows, no WSL) by *ecstra* <gotham47g@gmail.com>.
+kitty itself is created and maintained by Kovid Goyal; this branch adds the Windows port.
+
+'''
+
 image:https://github.com/kovidgoyal/kitty/workflows/CI/badge.svg["Build status", link="https://github.com/kovidgoyal/kitty/actions?query=workflow%3ACI"]
 
 https://sw.kovidgoyal.net/kitty/faq/[Frequently Asked Questions]

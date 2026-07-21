@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,7 +29,11 @@ func ShowError(err error) {
 }
 
 func (self *Command) version_string(formatter *markup.Context) string {
-	return fmt.Sprintln(formatter.Italic(self.CommandStringForUsage()), formatter.Opt(kitty.VersionString), "created by", formatter.Title("Kovid Goyal"))
+	ans := fmt.Sprintln(formatter.Italic(self.CommandStringForUsage()), formatter.Opt(kitty.VersionString), "created by", formatter.Title("Kovid Goyal"))
+	if runtime.GOOS == "windows" {
+		ans += fmt.Sprintln(formatter.Italic("Windows native port by ecstra <gotham47g@gmail.com>"))
+	}
+	return ans
 }
 
 func (self *Command) ShowVersion() {
