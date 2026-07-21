@@ -156,8 +156,12 @@ func (h *Handler) draw_search_text(available_width int) {
 	if right_ellipsis {
 		visible_width_total += wcswidth.Stringwidth("…")
 	}
-	h.lp.DrawSizedText(strings.Join(visible, "")+" ", loop.SizedText{Scale: 2})
-	h.lp.MoveCursorHorizontally(-2 * (visible_width_total - visible_width_before_cursor + 1))
+	scale := 2
+	if !h.lp.TextSizingSupported() {
+		scale = 1 // conhost cannot render OSC 66; DrawSizedText falls back to plain text
+	}
+	h.lp.DrawSizedText(strings.Join(visible, "")+" ", loop.SizedText{Scale: scale})
+	h.lp.MoveCursorHorizontally(-scale * (visible_width_total - visible_width_before_cursor + 1))
 }
 
 const SEARCH_BAR_HEIGHT = 4
