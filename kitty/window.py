@@ -1491,9 +1491,20 @@ class Window:
             env['KITTY_CHILD_CMDLINE'] = ' '.join(map(shlex.quote, self.child.cmdline))
             subprocess.Popen(cb, env=env, cwd=self.child.foreground_cwd, preexec_fn=clear_handled_signals)
         if not self.is_active:
+            tab = self.tabref()
+            if is_windows and tab is not None:
+                # conhost (ConPTY) generates spurious bells that a POSIX pty does
+                # not -- e.g. the shell beeping on leftover mouse-tracking events
+                # after a full-screen kitten (whose mode-restore conhost mangles),
+                # or artifacts of the kitten's exit query-roundtrip. Do not raise a
+                # persistent attention indicator (tab bell + taskbar flash) for a
+                # bell while the user is already focused on this kitty window; only
+                # do so when kitty is in the background, where a real alert matters.
+                from .fast_data_types import current_focused_os_window_id
+                if current_focused_os_window_id() == tab.os_window_id:
+                    return
             changed = not self.needs_attention
             self.needs_attention = True
-            tab = self.tabref()
             if tab is not None:
                 if changed:
                     tab.relayout_borders()
@@ -1526,15 +1537,17 @@ class Window:
         # A full-screen program running in this window's Windows pseudoconsole has
         # just switched back to the main screen (exited). conhost withholds the
         # shell's next output (its prompt) until it receives ConPTY input, so it
-        # does not repaint until the user presses a key. Send a harmless Backspace
-        # a moment later: on the fresh, empty prompt it edits nothing, but conhost
-        # treats it as input and flushes the held output. Only meaningful on
-        # Windows, where the shell runs in a pseudoconsole.
+        # does not repaint until the user presses a key. Send a harmless nudge a
+        # moment later so conhost treats it as input and flushes the held output.
+        # A bare Backspace bells in zsh (backward-delete-char on an empty prompt),
+        # which shows up as a spurious taskbar/tab notification, so send a space
+        # then a Backspace instead: a net-zero edit (insert a char, delete it)
+        # that never bells and works across shells. Only meaningful on Windows.
         if getattr(self.child, 'pty_id', None) is None:
             return
 
         def nudge(timer_id: int | None = None) -> None:
-            self.write_to_child(b'\x7f')
+            self.write_to_child(b' \x7f')
         add_timer(nudge, 0.08, False)
 
     def color_control(self, code: int, value: str | bytes | memoryview = '') -> None:
