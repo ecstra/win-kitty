@@ -65,12 +65,25 @@ var relevant_kitty_opts = sync.OnceValue(func() KittyOpts {
 	return read_relevant_kitty_opts()
 })
 
+// default_shell is the last-resort shell when nothing else resolves. /bin/sh does
+// not exist as a resolvable Windows path, so fall back to the Windows command
+// processor there (COMSPEC, i.e. cmd.exe) instead.
+func default_shell() string {
+	if runtime.GOOS == "windows" {
+		if c := os.Getenv("COMSPEC"); c != "" {
+			return c
+		}
+		return "cmd.exe"
+	}
+	return "/bin/sh"
+}
+
 func get_shell_from_kitty_conf() (shell string) {
 	shell = relevant_kitty_opts().Shell
 	if shell == "." {
 		s, e := utils.LoginShellForCurrentUser()
 		if e != nil {
-			shell = "/bin/sh"
+			shell = default_shell()
 		} else {
 			shell = s
 		}
@@ -114,7 +127,7 @@ func ResolveShell(shell string) []string {
 	}
 	exe := utils.FindExe(shell_cmd[0])
 	if utils.Access(exe, utils.AccessExec) != nil {
-		shell_cmd = []string{"/bin/sh"}
+		shell_cmd = []string{default_shell()}
 	}
 	return shell_cmd
 }
