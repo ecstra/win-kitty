@@ -402,7 +402,12 @@ _ksi_deferred_init() {
 
     builtin alias edit-in-kitty="kitten edit-in-kitty"
 
-    if (( ! opt[(Ie)no-sudo] )) ; then
+    # The sudo wrapper below preserves TERMINFO across sudo via the Unix
+    # `sudo VAR=value cmd` env-passing syntax. On Cygwin/MSYS2 the sudo on PATH is
+    # Microsoft's sudo.exe, which does not understand that syntax -- it treats
+    # TERMINFO=... as the command to run and fails with "Command not found",
+    # breaking sudo entirely. Skip the wrapper there (a real Unix sudo still gets it).
+    if (( ! opt[(Ie)no-sudo] )) && [[ "$OSTYPE" != (cygwin|msys)* ]] ; then
         if [[ -n "$TERMINFO" && ! ( -r "/usr/share/terminfo/x/xterm-kitty" || -r "/usr/share/terminfo/78/xterm-kitty" ) ]]; then
             sudo() {
                 # Ensure terminfo is available in sudo
