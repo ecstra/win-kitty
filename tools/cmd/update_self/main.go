@@ -32,6 +32,9 @@ func update_self(version string) (err error) {
 		return err
 	}
 	if kitty.IsStandaloneBuild == "" {
+		if runtime.GOOS == "windows" {
+			return fmt.Errorf("update-self is not available in this source-built Windows port of kitty. Rebuild from your kitty source tree to update instead.")
+		}
 		return fmt.Errorf("This is not a standalone kitten executable. You must update all of kitty instead.")
 	}
 	rv := "v" + version
