@@ -555,6 +555,37 @@ def get_editor_from_env(env: Mapping[str, str]) -> str | None:
     return None
 
 
+def editor_next_to_shell(opts: Options | None, candidates: tuple[str | None, ...]) -> str:
+    # On Windows kitty's PATH does not include the MSYS2/Cygwin bin dir, so which()
+    # cannot find nano/vim there. The configured shell (e.g.
+    # C:/msys64/usr/bin/zsh.exe) lives in that bin dir, so look for an editor next
+    # to it.
+    shell = (opts.shell if opts is not None else '') or ''
+    if not shell or shell == '.':
+        with suppress(Exception):
+            shell = get_options().shell
+    if not shell or shell == '.':
+        return ''
+    try:
+        shell_exe = next(iter(shlex_split(shell)))
+    except Exception:
+        return ''
+    # Use forward slashes so the path survives the shlex_split the caller applies.
+    bindir = os.path.dirname(shell_exe).replace('\\', '/').rstrip('/')
+    if not bindir:
+        return ''
+    for cand in candidates:
+        if not cand:
+            continue
+        with suppress(Exception):
+            name = os.path.basename(next(iter(shlex_split(cand))))
+            for ext in ('.exe', ''):
+                p = f'{bindir}/{name}{ext}'
+                if os.path.isfile(p):
+                    return p
+    return ''
+
+
 def get_editor_from_env_vars(opts: Options | None = None) -> list[str]:
     from .child import default_env
     editor = get_editor_from_env(default_env())
@@ -566,7 +597,11 @@ def get_editor_from_env_vars(opts: Options | None = None) -> list[str]:
         if ans and which(next(shlex_split(ans)), only_system=True):
             break
     else:
-        ans = 'vim'
+        ans = ''
+        if is_windows:
+            ans = editor_next_to_shell(opts, (editor, 'nano', 'micro', 'vim', 'nvim', 'vi', 'hx', 'kak', 'vis'))
+        if not ans:
+            ans = 'vim'
     return list(shlex_split(ans))
 
 
@@ -773,6 +808,11 @@ def which(name: str, only_system: bool = False) -> str | None:
 
 @lru_cache(4)
 def read_resolved_shell_environment(shell: tuple[str, ...]) -> MappingProxyType[str, str]:
+    if is_windows:
+        # Capturing the interactive shell environment needs a pty (openpty,
+        # start_new_session, preexec_fn) -- none of which exist on Windows, where
+        # os.openpty() raises AttributeError. Skip it (callers fall back sensibly).
+        return MappingProxyType({})
     import subprocess
     cmdline = list(shell)
     if '-l' not in cmdline and '--login' not in cmdline:
