@@ -31,7 +31,9 @@ func ShowError(err error) {
 func (self *Command) version_string(formatter *markup.Context) string {
 	ans := fmt.Sprintln(formatter.Italic(self.CommandStringForUsage()), formatter.Opt(kitty.VersionString), "created by", formatter.Title("Kovid Goyal"))
 	if runtime.GOOS == "windows" {
-		ans += fmt.Sprintln(formatter.Italic("Windows native port by ecstra <gotham47g@gmail.com>"))
+		credit := formatter.Italic("Windows native port by ") + formatter.Bold(formatter.Orange("ecstra")) +
+			" " + formatter.Dim("<") + formatter.Cyan("gotham47g@gmail.com") + formatter.Dim(">")
+		ans += fmt.Sprintln(credit)
 	}
 	return ans
 }

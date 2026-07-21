@@ -320,7 +320,14 @@ def version(add_rev: bool = False) -> str:
     ans = '{} {}{} created by {}'.format(italic(appname), green(str_version), rev, title('Kovid Goyal'))
     from .constants import is_windows
     if is_windows:
-        ans += '\n' + italic('Windows native port by ecstra <gotham47g@gmail.com>')
+        def sgr(x: str, start: str, end: str) -> str:
+            if sys.stdout is not None and sys.stdout.isatty():
+                return f'\033[{start}m{x}\033[{end}m'
+            return x
+        # orange name (#fd971f) to match the cursor, dim brackets, cyan email
+        credit = (italic('Windows native port by ') + sgr('ecstra', '38;2;253;151;31', '39') +
+                  ' ' + sgr('<', '2', '22') + cyan('gotham47g@gmail.com') + sgr('>', '2', '22'))
+        ans += '\n' + credit
     return ans
 
 
