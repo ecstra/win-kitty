@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -38,6 +39,20 @@ func edit_loop(data_to_send string, kill_if_signaled bool, on_data OnDataCallbac
 	started := false
 	canceled := false
 	update_type := ""
+
+	// On Windows, conhost strips the \x1bP@kitty-edit DCS from stdout, so the
+	// request never reaches kitty and editing hangs. Send the DCS through kitty's
+	// named-pipe bypass instead (the same channel icat uses for the graphics APC).
+	// The reply comes back as plain-text lines, which survive conhost, so only the
+	// outgoing DCS needs redirecting.
+	use_bypass := runtime.GOOS == "windows"
+	send_dcs := func(s string) error {
+		if use_bypass {
+			return utils.SendToKittyBypass([]byte(s))
+		}
+		lp.QueueWriteString(s)
+		return nil
+	}
 
 	handle_line := func(line string) error {
 		if canceled {
@@ -113,20 +128,22 @@ func edit_loop(data_to_send string, kill_if_signaled bool, on_data OnDataCallbac
 	}
 
 	lp.OnInitialize = func() (string, error) {
+		b := strings.Builder{}
+		b.Grow(len(data_to_send) + 4096)
 		pos, chunk_num := 0, 0
 		for {
 			limit := min(pos+2048, len(data_to_send))
 			if limit <= pos {
 				break
 			}
-			lp.QueueWriteString("\x1bP@kitty-edit|" + strconv.Itoa(chunk_num) + ":")
-			lp.QueueWriteString(data_to_send[pos:limit])
-			lp.QueueWriteString("\x1b\\")
+			b.WriteString("\x1bP@kitty-edit|" + strconv.Itoa(chunk_num) + ":")
+			b.WriteString(data_to_send[pos:limit])
+			b.WriteString("\x1b\\")
 			chunk_num++
 			pos = limit
 		}
-		lp.QueueWriteString("\x1bP@kitty-edit|\x1b\\")
-		return "", nil
+		b.WriteString("\x1bP@kitty-edit|\x1b\\")
+		return "", send_dcs(b.String())
 	}
 
 	lp.OnText = func(text string, from_key_event bool, in_bracketed_paste bool) error {
@@ -146,7 +163,9 @@ func edit_loop(data_to_send string, kill_if_signaled bool, on_data OnDataCallbac
 		if event.MatchesPressOrRepeat("ctrl+c") || event.MatchesPressOrRepeat("esc") {
 			event.Handled = true
 			canceled = true
-			lp.QueueWriteString(abort_msg)
+			if err := send_dcs(abort_msg); err != nil {
+				return err
+			}
 			if !started {
 				return tui.Canceled
 			}
@@ -164,7 +183,11 @@ func edit_loop(data_to_send string, kill_if_signaled bool, on_data OnDataCallbac
 
 	ds := lp.DeathSignalName()
 	if ds != "" {
-		fmt.Print(abort_msg)
+		if use_bypass {
+			_ = utils.SendToKittyBypass([]byte(abort_msg))
+		} else {
+			fmt.Print(abort_msg)
+		}
 		if kill_if_signaled {
 			lp.KillIfSignalled()
 			return
