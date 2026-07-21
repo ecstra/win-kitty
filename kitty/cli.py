@@ -317,7 +317,11 @@ def version(add_rev: bool = False) -> str:
     if add_rev:
         if getattr(fast_data_types, 'KITTY_VCS_REV', ''):
             rev = f' ({fast_data_types.KITTY_VCS_REV[:10]})'
-    return '{} {}{} created by {}'.format(italic(appname), green(str_version), rev, title('Kovid Goyal'))
+    ans = '{} {}{} created by {}'.format(italic(appname), green(str_version), rev, title('Kovid Goyal'))
+    from .constants import is_windows
+    if is_windows:
+        ans += '\n' + italic('Windows native port by ecstra <gotham47g@gmail.com>')
+    return ans
 
 
 def wrap(text: str, limit: int = 80) -> Iterator[str]:
