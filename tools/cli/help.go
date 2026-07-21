@@ -31,7 +31,15 @@ func ShowError(err error) {
 func (self *Command) version_string(formatter *markup.Context) string {
 	ans := fmt.Sprintln(formatter.Italic(self.CommandStringForUsage()), formatter.Opt(kitty.VersionString), "created by", formatter.Title("Kovid Goyal"))
 	if runtime.GOOS == "windows" {
-		credit := formatter.Italic("Windows native port by ") + formatter.Bold(formatter.Orange("ecstra")) +
+		// Orange (#fd971f) name to match the cursor. Emit truecolor in the
+		// SEMICOLON form (38;2;...) not the colon form (38:2:...) the style
+		// formatter produces -- conhost (ConPTY) mangles colon-form truecolor,
+		// so the color would be dropped and the name render white.
+		name := "ecstra"
+		if formatter.EscapeCodesAllowed() {
+			name = "\x1b[1;38;2;253;151;31mecstra\x1b[22;39m"
+		}
+		credit := formatter.Italic("Windows native port by ") + name +
 			" " + formatter.Dim("<") + formatter.Cyan("gotham47g@gmail.com") + formatter.Dim(">")
 		ans += fmt.Sprintln(credit)
 	}

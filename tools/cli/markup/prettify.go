@@ -19,8 +19,8 @@ var _ = fmt.Print
 type Context struct {
 	fmt_ctx style.Context
 
-	Cyan, Green, Blue, Magenta, Red, BrightRed, Yellow, Orange, Italic, Bold, Dim, Title, Exe, Opt, Emph, Err, Code func(args ...any) string
-	Url                                                                                                             func(string, string) string
+	Cyan, Green, Blue, Magenta, Red, BrightRed, Yellow, Italic, Bold, Dim, Title, Exe, Opt, Emph, Err, Code func(args ...any) string
+	Url                                                                                                     func(string, string) string
 }
 
 var (
@@ -39,7 +39,6 @@ func New(allow_escape_codes bool) *Context {
 	ans.Blue = fmt_ctx.SprintFunc("fg=blue")
 	ans.BrightRed = fmt_ctx.SprintFunc("fg=bright-red")
 	ans.Yellow = fmt_ctx.SprintFunc("fg=bright-yellow")
-	ans.Orange = fmt_ctx.SprintFunc("fg=#fd971f")
 	ans.Italic = fmt_ctx.SprintFunc("italic")
 	ans.Bold = fmt_ctx.SprintFunc("bold")
 	ans.Dim = fmt_ctx.SprintFunc("dim")
