@@ -193,6 +193,13 @@ func (self *TerminalStateOptions) ResetStateEscapeCodes() string {
 	if self.in_band_resize_notification {
 		reset_modes(&sb, INBAND_RESIZE_NOTIFICATION)
 	}
+	// Explicitly turn off mouse tracking too. On Windows conhost drops the
+	// RESTORE_PRIVATE_MODE_VALUES (XTRESTORE) below, so without this the shell is
+	// left with mouse tracking still enabled after a mouse kitten and beeps on
+	// every later mouse event (a spurious bell -> taskbar/tab notification).
+	if self.mouse_tracking != NO_MOUSE_TRACKING {
+		reset_modes(&sb, MOUSE_BUTTON_TRACKING, MOUSE_MOTION_TRACKING, MOUSE_MOVE_TRACKING, MOUSE_UTF8_MODE, MOUSE_SGR_MODE, MOUSE_SGR_PIXEL_MODE)
+	}
 	sb.WriteString(RESTORE_PRIVATE_MODE_VALUES)
 	if self.restore_colors {
 		sb.WriteString(RESTORE_COLORS)
