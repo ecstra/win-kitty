@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -638,7 +639,22 @@ func (self *Loop) RecoverFromPanicInGoRoutine() {
 	}
 }
 
+// TextSizingSupported reports whether DrawSizedText actually scales text. It does
+// not under a Windows pseudoconsole: conhost (ConPTY) re-renders the child's
+// output and does not understand the OSC 66 text-sizing protocol, so scaled text
+// overflows and the cursor is left misplaced. Callers that position the cursor
+// around sized text should use a scale of 1 when this returns false.
+func (self *Loop) TextSizingSupported() bool {
+	return runtime.GOOS != "windows"
+}
+
 func (self *Loop) DrawSizedText(text string, spec SizedText) {
+	if !self.TextSizingSupported() {
+		// conhost cannot render OSC 66; draw plain text so kitty and conhost agree
+		// on the layout. Callers adjust their cursor math via TextSizingSupported.
+		self.QueueWriteString(text)
+		return
+	}
 	b := strings.Builder{}
 	b.Grow(len(text) + 24)
 	b.WriteString("\x1b]66;")

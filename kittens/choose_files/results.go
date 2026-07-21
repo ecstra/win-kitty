@@ -281,7 +281,10 @@ func (h *Handler) draw_num_of_matches(num_shown, y int, in_progress bool) {
 	default:
 		m = fmt.Sprintf(" %d of %s matches ", min(num_shown, h.state.last_render.num_matches), h.msg_printer.Sprint(h.state.last_render.num_matches))
 	}
-	w := int(math.Ceil(float64(wcswidth.Stringwidth(m)) / 2.0))
+	w := wcswidth.Stringwidth(m)
+	if h.lp.TextSizingSupported() {
+		w = int(math.Ceil(float64(w) / 2.0)) // subscale 1/2 packs two half-width graphemes per cell
+	}
 	spinner := ""
 	spinner_width := 0
 	if in_progress {
