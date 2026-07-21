@@ -264,7 +264,7 @@ func (h *Handler) draw_screen() (err error) {
 	case NORMAL:
 		matches, is_complete := h.get_results()
 		h.lp.SetWindowTitle(h.state.WindowTitle())
-		y := SEARCH_BAR_HEIGHT + utils.IfElse(h.state.DisplayTitle(), 1, 0)
+		y := h.search_bar_height() + utils.IfElse(h.state.DisplayTitle(), 1, 0)
 		footer_height, err := h.draw_footer()
 		if err != nil {
 			return err
