@@ -34,9 +34,23 @@ def as_json(indent: int | None = None) -> str:
 def main(argv: Sequence[str]) -> None:
     import os
 
-    from kitty.constants import kitten_exe, kitty_exe
+    from kitty.constants import is_windows, kitten_exe, kitty_exe
     argv = list(argv)
-    if '--psnames' in argv:
+    psnames = '--psnames' in argv
+    if psnames:
         argv.remove('--psnames')
+    if is_windows:
+        # kitty.exe is a GUI-subsystem binary: when run from another terminal it
+        # has no console, so the choose-fonts TUI it would exec cannot set up
+        # raw input and misbehaves. Print the actual font list instead; the
+        # interactive UI remains available as `kitten choose-fonts`.
+        for family, faces in sorted(create_family_groups().items(), key=lambda x: x[0].lower()):
+            print(family)
+            for f in faces:
+                if psnames:
+                    print('   ', f['full_name'], f'({f["postscript_name"]})')
+                else:
+                    print('   ', f['full_name'])
+        return
     os.environ['KITTY_PATH_TO_KITTY_EXE'] = kitty_exe()
     os.execlp(kitten_exe(), 'kitten', 'choose-fonts')
