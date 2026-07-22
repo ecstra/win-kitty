@@ -4,6 +4,7 @@ package tool
 
 import (
 	"fmt"
+	"runtime"
 
 	"github.com/kovidgoyal/kitty/kittens/ask"
 	"github.com/kovidgoyal/kitty/kittens/choose_files"
@@ -169,4 +170,14 @@ func KittyToolEntryPoints(root *cli.Command) {
 		},
 	})
 	benchmark.EntryPoint(root)
+	// Flag kittens not yet implemented on the native Windows port in the command
+	// list, so it is clear from `kitten` which ones will not run there. They also
+	// exit with a clear message at runtime (cli.NotImplementedOnWindows).
+	if runtime.GOOS == "windows" {
+		for _, name := range []string{"dnd", "panel", "quick-access-terminal", "desktop-ui"} {
+			if c := root.FindSubCommand(name); c != nil {
+				c.ShortDescription += " (not supported on Windows)"
+			}
+		}
+	}
 }
