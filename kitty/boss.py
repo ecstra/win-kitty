@@ -2568,9 +2568,21 @@ class Boss:
         env = {}
         env['KITTEN_RUNNING_AS_UI'] = '1'
         env['KITTY_CONFIG_DIRECTORY'] = config_dir
+        stdin = json.dumps({'msg': msg, 'tb': tb}).encode()
+        if is_windows:
+            # Like other overlay kittens, __show_error__ runs over plain pipes
+            # whose single stdin carries keyboard input, so it cannot also read the
+            # JSON payload from stdin. Hand it over via a temp file instead (see
+            # run_kitten_with_metadata and tui.ReadKittenInputData).
+            env['KITTY_KITTEN_NO_PTY'] = '1'
+            import tempfile
+            dfd, dpath = tempfile.mkstemp(prefix='kitty-kitten-stdin-')
+            with os.fdopen(dfd, 'wb') as df:
+                df.write(stdin)
+            env['KITTY_STDIN_DATA_FILE'] = dpath
         return SpecialWindow(
             cmd, override_title=title,
-            stdin=json.dumps({'msg': msg, 'tb': tb}).encode(),
+            stdin=stdin,
             env=env,
             overlay_for=overlay_for,
         )

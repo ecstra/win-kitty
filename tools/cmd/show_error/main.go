@@ -5,12 +5,9 @@ package show_error
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 
 	"github.com/kovidgoyal/kitty/tools/cli"
 	"github.com/kovidgoyal/kitty/tools/cli/markup"
-	"github.com/kovidgoyal/kitty/tools/tty"
 	"github.com/kovidgoyal/kitty/tools/tui"
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
 )
@@ -27,12 +24,12 @@ type Message struct {
 }
 
 func main(args []string, opts *Options) (rc int, err error) {
-	if tty.IsTerminal(os.Stdin.Fd()) {
-		return 1, fmt.Errorf("Input data for this kitten must be piped as JSON to STDIN")
-	}
-	data, err := io.ReadAll(os.Stdin)
+	data, ok, err := tui.ReadKittenInputData()
 	if err != nil {
 		return 1, err
+	}
+	if !ok {
+		return 1, fmt.Errorf("Input data for this kitten must be piped as JSON to STDIN")
 	}
 	m := Message{}
 	err = json.Unmarshal(data, &m)
