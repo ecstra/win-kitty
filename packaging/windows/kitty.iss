@@ -13,9 +13,9 @@ AppName=kitty
 AppVersion={#AppVersion}
 AppPublisher=Kovid Goyal (Windows port by ecstra)
 AppPublisherURL=https://sw.kovidgoyal.net/kitty/
-DefaultDirName={userpf}\kitty
+DefaultDirName={autopf}\kitty
 DisableProgramGroupPage=yes
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\..\dist
@@ -36,25 +36,25 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Source: "..\..\dist\kitty\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
-Name: "{userprograms}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; WorkingDir: "{%USERPROFILE}"
-Name: "{userdesktop}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; WorkingDir: "{%USERPROFILE}"; Tasks: desktopicon
+Name: "{autoprograms}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; WorkingDir: "{%USERPROFILE}"
+Name: "{autodesktop}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; WorkingDir: "{%USERPROFILE}"; Tasks: desktopicon
 
 [Registry]
 ; Right-click on a folder
-Root: HKCU; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open kitty here"; Flags: uninsdeletekey; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\kitty\launcher\kitty.exe"""; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\Directory\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open kitty here"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
 ; Right-click on the background of an open folder
-Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open kitty here"; Flags: uninsdeletekey; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\kitty\launcher\kitty.exe"""; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open kitty here"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
 ; Right-click on a drive
-Root: HKCU; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open kitty here"; Flags: uninsdeletekey; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\kitty\launcher\kitty.exe"""; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\Drive\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open kitty here"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
 
 [Code]
-const EnvKey = 'Environment';
+const EnvKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
 
 function BinDir(): string;
 begin
@@ -65,14 +65,14 @@ procedure EnvAddPath();
 var
   Paths: string;
 begin
-  if not RegQueryStringValue(HKCU, EnvKey, 'Path', Paths) then
+  if not RegQueryStringValue(HKLM, EnvKey, 'Path', Paths) then
     Paths := '';
   if Pos(';' + Uppercase(BinDir()) + ';', ';' + Uppercase(Paths) + ';') > 0 then
     exit;
   if (Paths <> '') and (Paths[Length(Paths)] <> ';') then
     Paths := Paths + ';';
   Paths := Paths + BinDir();
-  RegWriteExpandStringValue(HKCU, EnvKey, 'Path', Paths);
+  RegWriteExpandStringValue(HKLM, EnvKey, 'Path', Paths);
 end;
 
 procedure EnvRemovePath();
@@ -80,7 +80,7 @@ var
   Paths, Upper: string;
   P: Integer;
 begin
-  if not RegQueryStringValue(HKCU, EnvKey, 'Path', Paths) then
+  if not RegQueryStringValue(HKLM, EnvKey, 'Path', Paths) then
     exit;
   Upper := ';' + Uppercase(Paths) + ';';
   P := Pos(';' + Uppercase(BinDir()) + ';', Upper);
@@ -88,7 +88,7 @@ begin
     exit;
   { P is an index into the ';'-prefixed string: cut the entry and one ';' }
   Delete(Paths, P, Length(BinDir()) + 1);
-  RegWriteExpandStringValue(HKCU, EnvKey, 'Path', Paths);
+  RegWriteExpandStringValue(HKLM, EnvKey, 'Path', Paths);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
