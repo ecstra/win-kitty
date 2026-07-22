@@ -463,7 +463,16 @@ class Child:
         # EOF when they exit (their window closes).
         use_pty = self.final_env.get('KITTY_KITTEN_NO_PTY') != '1'
         read_fd, write_fd, pty_id = fast_data_types.open_pty(cols, rows, use_pty)
-        pid = fast_data_types.spawn(pty_id, exe, self.cwd or os.getcwd(), tuple(argv), env)
+        cwd = self.cwd or os.getcwd()
+        if not os.path.isdir(cwd):
+            # CreateProcessW fails with ERROR_DIRECTORY (WinError 267) when the cwd
+            # is not a valid Windows directory. This can happen if a Unix-style path
+            # leaks through (for example a POSIX cwd reported by an MSYS2/Cygwin
+            # shell). Fall back to a directory that always works.
+            cwd = os.path.expanduser('~')
+            if not os.path.isdir(cwd):
+                cwd = os.getcwd()
+        pid = fast_data_types.spawn(pty_id, exe, cwd, tuple(argv), env)
         self.pid = pid
         self.pty_id = pty_id
         self.windows_write_fd = write_fd
