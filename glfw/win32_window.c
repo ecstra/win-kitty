@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <ole2.h>
+#include <shellapi.h>
 
 // ---------------------------------------------------------------------------
 // Key translation: Win32 virtual key -> kitty functional key
@@ -699,6 +701,7 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
         return false;
     }
     SetPropW(window->win32.handle, L"GLFW", window);
+    _glfwWin32RegisterDropTarget(window);
 
     if (ctxconfig->client != GLFW_NO_API) {
         if (!_glfwCreateContextWGL(window, ctxconfig, fbconfig)) return false;
@@ -723,6 +726,7 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window) {
         window->win32.captionButtons = NULL;
     }
     if (window->win32.handle) {
+        _glfwWin32RevokeDropTarget(window);
         RemovePropW(window->win32.handle, L"GLFW");
         DestroyWindow(window->win32.handle);
         window->win32.handle = NULL;
@@ -1014,13 +1018,279 @@ void _glfwPlatformWaitEventsTimeout(monotonic_t timeout) {
 }
 
 // ---------------------------------------------------------------------------
-// Drag and drop (not supported on this port yet)
+// Drag and drop -- drop target (files/text dropped ONTO a kitty window)
 // ---------------------------------------------------------------------------
+// Windows delivers drops via OLE: each window registers an IDropTarget and on
+// drop we pull the data out of the IDataObject synchronously. We surface it to
+// kitty's platform-agnostic drop API as text/uri-list (CF_HDROP file lists, as
+// file:// URIs) and text/plain;charset=utf-8 (CF_UNICODETEXT), which kitty then
+// pastes into the window (see glfw.c drop_dest_callback and window.py on_drop).
+// Dragging OUT of kitty (the dnd kitten) is not implemented -- see
+// _glfwPlatformStartDrag below.
 
-void _glfwPlatformRequestDropUpdate(_GLFWwindow* window) { (void) window; }
-ssize_t _glfwPlatformReadAvailableDropData(GLFWwindow* w, GLFWDropEvent* ev, char* buffer, size_t sz) { (void) w; (void) ev; (void) buffer; (void) sz; return -1; }
-void _glfwPlatformEndDrop(GLFWwindow* w, GLFWDragOperationType op) { (void) w; (void) op; }
-int _glfwPlatformRequestDropData(_GLFWwindow* window, const char* mime) { (void) window; (void) mime; return -1; }
+#define DND_MIME_URI_LIST "text/uri-list"
+#define DND_MIME_TEXT "text/plain;charset=utf-8"
+#define WIN32_DND_MIN(a, b) ((a) < (b) ? (a) : (b))
+
+typedef struct { char *mime; char *data; size_t size, offset; } Win32DropItem;
+
+// Only one drag is ever in flight, so a single global holds its state.
+static struct {
+    Win32DropItem items[2];   // data extracted at drop time
+    size_t count;
+    const char *offered[2];   // mimes the active drag offers (enter..leave)
+    size_t offered_count;
+    _GLFWwindow *window;
+} win32_drop;
+
+static void
+free_win32_drop_items(void) {
+    for (size_t i = 0; i < win32_drop.count; i++) { free(win32_drop.items[i].mime); free(win32_drop.items[i].data); }
+    win32_drop.count = 0;
+}
+
+static void
+add_win32_drop_item(const char *mime, char *data, size_t size) {
+    if (!data || win32_drop.count >= sizeof(win32_drop.items) / sizeof(win32_drop.items[0])) { free(data); return; }
+    Win32DropItem *it = win32_drop.items + win32_drop.count++;
+    it->mime = _glfw_strdup(mime); it->data = data; it->size = size; it->offset = 0;
+}
+
+static char*
+win32_wide_to_utf8(const wchar_t *w, size_t *out_len) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);  // includes terminating NUL
+    if (n <= 0) return NULL;
+    char *s = malloc((size_t)n);
+    if (!s) return NULL;
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL);
+    if (out_len) *out_len = (size_t)(n - 1);
+    return s;
+}
+
+static bool
+buf_append(char **buf, size_t *len, size_t *cap, const char *s, size_t n) {
+    if (*len + n + 1 > *cap) {
+        size_t ncap = *cap ? *cap : 256;
+        while (ncap < *len + n + 1) ncap *= 2;
+        char *nb = realloc(*buf, ncap);
+        if (!nb) return false;
+        *buf = nb; *cap = ncap;
+    }
+    memcpy(*buf + *len, s, n); *len += n; (*buf)[*len] = 0;
+    return true;
+}
+
+// Append UTF-8 bytes percent-encoded, leaving RFC3986 unreserved chars plus the
+// path separators '/' and ':' (the drive colon) intact.
+static bool
+uri_append_encoded(char **buf, size_t *len, size_t *cap, const char *s, size_t n) {
+    static const char hex[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        bool safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+            || c == '-' || c == '_' || c == '.' || c == '~' || c == '/' || c == ':';
+        if (safe) { if (!buf_append(buf, len, cap, (const char*)&c, 1)) return false; }
+        else { char pct[3] = { '%', hex[c >> 4], hex[c & 0xF] }; if (!buf_append(buf, len, cap, pct, 3)) return false; }
+    }
+    return true;
+}
+
+static char*
+build_uri_list_from_hdrop(HDROP hdrop, size_t *out_len) {
+    UINT count = DragQueryFileW(hdrop, 0xFFFFFFFF, NULL, 0);
+    char *buf = NULL; size_t len = 0, cap = 0;
+    for (UINT i = 0; i < count; i++) {
+        UINT wn = DragQueryFileW(hdrop, i, NULL, 0);
+        if (!wn) continue;
+        wchar_t *wpath = malloc((wn + 1) * sizeof(wchar_t));
+        if (!wpath) continue;
+        DragQueryFileW(hdrop, i, wpath, wn + 1);
+        for (UINT k = 0; k < wn; k++) if (wpath[k] == L'\\') wpath[k] = L'/';
+        size_t u8len = 0; char *u8 = win32_wide_to_utf8(wpath, &u8len);
+        free(wpath);
+        if (!u8) continue;
+        buf_append(&buf, &len, &cap, "file:///", 8);
+        uri_append_encoded(&buf, &len, &cap, u8, u8len);
+        buf_append(&buf, &len, &cap, "\r\n", 2);
+        free(u8);
+    }
+    if (out_len) *out_len = len;
+    return buf;
+}
+
+static char*
+win32_get_format(IDataObject *pdo, CLIPFORMAT cf, size_t *out_len) {
+    FORMATETC fmt = { cf, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+    STGMEDIUM stg;
+    if (FAILED(pdo->lpVtbl->GetData(pdo, &fmt, &stg))) return NULL;
+    char *result = NULL;
+    void *p = GlobalLock(stg.hGlobal);
+    if (p) {
+        if (cf == CF_HDROP) result = build_uri_list_from_hdrop((HDROP)p, out_len);
+        else result = win32_wide_to_utf8((const wchar_t*)p, out_len);
+        GlobalUnlock(stg.hGlobal);
+    }
+    ReleaseStgMedium(&stg);
+    return result;
+}
+
+static size_t
+collect_drop_mimes(IDataObject *pdo, const char **mimes) {
+    size_t n = 0;
+    FORMATETC f = { CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+    if (pdo->lpVtbl->QueryGetData(pdo, &f) == S_OK) mimes[n++] = DND_MIME_URI_LIST;
+    f.cfFormat = CF_UNICODETEXT;
+    if (pdo->lpVtbl->QueryGetData(pdo, &f) == S_OK) mimes[n++] = DND_MIME_TEXT;
+    return n;
+}
+
+static void
+drop_point_to_client(_GLFWwindow *window, POINTL pt, double *x, double *y) {
+    POINT p = { pt.x, pt.y };
+    ScreenToClient(window->win32.handle, &p);
+    *x = p.x; *y = p.y;
+}
+
+// --- IDropTarget COM object (one per window) ---
+typedef struct { IDropTarget iface; LONG ref; _GLFWwindow *window; } Win32DropTarget;
+
+static HRESULT STDMETHODCALLTYPE dt_QueryInterface(IDropTarget *This, REFIID riid, void **ppv) {
+    if (!ppv) return E_POINTER;
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDropTarget)) {
+        *ppv = This; This->lpVtbl->AddRef(This); return S_OK;
+    }
+    *ppv = NULL; return E_NOINTERFACE;
+}
+static ULONG STDMETHODCALLTYPE dt_AddRef(IDropTarget *This) {
+    return InterlockedIncrement(&((Win32DropTarget*)This)->ref);
+}
+static ULONG STDMETHODCALLTYPE dt_Release(IDropTarget *This) {
+    Win32DropTarget *self = (Win32DropTarget*)This;
+    LONG r = InterlockedDecrement(&self->ref);
+    if (r == 0) free(self);
+    return r;
+}
+static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pdo, DWORD keys, POINTL pt, DWORD *effect) {
+    (void)keys;
+    Win32DropTarget *self = (Win32DropTarget*)This;
+    win32_drop.window = self->window;
+    win32_drop.offered_count = collect_drop_mimes(pdo, win32_drop.offered);
+    double x, y; drop_point_to_client(self->window, pt, &x, &y);
+    if (win32_drop.offered_count) {
+        const char *m[2]; for (size_t i = 0; i < win32_drop.offered_count; i++) m[i] = win32_drop.offered[i];
+        _glfwInputDropEvent(self->window, GLFW_DROP_ENTER, x, y, m, win32_drop.offered_count, false);
+    }
+    *effect = win32_drop.offered_count ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POINTL pt, DWORD *effect) {
+    (void)keys;
+    Win32DropTarget *self = (Win32DropTarget*)This;
+    double x, y; drop_point_to_client(self->window, pt, &x, &y);
+    if (win32_drop.offered_count) {
+        const char *m[2]; for (size_t i = 0; i < win32_drop.offered_count; i++) m[i] = win32_drop.offered[i];
+        _glfwInputDropEvent(self->window, GLFW_DROP_MOVE, x, y, m, win32_drop.offered_count, false);
+    }
+    *effect = win32_drop.offered_count ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE dt_DragLeave(IDropTarget *This) {
+    Win32DropTarget *self = (Win32DropTarget*)This;
+    _glfwInputDropEvent(self->window, GLFW_DROP_LEAVE, 0, 0, NULL, 0, false);
+    win32_drop.offered_count = 0;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE dt_Drop(IDropTarget *This, IDataObject *pdo, DWORD keys, POINTL pt, DWORD *effect) {
+    (void)keys;
+    Win32DropTarget *self = (Win32DropTarget*)This;
+    free_win32_drop_items();
+    win32_drop.window = self->window;
+    win32_drop.offered_count = 0;
+    size_t u8len; char *u8;
+    if ((u8 = win32_get_format(pdo, CF_HDROP, &u8len))) add_win32_drop_item(DND_MIME_URI_LIST, u8, u8len);
+    if ((u8 = win32_get_format(pdo, CF_UNICODETEXT, &u8len))) add_win32_drop_item(DND_MIME_TEXT, u8, u8len);
+    if (win32_drop.count) {
+        const char *m[2]; for (size_t i = 0; i < win32_drop.count; i++) m[i] = win32_drop.items[i].mime;
+        double x, y; drop_point_to_client(self->window, pt, &x, &y);
+        size_t accepted = _glfwInputDropEvent(self->window, GLFW_DROP_DROP, x, y, m, win32_drop.count, false);
+        for (size_t i = 0; i < accepted; i++) _glfwPlatformRequestDropData(self->window, m[i]);
+        *effect = DROPEFFECT_COPY;
+    } else *effect = DROPEFFECT_NONE;
+    return S_OK;
+}
+
+static IDropTargetVtbl win32_drop_target_vtbl = {
+    dt_QueryInterface, dt_AddRef, dt_Release, dt_DragEnter, dt_DragOver, dt_DragLeave, dt_Drop
+};
+
+void
+_glfwWin32RegisterDropTarget(_GLFWwindow *window) {
+    static bool ole_inited = false;
+    if (!ole_inited) { if (FAILED(OleInitialize(NULL))) return; ole_inited = true; }
+    Win32DropTarget *dt = calloc(1, sizeof(Win32DropTarget));
+    if (!dt) return;
+    dt->iface.lpVtbl = &win32_drop_target_vtbl; dt->ref = 1; dt->window = window;
+    if (RegisterDragDrop(window->win32.handle, &dt->iface) != S_OK) { dt->iface.lpVtbl->Release(&dt->iface); return; }
+    window->win32.dropTarget = &dt->iface;
+}
+
+void
+_glfwWin32RevokeDropTarget(_GLFWwindow *window) {
+    IDropTarget *dt = (IDropTarget*)window->win32.dropTarget;
+    if (dt) {
+        RevokeDragDrop(window->win32.handle);
+        dt->lpVtbl->Release(dt);
+        window->win32.dropTarget = NULL;
+        if (win32_drop.window == window) { free_win32_drop_items(); win32_drop.window = NULL; win32_drop.offered_count = 0; }
+    }
+}
+
+// After a chunk is read, another GLFW_DROP_DATA_AVAILABLE must be posted so the
+// reader is driven to completion (a 0-length read signals the mime is done).
+typedef struct { char *mime; GLFWid window_id; } win32_drop_notify;
+static void win32_free_drop_notify(unsigned long long tid, void *x) { (void)tid; win32_drop_notify *d = x; free(d->mime); free(d); }
+static void win32_notify_drop_data(unsigned long long tid, void *x) {
+    (void)tid;
+    win32_drop_notify *d = x;
+    _GLFWwindow *window = _glfwWindowForId(d->window_id);
+    if (window) { const char *m[1] = { d->mime }; _glfwInputDropEvent(window, GLFW_DROP_DATA_AVAILABLE, 0, 0, m, 1, false); }
+}
+
+void _glfwPlatformRequestDropUpdate(_GLFWwindow* window) { (void) window; }  // OLE DragOver drives continuous updates
+
+ssize_t _glfwPlatformReadAvailableDropData(GLFWwindow* w, GLFWDropEvent* ev, char* buffer, size_t sz) {
+    _GLFWwindow *window = (_GLFWwindow*)w;
+    const char *mime = ev->mimes[0];
+    for (size_t i = 0; i < win32_drop.count; i++) {
+        Win32DropItem *it = win32_drop.items + i;
+        if (strcmp(it->mime, mime) == 0) {
+            if (it->offset >= it->size) return 0;
+            size_t to_read = WIN32_DND_MIN(sz, it->size - it->offset);
+            memcpy(buffer, it->data + it->offset, to_read);
+            it->offset += to_read;
+            if (to_read) {
+                win32_drop_notify *d = malloc(sizeof(win32_drop_notify));
+                if (d) { d->mime = _glfw_strdup(mime); d->window_id = window->id; _glfwPlatformAddTimer(0, false, win32_notify_drop_data, d, win32_free_drop_notify); }
+            }
+            return (ssize_t)to_read;
+        }
+    }
+    return -ENOENT;
+}
+
+void _glfwPlatformEndDrop(GLFWwindow* w, GLFWDragOperationType op) { (void) w; (void) op; free_win32_drop_items(); }
+
+int _glfwPlatformRequestDropData(_GLFWwindow* window, const char* mime) {
+    for (size_t i = 0; i < win32_drop.count; i++) {
+        if (strcmp(win32_drop.items[i].mime, mime) == 0) {
+            win32_drop.items[i].offset = 0;
+            const char *m[1] = { win32_drop.items[i].mime };
+            _glfwInputDropEvent(window, GLFW_DROP_DATA_AVAILABLE, 0, 0, m, 1, false);
+            return 0;
+        }
+    }
+    return EINVAL;
+}
 // Drag and drop is not implemented on Windows. Report it as unsupported (not 0,
 // which glfwStartDrag reads as success) so kitty cleans up its drag state instead
 // of waiting forever for a drop. Without this, dragging a tab wedges the tab bar

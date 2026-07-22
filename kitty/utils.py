@@ -892,7 +892,12 @@ def parse_uri_list(text: str) -> Generator[str, None, None]:
             yield line
             continue
         if purl.path:
-            yield unquote(purl.path)
+            path = unquote(purl.path)
+            # A Windows file URL is file:///C:/x, whose parsed path is /C:/x; drop
+            # the leading slash so it is a usable Windows path (C:/x).
+            if is_windows and len(path) > 2 and path[0] == '/' and path[2] == ':':
+                path = path[1:]
+            yield path
 
 
 def edit_config_file() -> None:
