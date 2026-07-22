@@ -42,6 +42,7 @@ typedef struct _GLFWwindowWin32 {
     int     blur;             // background_blur radius (0 = off)
     bool    customFrame;      // reclaim the caption for an acrylic custom title bar
     HWND    captionButtons;   // layered overlay hosting min/max/close
+    void*   dropTarget;       // IDropTarget* registered for OLE drag-and-drop (drop-in)
 } _GLFWwindowWin32;
 
 // Per-monitor Win32 state.
@@ -117,3 +118,5 @@ void _glfwInitTimerWin32(void);
 void _glfwPollMonitorsWin32(void);
 bool _glfwRegisterWindowClassWin32(void);
 void _glfwUnregisterWindowClassWin32(void);
+void _glfwWin32RegisterDropTarget(_GLFWwindow *window);
+void _glfwWin32RevokeDropTarget(_GLFWwindow *window);
