@@ -196,6 +196,12 @@ func print_error(format string, args ...any) {
 
 func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 	opts = o
+	if runtime.GOOS == "windows" && (os.Getenv("KITTY_PID") == "" || os.Getenv("KITTY_WINDOW_ID") == "") {
+		// On Windows images are delivered over kitty's per-process bypass pipe
+		// (conhost strips the graphics APC from ordinary output), so icat only
+		// works inside kitty. Fail up front, before drawing anything.
+		return 1, fmt.Errorf("On Windows, icat only works when run inside the kitty terminal")
+	}
 	if err = parse_place(); err != nil {
 		return 1, err
 	}
