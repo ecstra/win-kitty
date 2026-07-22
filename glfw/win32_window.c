@@ -669,8 +669,14 @@ static void updateWindowComposition(_GLFWwindow* window) {
     }
     if (_glfw.win32.user32.SetWindowCompositionAttribute) {
         ACCENT_POLICY policy = {0};
-        policy.AccentState = blur ? ACCENT_ENABLE_BLURBEHIND : ACCENT_DISABLED;
-        policy.GradientColor = 0x00000000;  // no tint; the terminal's bg alpha does the rest
+        // Acrylic, not the legacy aero blur: aero's gaussian is weak and uneven
+        // (visible mostly as a halo near the window edges), acrylic blurs the
+        // whole backdrop uniformly. Unlike the Win11 system backdrop it keeps
+        // working when the window is inactive and composes with a GL surface.
+        // Acrylic requires a non-zero tint alpha to engage; use the minimum so
+        // the terminal's own background alpha stays in charge of tinting.
+        policy.AccentState = blur ? ACCENT_ENABLE_ACRYLICBLURBEHIND : ACCENT_DISABLED;
+        policy.GradientColor = blur ? 0x01000000 : 0x00000000;
         WIN_COMP_ATTR_DATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
         _glfw.win32.user32.SetWindowCompositionAttribute(hwnd, &data);
     }

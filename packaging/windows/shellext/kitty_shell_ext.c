@@ -107,7 +107,7 @@ static ULONG STDMETHODCALLTYPE cmd_Release(IExplorerCommand *This) {
 
 static HRESULT STDMETHODCALLTYPE cmd_GetTitle(IExplorerCommand *This, IShellItemArray *items, LPWSTR *name) {
     (void)This; (void)items;
-    return dup_str(L"Open kitty here", name);
+    return dup_str(L"Open in kitty", name);
 }
 
 static HRESULT STDMETHODCALLTYPE cmd_GetIcon(IExplorerCommand *This, IShellItemArray *items, LPWSTR *icon) {

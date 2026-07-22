@@ -299,13 +299,20 @@ ensure_working_stdio(void) {
     // no console and anything it prints (kitty --version, kitty +list-fonts,
     // startup errors) silently vanishes. Attach to the parent's console when
     // there is one, wiring up only the std streams that were not already
-    // redirected somewhere by the caller. The had-a-handle checks must happen
-    // BEFORE AttachConsole: attaching fills in the std handles, but the CRT's
-    // FILE streams stay bound to the old invalid descriptors until freopen.
-    bool no_in = GetStdHandle(STD_INPUT_HANDLE) == NULL;
-    bool no_out = GetStdHandle(STD_OUTPUT_HANDLE) == NULL;
-    bool no_err = GetStdHandle(STD_ERROR_HANDLE) == NULL;
-    if (GetConsoleWindow() == NULL && AttachConsole(ATTACH_PARENT_PROCESS)) {
+    // redirected somewhere real by the caller. The usability checks must
+    // happen BEFORE AttachConsole: attaching fills in the std handles, but the
+    // CRT's FILE streams stay bound to the old descriptors until freopen. A
+    // handle can also be inherited yet unusable (a GUI parent like the PATH
+    // shim passes stale values), so validate with GetFileType rather than
+    // testing for NULL alone.
+#define usable(which) (GetStdHandle(which) != NULL && GetStdHandle(which) != INVALID_HANDLE_VALUE \
+                       && GetFileType(GetStdHandle(which)) != FILE_TYPE_UNKNOWN)
+    bool no_in = !usable(STD_INPUT_HANDLE);
+    bool no_out = !usable(STD_OUTPUT_HANDLE);
+    bool no_err = !usable(STD_ERROR_HANDLE);
+#undef usable
+    if (GetConsoleWindow() == NULL) AttachConsole(ATTACH_PARENT_PROCESS);
+    if (GetConsoleWindow() != NULL) {  // attached now, or inherited from the parent
         if (no_in) freopen("CONIN$", "r", stdin);
         if (no_out) freopen("CONOUT$", "w", stdout);
         if (no_err) freopen("CONOUT$", "w", stderr);
