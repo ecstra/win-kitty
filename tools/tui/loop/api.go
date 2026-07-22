@@ -147,6 +147,14 @@ type Loop struct {
 }
 
 func New(options ...func(self *Loop)) (*Loop, error) {
+	if runtime.GOOS == "windows" && os.Getenv("KITTY_WINDOW_ID") == "" {
+		// Full-screen kitten UIs need faithful VT and mouse handling, which
+		// other Windows terminals (running the kitten through their ConPTY)
+		// mangle: garbled mouse reports typed into the UI, broken raw mode and
+		// so on. Simple non-UI tools (clipboard, icat, @) use
+		// NewForSimpleInteraction and keep working everywhere.
+		return nil, fmt.Errorf("This kitten's interface requires the kitty terminal; running it inside other terminals is not supported on Windows")
+	}
 	l := new_loop()
 	for _, f := range options {
 		f(l)
@@ -158,14 +166,15 @@ func New(options ...func(self *Loop)) (*Loop, error) {
 // resize/focus notifications, mouse tracking, alternate screen etc. Useful
 // for special purpose kittens such as icat/clipboard/@ etc.
 func NewForSimpleInteraction() (*Loop, error) {
-	lp, err := New(
+	lp := new_loop()
+	for _, f := range []func(self *Loop){
 		NoAlternateScreen, NoRestoreColors, NoMouseTracking, NoInBandResizeNotifications,
 		NoFocusTracking, NoKeyboardStateChange, NoRoundtripToTerminalOnExit,
-	)
-	if err == nil {
-		lp.terminal_options.color_scheme_change_notification = false
+	} {
+		f(lp)
 	}
-	return lp, err
+	lp.terminal_options.color_scheme_change_notification = false
+	return lp, nil
 }
 
 func (self *Loop) AddTimer(interval time.Duration, repeats bool, callback TimerCallback) (IdType, error) {
