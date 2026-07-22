@@ -676,12 +676,12 @@ static void updateWindowComposition(_GLFWwindow* window) {
         // Acrylic requires a non-zero tint alpha to engage; use the minimum so
         // the terminal's own background alpha stays in charge of tinting.
         policy.AccentState = blur ? ACCENT_ENABLE_ACRYLICBLURBEHIND : ACCENT_DISABLED;
-        // The window keeps WS_THICKFRAME for the DWM shadow and resize, and the
-        // accent by default stops at the frame band, leaving the outer edges
-        // unblurred. Flags 0x20/0x40/0x80/0x100 extend the accent across the
-        // left/top/right/bottom borders so it covers the full window.
-        policy.AccentFlags = blur ? (0x20 | 0x40 | 0x80 | 0x100) : 0;
         policy.GradientColor = blur ? 0x01000000 : 0x00000000;
+        // Known residual, measured: the acrylic blur strength tapers off over
+        // the outermost ~64px (the DWM kernel cannot sample past the window
+        // boundary), though the tint/opacity stays uniform to the edge. Fixing
+        // that would need an oversized backdrop helper window, which trails
+        // visibly when dragging, a worse artifact than the taper.
         WIN_COMP_ATTR_DATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
         _glfw.win32.user32.SetWindowCompositionAttribute(hwnd, &data);
     }
