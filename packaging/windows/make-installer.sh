@@ -6,6 +6,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
 "$HERE/make-dist.sh"
+"$HERE/make-shellext.sh"
 
 ISCC=""
 for c in "$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe" \

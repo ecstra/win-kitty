@@ -35,3 +35,4 @@ _codeql_detected_source_root
 # Local Windows-port task list
 WINDOWS_TODO.md
 dist/
+packaging/windows/cert/
