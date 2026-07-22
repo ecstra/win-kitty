@@ -331,6 +331,9 @@ func (dnd *dnd) run_loop() (err error) {
 }
 
 func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error) {
+	if err = cli.NotImplementedOnWindows("dnd"); err != nil {
+		return 1, err
+	}
 	drop_dests := make(map[string]*drop_dest)
 	if os.Stdout != nil && !tty.IsTerminal(os.Stdout.Fd()) {
 		drop_dests["text/plain"] = &drop_dest{human_name: "STDOUT", dest: os.Stdout, mime_type: "text/plain"}
