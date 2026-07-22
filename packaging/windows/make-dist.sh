@@ -50,6 +50,13 @@ done
 mkdir -p "$DIST/pylib/lib/python$PYVER/site-packages"
 find "$DIST/pylib" -type d -name __pycache__ -prune -exec rm -rf {} +
 
+echo "==> building PATH shims"
+# The bin directory is what goes on PATH: tiny static shims that forward to
+# the real binaries, so the DLL-laden launcher directory never pollutes PATH.
+mkdir -p "$DIST/bin"
+PATH="$MINGW/bin:$PATH" "$MINGW/bin/gcc" -municode -mwindows -static -Os -o "$DIST/bin/kitty.exe" "$ROOT/packaging/windows/shim.c"
+PATH="$MINGW/bin:$PATH" "$MINGW/bin/gcc" -municode -static -Os -DSHIM_KITTEN -o "$DIST/bin/kitten.exe" "$ROOT/packaging/windows/shim.c"
+
 echo "==> collecting DLL closure"
 LAUNCHER="$DIST/kitty/launcher"
 OBJDUMP="$MINGW/bin/objdump.exe"
