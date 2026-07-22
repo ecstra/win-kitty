@@ -282,6 +282,55 @@ static unsigned gfx_queue_count = 0;
 static pthread_mutex_t gfx_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool gfx_listener_started = false;
 
+/* Enqueue one chunk for injection, blocking (with backpressure on the pipe
+ * connection) while the queue is full. Dropping is not an option: the payload
+ * is a VT byte stream and a lost chunk would corrupt the window's parser state. */
+static void
+gfx_enqueue_chunk(id_type window_id, uint8_t *payload, size_t sz) {
+    for (;;) {
+        pthread_mutex_lock(&gfx_queue_lock);
+        if (gfx_queue_count < GFX_QUEUE_SZ) {
+            gfx_queue[gfx_queue_count++] = (GfxInjection){.window_id = window_id, .data = payload, .sz = sz};
+            pthread_mutex_unlock(&gfx_queue_lock);
+            windows_wakeup_child_monitor();
+            return;
+        }
+        pthread_mutex_unlock(&gfx_queue_lock);
+        windows_wakeup_child_monitor();
+        Sleep(1);
+    }
+}
+
+/* One thread per client connection, so a long-lived streaming client (a kitten
+ * TUI routing its output around conhost) does not block one-shot clients (icat
+ * image transmits, edit-in-kitty DCS). The first 8 bytes are the target window
+ * id; every subsequent chunk is injected into that window's parser as it
+ * arrives, so both one-shot messages and continuous streams work: the parser
+ * is incremental and does not care how the bytes are split. */
+static DWORD WINAPI
+gfx_connection_handler(LPVOID param) {
+    HANDLE pipe = (HANDLE)param;
+    uint8_t hdr[8];
+    size_t hread = 0;
+    DWORD got = 0;
+    while (hread < 8) {
+        if (!ReadFile(pipe, hdr + hread, (DWORD)(8 - hread), &got, NULL) || got == 0) goto done;
+        hread += got;
+    }
+    id_type window_id = 0;
+    for (unsigned i = 0; i < 8; i++) window_id |= ((id_type)hdr[i]) << (8u * i);
+    for (;;) {
+        uint8_t *buf = malloc(1u << 16);
+        if (!buf) break;
+        if (!ReadFile(pipe, buf, 1u << 16, &got, NULL) || got == 0) { free(buf); break; }
+        gfx_enqueue_chunk(window_id, buf, got);
+    }
+done:
+    DisconnectNamedPipe(pipe);
+    CloseHandle(pipe);
+    return 0;
+}
+
 static DWORD WINAPI
 graphics_pipe_waiter(LPVOID param) {
     (void)param;
@@ -295,38 +344,9 @@ graphics_pipe_waiter(LPVOID param) {
         if (!ConnectNamedPipe(pipe, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
             CloseHandle(pipe); continue;
         }
-        size_t cap = 1u << 16, used = 0;
-        uint8_t *data = malloc(cap);
-        while (data) {
-            if (used == cap) {
-                uint8_t *nd = realloc(data, cap * 2);
-                if (!nd) { free(data); data = NULL; break; }
-                data = nd; cap *= 2;
-            }
-            DWORD got = 0;
-            if (!ReadFile(pipe, data + used, (DWORD)(cap - used), &got, NULL) || got == 0) break;
-            used += got;
-        }
-        if (data && used > 8) {
-            id_type window_id = 0;
-            for (unsigned i = 0; i < 8; i++) window_id |= ((id_type)data[i]) << (8u * i);
-            size_t dsz = used - 8;
-            uint8_t *payload = malloc(dsz);
-            if (payload) {
-                memcpy(payload, data + 8, dsz);
-                pthread_mutex_lock(&gfx_queue_lock);
-                if (gfx_queue_count < GFX_QUEUE_SZ) {
-                    gfx_queue[gfx_queue_count++] = (GfxInjection){.window_id = window_id, .data = payload, .sz = dsz};
-                    payload = NULL;
-                }
-                pthread_mutex_unlock(&gfx_queue_lock);
-                free(payload);  /* non-NULL only if the queue was full */
-                windows_wakeup_child_monitor();
-            }
-        }
-        free(data);
-        DisconnectNamedPipe(pipe);
-        CloseHandle(pipe);
+        HANDLE t = CreateThread(NULL, 0, gfx_connection_handler, pipe, 0, NULL);
+        if (t) CloseHandle(t);
+        else { DisconnectNamedPipe(pipe); CloseHandle(pipe); }
     }
     return 0;
 }
