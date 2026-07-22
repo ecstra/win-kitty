@@ -39,13 +39,21 @@ static void makeContextCurrentWGL(_GLFWwindow* window) {
 }
 
 static void swapBuffersWGL(_GLFWwindow* window) {
+    // Under DWM (always active on modern Windows) a vsynced GL SwapBuffers
+    // adds a driver frame-queue's worth of latency, which shows up as sluggish
+    // typing compared to flip-model apps like Windows Terminal. Composition
+    // makes tearing impossible anyway, so swap immediately and pace with
+    // DwmFlush() instead (the strategy upstream GLFW uses): the present goes
+    // out right away and we wait at most one composition pass.
+    if (window->context.wgl.interval > 0) DwmFlush();
     SwapBuffers(window->context.wgl.dc);
 }
 
 static void swapIntervalWGL(int interval) {
     _GLFWwindow* window = _glfwPlatformGetTls(&_glfw.contextSlot);
     if (window) window->context.wgl.interval = interval;
-    if (_glfw.wgl.EXT_swap_control) _glfw.wgl.SwapIntervalEXT(interval);
+    // Real GL vsync stays off; pacing happens via DwmFlush in swapBuffersWGL.
+    if (_glfw.wgl.EXT_swap_control) _glfw.wgl.SwapIntervalEXT(0);
 }
 
 static int extensionSupportedWGL(const char* extension) {

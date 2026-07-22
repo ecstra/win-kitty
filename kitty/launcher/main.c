@@ -295,8 +295,16 @@ reopen_to_null(const char *mode, FILE *stream) {
 static bool
 ensure_working_stdio(void) {
 #ifdef _WIN32
-    // The Unix fixup below (fileno + /dev/null reopen) does not apply on Windows,
-    // where the CRT sets up console/redirected stdio and Python handles None fine.
+    // kitty.exe is a GUI-subsystem binary, so when run from a terminal it gets
+    // no console and anything it prints (kitty --version, kitty +list-fonts,
+    // startup errors) silently vanishes. Attach to the parent's console when
+    // there is one, wiring up only the std streams that are not already
+    // redirected somewhere by the caller.
+    if (GetConsoleWindow() == NULL && AttachConsole(ATTACH_PARENT_PROCESS)) {
+        if (GetStdHandle(STD_INPUT_HANDLE) == NULL) freopen("CONIN$", "r", stdin);
+        if (GetStdHandle(STD_OUTPUT_HANDLE) == NULL) freopen("CONOUT$", "w", stdout);
+        if (GetStdHandle(STD_ERROR_HANDLE) == NULL) freopen("CONOUT$", "w", stderr);
+    }
     return true;
 #endif
 #define C(which, mode) { \

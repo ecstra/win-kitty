@@ -153,7 +153,7 @@ func New(options ...func(self *Loop)) (*Loop, error) {
 		// mangle: garbled mouse reports typed into the UI, broken raw mode and
 		// so on. Simple non-UI tools (clipboard, icat, @) use
 		// NewForSimpleInteraction and keep working everywhere.
-		return nil, fmt.Errorf("This kitten's interface requires the kitty terminal; running it inside other terminals is not supported on Windows")
+		return nil, fmt.Errorf("This kitten needs to run inside the kitty terminal. It cannot be used from other terminals on Windows")
 	}
 	l := new_loop()
 	for _, f := range options {

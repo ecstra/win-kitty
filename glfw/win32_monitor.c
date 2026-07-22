@@ -55,7 +55,12 @@ static BOOL CALLBACK monitorCallback(HMONITOR handle, HDC dc, LPRECT rect, LPARA
     monitor->currentMode.redBits = 8;
     monitor->currentMode.greenBits = 8;
     monitor->currentMode.blueBits = 8;
+    // Report the real refresh rate: kitty paces animations and rendering off
+    // it, so hardcoding 60 makes everything feel capped on high-refresh panels.
     monitor->currentMode.refreshRate = 60;
+    DEVMODEW dm = { .dmSize = sizeof(dm) };
+    if (EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1)
+        monitor->currentMode.refreshRate = (int)dm.dmDisplayFrequency;
 
     int placement = (mi.dwFlags & MONITORINFOF_PRIMARY) ? _GLFW_INSERT_FIRST : _GLFW_INSERT_LAST;
     _glfwInputMonitor(monitor, GLFW_CONNECTED, placement);
