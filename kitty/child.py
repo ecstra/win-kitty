@@ -229,6 +229,26 @@ def getpid() -> str:
     return str(os.getpid())
 
 
+def ensure_msys2_terminfo(shell_bin_dir: str) -> None:
+    '''The msys2 runtime only enables its ConPTY interop for native Windows
+    programs run from the shell (which is what delivers keyboard input to them
+    and gives them the correct terminal size) when it can find the terminfo
+    entry for $TERM (see term_has_pcon_cap in the msys2-runtime source). Install
+    kitty's terminfo into the msys2 tree if it is not there. Best effort.'''
+    root = os.path.dirname(os.path.dirname(shell_bin_dir))  # <root>/usr/bin -> <root>
+    dest_dir = os.path.join(root, 'usr', 'share', 'terminfo', '78')
+    dest = os.path.join(dest_dir, 'xterm-kitty')
+    if os.path.exists(dest):
+        return
+    import shutil
+    for src in (os.path.join(terminfo_dir, '78', 'xterm-kitty'), os.path.join(terminfo_dir, 'x', 'xterm-kitty')):
+        if os.path.exists(src):
+            with suppress(OSError):
+                os.makedirs(dest_dir, exist_ok=True)
+                shutil.copyfile(src, dest)
+            return
+
+
 def cygwin_pty_bridge_cmd(exe: str) -> list[str] | None:
     '''If exe is a Cygwin/MSYS2 program and the pieces needed to run it on a real
     Cygwin pty are available, return the command prefix for the pty bridge (see
@@ -244,6 +264,7 @@ def cygwin_pty_bridge_cmd(exe: str) -> list[str] | None:
     bridge = os.path.join(shell_integration_dir, 'msys2', 'pty-bridge.py')
     if not os.path.exists(bridge):
         return None
+    ensure_msys2_terminfo(d)
     # The python exe path is used by CreateProcessW (Windows form is fine), but
     # the script path is opened by the Cygwin python itself, which uses POSIX
     # path semantics: convert C:\x\y to /c/x/y.
