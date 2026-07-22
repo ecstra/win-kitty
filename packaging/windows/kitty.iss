@@ -29,7 +29,7 @@ ChangesEnvironment=yes
 
 [Tasks]
 Name: "addtopath"; Description: "Add kitty to your PATH (so 'kitty' and 'kitten' work in any terminal)"
-Name: "contextmenu"; Description: "Add 'Open kitty here' to the Explorer right-click menu"
+Name: "contextmenu"; Description: "Add 'Open in kitty' to the Explorer right-click menu"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Files]
@@ -46,15 +46,15 @@ Name: "{autodesktop}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; Working
 ; package provides the entry in both the modern menu and Show more options,
 ; so the registry verbs are skipped there to avoid duplicates.
 ; Right-click on a folder
-Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open kitty here"; Flags: uninsdeletekey; Tasks: contextmenu; Check: not IsWin11
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu; Check: not IsWin11
 Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu; Check: not IsWin11
 Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu; Check: not IsWin11
 ; Right-click on the background of an open folder
-Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open kitty here"; Flags: uninsdeletekey; Tasks: contextmenu; Check: not IsWin11
+Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu; Check: not IsWin11
 Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu; Check: not IsWin11
 Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu; Check: not IsWin11
 ; Right-click on a drive
-Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open kitty here"; Flags: uninsdeletekey; Tasks: contextmenu; Check: not IsWin11
+Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu; Check: not IsWin11
 Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu; Check: not IsWin11
 Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu; Check: not IsWin11
 
@@ -115,6 +115,11 @@ begin
        '', SW_HIDE, ewWaitUntilTerminated, R);
   Exec(ExpandConstant('{sys}\certutil.exe'),
        ExpandConstant('-addstore -f TrustedPeople "{app}\msix\kitty-menu.cer"'),
+       '', SW_HIDE, ewWaitUntilTerminated, R);
+  { Remove any existing registration first, so re-installs of the same version
+    still pick up a changed package. }
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+       '-NoProfile -ExecutionPolicy Bypass -Command "Get-AppxPackage Ecstra.Kitty.ContextMenu | Remove-AppxPackage"',
        '', SW_HIDE, ewWaitUntilTerminated, R);
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
        ExpandConstant('-NoProfile -ExecutionPolicy Bypass -Command "Add-AppxPackage -Path ''{app}\msix\kitty-menu.msix'' -ExternalLocation ''{app}''"'),
