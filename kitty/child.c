@@ -272,6 +272,8 @@ load_conpty(void) {
 #define MAX_PTYS 128
 typedef struct {
     bool   in_use;
+    bool   resize_with_escape; /* pipe mode: on resize, write ESC[8;rows;colst to the child's stdin
+                                  (consumed by the Cygwin pty bridge, see shell-integration/msys2/pty-bridge.py) */
     HPCON  hpc;          /* pseudoconsole, or NULL in pipe mode (kittens) */
     HANDLE in_write;     /* parent writes child stdin here */
     HANDLE out_read;     /* parent reads child stdout here */
@@ -349,17 +351,19 @@ build_env_block(PyObject *env_p) {
     return buf;
 }
 
-/* open_pty(cols, rows, use_pty=True) -> (read_fd, write_fd, pty_id)
+/* open_pty(cols, rows, use_pty=True, resize_with_escape=False) -> (read_fd, write_fd, pty_id)
  *
  * use_pty True gives a real pseudoconsole (for shells). use_pty False gives a
  * plain pipe pair with no console (for kittens): the child is a VT program, so
  * a pseudoconsole only gets in the way. Pipes send the child's escape codes to
  * kitty untouched (the synchronized-update sequence survives, so no flicker) and
- * give kitty EOF the moment the child exits, so its window closes. */
+ * give kitty EOF the moment the child exits, so its window closes.
+ * resize_with_escape (pipe mode only) makes resizes write ESC[8;rows;colst to the
+ * child's stdin, for children running behind the Cygwin pty bridge. */
 static PyObject*
 open_pty(PyObject *self UNUSED, PyObject *args) {
-    int cols = 80, rows = 24, use_pty = 1;
-    if (!PyArg_ParseTuple(args, "ii|p", &cols, &rows, &use_pty)) return NULL;
+    int cols = 80, rows = 24, use_pty = 1, resize_with_escape = 0;
+    if (!PyArg_ParseTuple(args, "ii|pp", &cols, &rows, &use_pty, &resize_with_escape)) return NULL;
     if (use_pty && !load_conpty()) { PyErr_SetString(PyExc_RuntimeError, "ConPTY unavailable (needs Windows 10 1809+)"); return NULL; }
     // Prepare the process, once, so ConPTY children attach to the pseudoconsole:
     //  1. Detach any inherited console (kitty is a GUI app; a console would be
@@ -419,6 +423,7 @@ open_pty(PyObject *self UNUSED, PyObject *args) {
     int read_fd  = _open_osfhandle((intptr_t)out_read, _O_RDONLY | _O_BINARY);
     int write_fd = _open_osfhandle((intptr_t)in_write, _O_WRONLY | _O_BINARY);
     ptys[id].in_use = true; ptys[id].hpc = hpc;
+    ptys[id].resize_with_escape = !use_pty && resize_with_escape;
     ptys[id].in_write = in_write; ptys[id].out_read = out_read; ptys[id].process = NULL;
     ptys[id].child_stdin = child_stdin; ptys[id].child_stdout = child_stdout;
     ptys[id].read_fd = read_fd; ptys[id].write_fd = write_fd;
@@ -560,16 +565,31 @@ windows_pty_close_for(int read_fd) {
     }
 }
 
-/* Resize the pseudoconsole backing the pty whose read side is read_fd. Used by
- * the child-monitor's TIOCSWINSZ path (there is no ioctl on Windows). */
+/* Apply a resize to one pty entry: pseudoconsole resize in ConPTY mode, or the
+ * ESC[8;rows;colst control write consumed by the Cygwin pty bridge in pipe mode. */
+static void
+apply_pty_resize(PtyEntry *e, int cols, int rows) {
+    if (cols <= 0 || rows <= 0) return;
+    if (e->hpc) {
+        if (pResizePseudoConsole) {
+            COORD size = { (SHORT)cols, (SHORT)rows };
+            pResizePseudoConsole(e->hpc, size);
+        }
+    } else if (e->resize_with_escape && e->write_fd >= 0) {
+        char buf[32];
+        int n = snprintf(buf, sizeof buf, "\x1b[8;%d;%dt", rows, cols);
+        if (n > 0) _write(e->write_fd, buf, (unsigned)n);
+    }
+    /* plain pipe-mode kittens have nothing to resize */
+}
+
+/* Resize the pty whose read side is read_fd. Used by the child-monitor's
+ * TIOCSWINSZ path (there is no ioctl on Windows). */
 int
 windows_pty_resize_for(int read_fd, int cols, int rows) {
     for (int i = 0; i < MAX_PTYS; i++) {
         if (ptys[i].in_use && ptys[i].read_fd == read_fd) {
-            if (pResizePseudoConsole && ptys[i].hpc && cols > 0 && rows > 0) {
-                COORD size = { (SHORT)cols, (SHORT)rows };
-                pResizePseudoConsole(ptys[i].hpc, size);
-            }
+            apply_pty_resize(&ptys[i], cols, rows);
             return 0;
         }
     }
@@ -582,10 +602,7 @@ resize_pty(PyObject *self UNUSED, PyObject *args) {
     int id, cols, rows;
     if (!PyArg_ParseTuple(args, "iii", &id, &cols, &rows)) return NULL;
     if (id < 0 || id >= MAX_PTYS || !ptys[id].in_use) { PyErr_SetString(PyExc_ValueError, "invalid pty id"); return NULL; }
-    if (pResizePseudoConsole && ptys[id].hpc) {  /* pipe-mode kittens have no console to resize */
-        COORD size = { (SHORT)cols, (SHORT)rows };
-        pResizePseudoConsole(ptys[id].hpc, size);
-    }
+    apply_pty_resize(&ptys[id], cols, rows);
     Py_RETURN_NONE;
 }
 
