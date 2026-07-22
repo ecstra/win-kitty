@@ -298,12 +298,17 @@ ensure_working_stdio(void) {
     // kitty.exe is a GUI-subsystem binary, so when run from a terminal it gets
     // no console and anything it prints (kitty --version, kitty +list-fonts,
     // startup errors) silently vanishes. Attach to the parent's console when
-    // there is one, wiring up only the std streams that are not already
-    // redirected somewhere by the caller.
+    // there is one, wiring up only the std streams that were not already
+    // redirected somewhere by the caller. The had-a-handle checks must happen
+    // BEFORE AttachConsole: attaching fills in the std handles, but the CRT's
+    // FILE streams stay bound to the old invalid descriptors until freopen.
+    bool no_in = GetStdHandle(STD_INPUT_HANDLE) == NULL;
+    bool no_out = GetStdHandle(STD_OUTPUT_HANDLE) == NULL;
+    bool no_err = GetStdHandle(STD_ERROR_HANDLE) == NULL;
     if (GetConsoleWindow() == NULL && AttachConsole(ATTACH_PARENT_PROCESS)) {
-        if (GetStdHandle(STD_INPUT_HANDLE) == NULL) freopen("CONIN$", "r", stdin);
-        if (GetStdHandle(STD_OUTPUT_HANDLE) == NULL) freopen("CONOUT$", "w", stdout);
-        if (GetStdHandle(STD_ERROR_HANDLE) == NULL) freopen("CONOUT$", "w", stderr);
+        if (no_in) freopen("CONIN$", "r", stdin);
+        if (no_out) freopen("CONOUT$", "w", stdout);
+        if (no_err) freopen("CONOUT$", "w", stderr);
     }
     return true;
 #endif
