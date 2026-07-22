@@ -27,6 +27,9 @@ func load_config(opts *Options) (ans *Config, err error) {
 }
 
 func main(cmd *cli.Command, opts *Options, args []string) (rc int, err error) {
+	if err = cli.NotImplementedOnWindows("quick-access-terminal"); err != nil {
+		return 1, err
+	}
 	conf, err := load_config(opts)
 	if err != nil {
 		return 1, err

@@ -45,6 +45,9 @@ func GetQuickAccessKittyExe() (kitty_exe string, err error) {
 }
 
 func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
+	if err = cli.NotImplementedOnWindows("panel"); err != nil {
+		return 1, err
+	}
 	kitty_exe, err := GetQuickAccessKittyExe()
 	if err != nil {
 		return 1, err
