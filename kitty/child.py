@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, DefaultDict, Optional, TypedDict
 
 import kitty.fast_data_types as fast_data_types
 
-from .constants import handled_signals, is_freebsd, is_macos, is_windows, kitten_exe, kitty_base_dir, shell_path, terminfo_dir
+from .constants import handled_signals, is_freebsd, is_macos, is_windows, kitten_exe, kitty_base_dir, shell_integration_dir, shell_path, terminfo_dir
 from .types import run_once
 from .utils import cmdline_for_hold, log_error, resolved_shell, which
 
@@ -227,6 +227,30 @@ def openpty() -> tuple[int, int]:
 @run_once
 def getpid() -> str:
     return str(os.getpid())
+
+
+def cygwin_pty_bridge_cmd(exe: str) -> list[str] | None:
+    '''If exe is a Cygwin/MSYS2 program and the pieces needed to run it on a real
+    Cygwin pty are available, return the command prefix for the pty bridge (see
+    shell-integration/msys2/pty-bridge.py), else None.'''
+    if os.environ.get('KITTY_NO_CYGWIN_PTY') == '1':
+        return None
+    d = os.path.dirname(os.path.abspath(exe))
+    if not (os.path.exists(os.path.join(d, 'msys-2.0.dll')) or os.path.exists(os.path.join(d, 'cygwin1.dll'))):
+        return None
+    python = os.path.join(d, 'python3.exe')
+    if not os.path.exists(python):
+        return None
+    bridge = os.path.join(shell_integration_dir, 'msys2', 'pty-bridge.py')
+    if not os.path.exists(bridge):
+        return None
+    # The python exe path is used by CreateProcessW (Windows form is fine), but
+    # the script path is opened by the Cygwin python itself, which uses POSIX
+    # path semantics: convert C:\x\y to /c/x/y.
+    bridge = bridge.replace('\\', '/')
+    if len(bridge) > 2 and bridge[1] == ':':
+        bridge = '/' + bridge[0].lower() + bridge[2:]
+    return [python.replace('\\', '/'), bridge]
 
 
 @run_once
@@ -462,7 +486,21 @@ class Child:
         # so their escape codes reach kitty untouched (no flicker) and kitty sees
         # EOF when they exit (their window closes).
         use_pty = self.final_env.get('KITTY_KITTEN_NO_PTY') != '1'
-        read_fd, write_fd, pty_id = fast_data_types.open_pty(cols, rows, use_pty)
+        resize_with_escape = False
+        if use_pty and (bridge := cygwin_pty_bridge_cmd(exe)):
+            # A Cygwin/MSYS2 shell: run it on a real Cygwin pty via the bridge,
+            # over plain pipes, keeping conhost out of the data path entirely.
+            # conhost re-renders output on its own frame cadence, consuming the
+            # application's synchronized-update markers and splitting logical
+            # updates (like a zsh line-editor redraw) across frames, which shows
+            # up as cursor bouncing and flicker; the Cygwin pty passes the
+            # shell's escape codes through untouched (the mintty architecture).
+            argv = bridge + ['--rows', str(rows), '--cols', str(cols), '--'] + argv
+            exe = argv[0]
+            use_pty = False
+            resize_with_escape = True
+        self.uses_conpty = use_pty
+        read_fd, write_fd, pty_id = fast_data_types.open_pty(cols, rows, use_pty, resize_with_escape)
         cwd = self.cwd or os.getcwd()
         if not os.path.isdir(cwd):
             # CreateProcessW fails with ERROR_DIRECTORY (WinError 267) when the cwd
