@@ -170,7 +170,11 @@ class CwdRequest:
         if not window:
             return ''
         reported_cwd = path_from_osc7_url(window.screen.last_reported_cwd) if window.screen.last_reported_cwd else ''
-        if reported_cwd and not window.child_is_remote and (self.request_type is CwdRequestType.last_reported or window.at_prompt):
+        # On Windows the OSC-7 reported cwd is a Unix-style path (for example an
+        # MSYS2/Cygwin shell reports /home/user or /c/foo). Such a path is invalid
+        # as a Win32 working directory and makes CreateProcessW fail with
+        # ERROR_DIRECTORY, so prefer the process's real (PEB) cwd there instead.
+        if reported_cwd and not is_windows and not window.child_is_remote and (self.request_type is CwdRequestType.last_reported or window.at_prompt):
             return reported_cwd
         if self.request_type is CwdRequestType.root:
             return window.get_cwd_of_root_child() or ''
@@ -209,7 +213,9 @@ class CwdRequest:
                         env.pop(k, None)
                     set_env_in_cmdline(env, argv, clone=False)
                 return ''
-            if not window.child_is_remote and (self.request_type is CwdRequestType.last_reported or window.at_prompt):
+            if not is_windows and not window.child_is_remote and (self.request_type is CwdRequestType.last_reported or window.at_prompt):
+                # See cwd_of_child: the reported cwd is a Unix path on Windows and
+                # cannot be used as a Win32 working directory.
                 return reported_cwd
         return window.get_cwd_of_child(oldest=self.request_type is CwdRequestType.oldest) or ''
 
