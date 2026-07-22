@@ -5,7 +5,6 @@ package command_palette
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 	"strings"
@@ -307,14 +306,17 @@ func (h *Handler) initialize() (string, error) {
 	return "", nil
 }
 
-// loadData reads JSON input data from stdin and flattens it into display items.
+// loadData reads the JSON input data kitty provides and flattens it into display
+// items. On Windows the overlay kitten's stdin pipe carries keyboard input, so
+// the payload arrives via KITTY_STDIN_DATA_FILE instead; tui.ReadKittenInputData
+// handles both (see boss.py run_kitten_with_metadata).
 func (h *Handler) loadData() error {
-	data, err := io.ReadAll(os.Stdin)
+	data, ok, err := tui.ReadKittenInputData()
 	if err != nil {
-		return fmt.Errorf("failed to read stdin: %w", err)
+		return fmt.Errorf("failed to read input data: %w", err)
 	}
-	if len(data) == 0 {
-		return fmt.Errorf("no input data received on stdin; this kitten must be launched from kitty")
+	if !ok || len(data) == 0 {
+		return fmt.Errorf("no input data received; this kitten must be launched from kitty")
 	}
 	if err := json.Unmarshal(data, &h.input_data); err != nil {
 		return fmt.Errorf("failed to parse input data: %w", err)
