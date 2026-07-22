@@ -6,6 +6,7 @@ package tty
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"sync"
@@ -44,6 +45,12 @@ type Term struct {
 	in_orig_mode  uint32 // console modes saved by enable_raw_mode, restored on close
 	out_orig_mode uint32
 	raw_active    bool
+	// When a kitten runs on a real console inside kitty, its output would pass
+	// through conhost, which re-renders it on its own frame cadence (flicker,
+	// cursor bouncing). bypass streams the output straight into kitty's parser
+	// over the per-process bypass pipe instead; out is kept for console mode
+	// changes and size queries only.
+	bypass io.WriteCloser
 }
 
 type TermiosOperation func(*Term)
@@ -154,6 +161,16 @@ func OpenControllingTerm(operations ...TermiosOperation) (self *Term, err error)
 		if in, ierr := open_console_handle("CONIN$", access); ierr == nil {
 			if out, oerr := open_console_handle("CONOUT$", access); oerr == nil {
 				self = &Term{in: in, out: out, owns_file: true}
+				if os.Getenv("KITTY_WINDOW_ID") != "" && os.Getenv("KITTY_PID") != "" {
+					// Running inside kitty on a real console: writing to the
+					// console means conhost re-renders our output on its own
+					// frame cadence (flicker, cursor bouncing). Stream output
+					// straight into kitty's parser instead; the console stays
+					// for keyboard input and size queries.
+					if w, berr := utils.OpenKittyBypassStream(); berr == nil {
+						self.bypass = w
+					}
+				}
 				_ = self.ApplyOperations(TCSANOW, operations...)
 				return
 			}
@@ -180,6 +197,10 @@ func (self *Term) Fd() int {
 func (self *Term) Close() error {
 	self.restore_console()
 	var err error
+	if self.bypass != nil {
+		self.bypass.Close()
+		self.bypass = nil
+	}
 	if self.owns_file {
 		if self.out != nil && self.out != self.in {
 			self.out.Close()
@@ -231,12 +252,23 @@ func (self *Term) CloseRead() error {
 	}
 	return self.in.Close()
 }
-func (self *Term) Write(b []byte) (int, error)       { return self.out.Write(b) }
-func (self *Term) WriteString(s string) (int, error) { return self.out.WriteString(s) }
+func (self *Term) Write(b []byte) (int, error) {
+	if self.bypass != nil {
+		return self.bypass.Write(b)
+	}
+	return self.out.Write(b)
+}
+
+func (self *Term) WriteString(s string) (int, error) {
+	if self.bypass != nil {
+		return self.bypass.Write(utils.UnsafeStringToBytes(s))
+	}
+	return self.out.WriteString(s)
+}
 
 func (self *Term) WriteAll(b []byte) error {
 	for len(b) > 0 {
-		n, err := self.out.Write(b)
+		n, err := self.Write(b)
 		if err != nil {
 			return err
 		}

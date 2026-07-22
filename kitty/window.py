@@ -1551,10 +1551,10 @@ class Window:
         # that never bells and works across shells. Only meaningful on Windows.
         if getattr(self.child, 'pty_id', None) is None:
             return
-        if not getattr(self.child, 'uses_conpty', True):
-            # Cygwin pty bridge windows have no conhost withholding output, and the
-            # nudge would type into the shell.
-            return
+        # This also applies to Cygwin pty bridge windows: a native full-screen
+        # program (like a kitten) runs there inside a Cygwin-managed hidden
+        # ConPTY, whose conhost withholds the shell's post-exit redraw the same
+        # way until input arrives.
 
         def nudge(timer_id: int | None = None) -> None:
             self.write_to_child(b' \x7f')
