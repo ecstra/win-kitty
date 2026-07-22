@@ -1464,11 +1464,17 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
         cppflags.append(f'-DSET_PYTHON_HOME="{ph}"')
         if not is_macos:
             ldflags += ['-Wl,--disable-new-dtags', f'-Wl,-rpath,$ORIGIN/../../{ph}/lib']
+    elif bundle_type == 'windows-dist':
+        # A relocatable Windows install tree that mirrors the source layout,
+        # with the python stdlib bundled at <install root>/pylib/lib/pythonX.Y
+        # (see packaging/windows/make-dist.sh).
+        cppflags.append('-DFROM_SOURCE')
+        cppflags.append('-DSET_PYTHON_HOME="pylib"')
     if bundle_type.startswith('macos-'):
         klp = '../Resources/kitty'
     elif bundle_type.startswith('linux-'):
         klp = '../{}/kitty'.format(args.libdir_name.strip('/'))
-    elif bundle_type == 'source':
+    elif bundle_type in ('source', 'windows-dist'):
         klp = os.path.relpath('.', launcher_dir)
     elif bundle_type == 'develop':
         # make the kitty executable relocatable
@@ -2100,6 +2106,7 @@ def option_parser() -> argparse.ArgumentParser:  # {{{
                  'linux-freeze',
                  'macos-freeze',
                  'build-launcher',
+                 'build-windows-dist-launcher',
                  'build-frozen-launcher',
                  'build-frozen-tools',
                  'clean',
@@ -2397,6 +2404,9 @@ def do_build(args: Options) -> None:
             init_env_from_args(args, False)
             build_launcher(args, launcher_dir=launcher_dir)
             build_static_kittens(args, launcher_dir=launcher_dir)
+        elif args.action == 'build-windows-dist-launcher':
+            init_env_from_args(args, False)
+            build_launcher(args, launcher_dir=launcher_dir, bundle_type='windows-dist')
         elif args.action == 'build-frozen-launcher':
             init_env_from_args(args, False)
             bundle_type = ('macos' if is_macos else 'linux') + '-freeze'
