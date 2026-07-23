@@ -96,7 +96,28 @@ def ensure_utf8_environment() -> None:
     if not any('UTF-8' in v.upper() or 'UTF8' in v.upper() for v in vals):
         os.environ['LANG'] = 'en_US.UTF-8'
 
+def raise_timer_resolution() -> None:
+    # Windows gives a process that has not asked otherwise a 15.625 ms timer
+    # granularity, and every wait this bridge performs is rounded up to it: the
+    # 0.8 ms hot-path sleep below really sleeps ~15.9 ms, and so does the
+    # cygwin runtime's own internal polling (measured: a select() on the pty
+    # master takes 15.8 ms to report a byte the shell has already written).
+    # Two pumps means paying that twice per keystroke, which is most of the
+    # port's typing latency and is invisible to any fps counter.
+    #
+    # The request is per-process since Windows 10 2004, so kitty raising its
+    # own resolution does nothing for us here (verified) and this call costs
+    # the rest of the system nothing. It drops the 0.8 ms sleep to ~1.05 ms and
+    # the pty wake to ~1.65 ms. 64-bit cygwin uses the Microsoft x64 calling
+    # convention, so a plain CDLL call into winmm is ABI-correct.
+    try:
+        import ctypes
+        ctypes.CDLL('winmm.dll').timeBeginPeriod(1)
+    except Exception:
+        pass
+
 def main() -> None:
+    raise_timer_resolution()
     ensure_utf8_environment()
     args = sys.argv[1:]
     rows, cols = 24, 80
@@ -155,7 +176,9 @@ def main() -> None:
     def adaptive_sleep(last_busy: float) -> None:
         # Keep the poll tight while interaction is ongoing (a shell redraw takes
         # a few ms to come back, and backing off during that window would delay
-        # the next keystroke), relax it only when genuinely idle.
+        # the next keystroke), relax it only when genuinely idle. These
+        # intervals are only worth what they say because raise_timer_resolution()
+        # ran at startup; without it the shortest of them sleeps ~15.9 ms.
         idle = time.monotonic() - last_busy
         time.sleep(0.0008 if idle < 0.25 else (0.005 if idle < 2.0 else 0.012))
 

@@ -1027,7 +1027,8 @@ void _glfwPlatformPollEvents(void) {
 }
 void _glfwPlatformWaitEvents(void) { WaitMessage(); _glfwPlatformPollEvents(); }
 void _glfwPlatformWaitEventsTimeout(monotonic_t timeout) {
-    MsgWaitForMultipleObjects(0, NULL, FALSE, (DWORD) monotonic_t_to_ms(timeout), QS_ALLINPUT);
+    // Round up, so a sub-millisecond timeout waits rather than returning at once.
+    MsgWaitForMultipleObjects(0, NULL, FALSE, (DWORD) monotonic_t_to_ms(timeout + ms_to_monotonic_t(1) - 1), QS_ALLINPUT);
     _glfwPlatformPollEvents();
 }
 
