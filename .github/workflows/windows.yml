@@ -70,11 +70,6 @@ jobs:
                   # PATH and cc1 dies without it.
                   export PATH="/mingw64/bin:$PATH"
                   PYTHONUTF8=1 python setup.py build --verbose
-                  # The build emits .so names and Windows imports .pyd. A stale
-                  # .pyd is imported silently in preference to the .so.
-                  cp -f kitty/fast_data_types.so kitty/fast_data_types.pyd
-                  cp -f kitty/glfw-win32.so kitty/glfw-win32.pyd
-                  cp -f kittens/transfer/rsync.so kittens/transfer/rsync.pyd
 
             - name: Test
               run: |

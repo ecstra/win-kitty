@@ -1276,6 +1276,20 @@ def build(args: Options, native_optimizations: bool = True, call_init: bool = Tr
     add_builtin_fonts(args)
 
 
+def copy_extensions_to_pyd() -> None:
+    # The build emits Unix .so names and Windows only imports .pyd, so the
+    # freshly linked extensions have to be copied before anything imports them.
+    # This runs as part of the build because the steps that follow it do import
+    # them: generating the Go files runs kitty itself. Without it a clean
+    # checkout fails there, and a tree carrying extensions from an earlier
+    # build quietly uses those instead of what was just built.
+    import shutil
+    for mod in ('kitty/fast_data_types', 'kitty/glfw-win32', 'kittens/transfer/rsync'):
+        src = os.path.join(src_base, f'{mod}.so')
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(src_base, f'{mod}.pyd'))
+
+
 def safe_makedirs(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
@@ -1550,6 +1564,8 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
         dsym = f'{dest}.dSYM/Contents/Resources/DWARF/{os.path.basename(dest)}'
         args.compilation_database.add_command(desc, ['dsymutil', dest], partial(newer, dsym, dest), key=LinkKey(dsym), is_post_link=True)
     args.compilation_database.build_all()
+    if is_windows:
+        copy_extensions_to_pyd()
     return kitty_exe
 
 
