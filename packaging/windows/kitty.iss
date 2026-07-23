@@ -42,21 +42,24 @@ Name: "{autoprograms}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; Workin
 Name: "{autodesktop}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; WorkingDir: "{%USERPROFILE}"; Tasks: desktopicon
 
 [Registry]
-; Classic registry verbs, used on Windows 10. On Windows 11 the sparse MSIX
-; package provides the entry in both the modern menu and Show more options,
-; so the registry verbs are skipped there to avoid duplicates.
+; Classic registry verbs. These are the whole entry on Windows 10, whose menu
+; reads nothing else. On Windows 11 the sparse MSIX package supplies the modern
+; menu, and these cover Show more options, which the modern menu falls back to.
+; If a Windows 11 build ever shows the packaged verb in Show more options as
+; well, this would read as a duplicate there and should be gated back behind
+; "Check: not IsWin11".
 ; Right-click on a folder
-Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu; Check: not IsWin11
-Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu; Check: not IsWin11
-Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu; Check: not IsWin11
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
 ; Right-click on the background of an open folder
-Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu; Check: not IsWin11
-Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu; Check: not IsWin11
-Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu; Check: not IsWin11
+Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
 ; Right-click on a drive
-Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu; Check: not IsWin11
-Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu; Check: not IsWin11
-Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu; Check: not IsWin11
+Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu
+Root: HKLM; Subkey: "Software\Classes\Drive\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
 
 [Code]
 const EnvKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';

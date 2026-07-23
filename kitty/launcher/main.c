@@ -421,6 +421,19 @@ handle_fast_commandline(CLISpec *cli_spec, const char *instance_group_prefix) {
         } else {
             printf("kitty %s created by Kovid Goyal\n", KITTY_VERSION);
         }
+#ifdef _WIN32
+        // The same credit line version() in kitty/cli.py prints, repeated here
+        // because this path never reaches Python: the launcher answers
+        // --version itself and exits. Truecolor is emitted in the semicolon
+        // form because conhost mangles the colon form and drops the colour.
+        if (isatty(STDOUT_FILENO)) {
+            printf("\x1b[3mWindows native port by \x1b[23m"
+                   "\x1b[38;2;253;151;31mecstra\x1b[39m "
+                   "\x1b[2m<\x1b[22m\x1b[96mgotham47g@gmail.com\x1b[39m\x1b[2m>\x1b[22m\n");
+        } else {
+            printf("Windows native port by ecstra <gotham47g@gmail.com>\n");
+        }
+#endif
         exit(0);
     }
     opts.session = get_string_cli_val(cli_spec, "session");
