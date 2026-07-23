@@ -1,8 +1,8 @@
 #!/bin/bash
 # Assemble a relocatable, self-contained Windows install tree for kitty at
 # dist/kitty, suitable for packaging with the Inno Setup script next to this
-# file. Run from git-bash/MSYS2 with the repo already built (python setup.py
-# build && build-launcher).
+# file. Run from git-bash/MSYS2; it builds everything it needs (the C
+# extensions, both launchers and the Go kitten), so no separate build step.
 #
 # The tree mirrors the source layout (the launcher resolves everything
 # relative to itself), bundles the python stdlib at pylib/lib/pythonX.Y (the
@@ -19,7 +19,14 @@ PY="$MINGW/bin/python.exe"
 
 cd "$ROOT"
 [ -x "$PY" ] || { echo "mingw python not found at $PY (set MINGW_ROOT)"; exit 1; }
-[ -f kitty/fast_data_types.pyd ] || { echo "build kitty first: python setup.py build"; exit 1; }
+
+echo "==> building kitty"
+PYTHONUTF8=1 PATH="$MINGW/bin:$PATH" "$PY" setup.py build
+# The build emits .so names; Windows imports .pyd. Copy every time -- a stale
+# .pyd is used silently in preference to the .so that was just built, which
+# ships a package with none of the current changes in it.
+cp -f kitty/fast_data_types.so kitty/fast_data_types.pyd
+cp -f kitty/glfw-win32.so kitty/glfw-win32.pyd
 
 echo "==> building windows-dist launcher"
 rm -f kitty/launcher/kitty.exe kitty/launcher/kitty-console.exe

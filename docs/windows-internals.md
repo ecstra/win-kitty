@@ -36,16 +36,18 @@ The keycode table maps virtual keys to kitty key values, and it has to be an `in
 
 ## Transparency and blur
 
-A plain OpenGL window on Windows is opaque whatever the framebuffer alpha is. Two DWM mechanisms make it translucent, and the port picks one from background_blur:
+A plain OpenGL window on Windows is opaque whatever the framebuffer alpha is. Two DWM mechanisms are used together, and background_blur picks whether the second one runs:
 
-- Blur on: the accent policy with ACCENT_ENABLE_BLURBEHIND. It composites the per pixel alpha and blurs whatever sits behind the window, in every window state.
-- Blur off, translucent background: DwmEnableBlurBehindWindow with an empty blur region. It turns on per pixel alpha with no blur, and it does not extend the window frame, so DWM never paints a caption over the custom one.
+- Always, for any translucent window: DwmEnableBlurBehindWindow with an empty blur region. It turns on per pixel alpha with no blur of its own, and it does not extend the window frame, so DWM never paints a caption over the custom one.
+- Blur on: DWMWA_SYSTEMBACKDROP_TYPE set to DWMSBT_TRANSIENTWINDOW, the real Windows 11 acrylic material, requested untinted so background_opacity still decides the colour.
 
-The first attempt at the no blur case extended the DWM frame across the client area, which made DWM draw a second standard caption, the phantom title bar. Turning off DWM non client rendering to hide it forced the classic Windows 98 style frame instead. Blur behind with an empty region sidesteps both.
+Both are dropped by DWM when the window is deactivated, the material turning a flat neutral fill and the alpha going opaque. windowProc answers WM_NCACTIVATE with wParam forced to TRUE, which is the whole of the frame's active state as far as DWM is concerned, so both survive losing focus. lParam is passed as -1 to suppress the non client repaint.
+
+The first attempt at the no blur case extended the DWM frame across the client area, which made DWM draw a second standard caption, the phantom title bar. Turning off DWM non client rendering to hide it forced the classic Windows 98 style frame instead. Blur behind with an empty region sidesteps both, which is also why the frame is not extended to expose the acrylic.
 
 ## Overlay kittens
 
-Kittens such as ask, resize_window, hints, and unicode_input run as a child program inside an overlay terminal window. There are no wrapped Go kittens on this build, so kitty runs each one through the launcher with `kitty.exe +runpy`. That path needs `kitty_exe()` to return the name with the .exe suffix, otherwise the spawn fails with file not found.
+Kittens such as ask, resize_window, hints, and unicode_input run as a child program inside an overlay terminal window. Wrapped kittens are spawned from `kitten.exe`, which is built as part of the normal build. If it is missing, boss.py falls back to running them through the launcher with `kitty.exe +runpy`; that path needs `kitty_exe()` to return the name with the .exe suffix, otherwise the spawn fails with file not found.
 
 The spawn works now, but the kittens still do not render, for two reasons. Their UI loop in kittens/tui/loop.py opens the controlling terminal through `open_tty` in kitty/data-types.c, which calls `ctermid` and puts the terminal in raw mode with `termios`. Windows has neither, and the single read and write descriptor that Unix gives for /dev/tty does not map onto the separate CONIN$ and CONOUT$ console handles, so the loop needs a Windows path built on those handles and SetConsoleMode. Separately, a handful of kittens, ask included, are stubs in Python that defer to the Go `kitten` tool, and that tool does not cross build for Windows because it uses Unix only syscalls such as mmap and Mkdirat. Both of these are open work.
 

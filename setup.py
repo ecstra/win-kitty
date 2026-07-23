@@ -1284,15 +1284,20 @@ def update_go_generated_files(args: Options, kitty_exe: str) -> None:
     if args.skip_code_generation:
         print('Skipping generation of Go files due to command line option', flush=True)
         return
-    if is_windows:
-        print('Skipping Go code generation on Windows (the kitten Go tool is not yet ported)', flush=True)
-        return
     # update all the various auto-generated go files, if needed
     if args.verbose:
         print('Updating Go generated files...', flush=True)
 
     env = os.environ.copy()
     env['ASAN_OPTIONS'] = 'detect_leaks=0'
+    if is_windows:
+        # Callers build this from appname, and subprocess applies neither
+        # PATHEXT nor cwd resolution to an explicit executable: CreateProcess
+        # rejects a *relative* path spelled with forward slashes, which is what
+        # the hard-coded 'kitty/launcher' launcher_dir produces. Absolute it.
+        if not kitty_exe.lower().endswith('.exe'):
+            kitty_exe += '.exe'
+        kitty_exe = os.path.abspath(kitty_exe)
     cp = subprocess.run([kitty_exe, '+launch', os.path.join(src_base, 'gen/go_code.py')], stdout=subprocess.DEVNULL, env=env)
     if cp.returncode != 0:
         if os.environ.get('CI') == 'true' and cp.returncode < 0 and shutil.which('coredumpctl'):

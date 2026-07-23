@@ -92,7 +92,6 @@ typedef struct _GLFWlibraryWin32 {
         UINT (WINAPI *GetDpiForWindow)(HWND);
         BOOL (WINAPI *AdjustWindowRectExForDpi)(LPRECT, DWORD, BOOL, DWORD, UINT);
         BOOL (WINAPI *EnableNonClientDpiScaling)(HWND);
-        BOOL (WINAPI *SetWindowCompositionAttribute)(HWND, void*);
     } user32;
 
     struct {
