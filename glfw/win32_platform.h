@@ -96,6 +96,12 @@ typedef struct _GLFWlibraryWin32 {
 
     struct {
         HINSTANCE instance;
+        UINT (WINAPI *BeginPeriod)(UINT);
+        UINT (WINAPI *EndPeriod)(UINT);
+    } winmm;
+
+    struct {
+        HINSTANCE instance;
         HRESULT (WINAPI *IsCompositionEnabled)(BOOL*);
         HRESULT (WINAPI *Flush)(void);
         HRESULT (WINAPI *EnableBlurBehindWindow)(HWND, const void*);

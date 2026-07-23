@@ -77,6 +77,20 @@ static bool loadLibraries(void) {
     _glfw.win32.user32.AdjustWindowRectExForDpi = (void*)GetProcAddress(_glfw.win32.user32.instance, "AdjustWindowRectExForDpi");
     _glfw.win32.user32.EnableNonClientDpiScaling = (void*)GetProcAddress(_glfw.win32.user32.instance, "EnableNonClientDpiScaling");
 
+    // The multimedia timer API is how a process opts out of Windows' default
+    // 15.625 ms timer granularity. Without it every sub-tick sleep in the port
+    // is silently rounded up to a whole tick: the poll() sample interval in
+    // wincompat.c and the input_delay/repaint_delay waits in the main loop
+    // below all measure ~15.8 ms however little they ask for, which is tens of
+    // milliseconds of dead time on the keystroke path and invisible to any fps
+    // counter. Since Windows 10 2004 the request is per-process, so raising it
+    // costs the rest of the system nothing.
+    _glfw.win32.winmm.instance = LoadLibraryA("winmm.dll");
+    if (_glfw.win32.winmm.instance) {
+        _glfw.win32.winmm.BeginPeriod = (void*)GetProcAddress(_glfw.win32.winmm.instance, "timeBeginPeriod");
+        _glfw.win32.winmm.EndPeriod = (void*)GetProcAddress(_glfw.win32.winmm.instance, "timeEndPeriod");
+    }
+
     _glfw.win32.dwmapi.instance = LoadLibraryA("dwmapi.dll");
     if (_glfw.win32.dwmapi.instance) {
         _glfw.win32.dwmapi.IsCompositionEnabled = (void*)GetProcAddress(_glfw.win32.dwmapi.instance, "DwmIsCompositionEnabled");
@@ -90,6 +104,7 @@ static bool loadLibraries(void) {
 
 static void freeLibraries(void) {
     if (_glfw.win32.dwmapi.instance) FreeLibrary(_glfw.win32.dwmapi.instance);
+    if (_glfw.win32.winmm.instance) FreeLibrary(_glfw.win32.winmm.instance);
     if (_glfw.win32.user32.instance) FreeLibrary(_glfw.win32.user32.instance);
 }
 
@@ -110,6 +125,7 @@ int _glfwPlatformInit(bool* supports_window_occlusion) {
 
     _glfw.win32.instance = GetModuleHandleW(NULL);
     if (!loadLibraries()) return false;
+    if (_glfw.win32.winmm.BeginPeriod) _glfw.win32.winmm.BeginPeriod(1);
     enableProcessDpiAwareness();
 
     if (!_glfwRegisterWindowClassWin32()) return false;
@@ -122,6 +138,7 @@ void _glfwPlatformTerminate(void) {
     _glfwTerminateWGL();
     _glfwUnregisterWindowClassWin32();
     free(_glfw.win32.clipboardString);
+    if (_glfw.win32.winmm.EndPeriod) _glfw.win32.winmm.EndPeriod(1);
     freeLibraries();
 }
 
@@ -322,7 +339,10 @@ void _glfwPlatformRunMainLoop(GLFWtickcallback tick_callback, void* data) {
         DWORD wait_ms = INFINITE;
         if (soonest >= 0) {
             monotonic_t delta = soonest - monotonic();
-            wait_ms = delta <= 0 ? 0 : (DWORD) monotonic_t_to_ms(delta);
+            // Round up. Truncating turns any sub-millisecond wait into a zero
+            // timeout, i.e. a spin until the timer is really due -- which the
+            // 1 ms timer resolution above now makes a common case.
+            wait_ms = delta <= 0 ? 0 : (DWORD) monotonic_t_to_ms(delta + ms_to_monotonic_t(1) - 1);
         }
         // Sleep until a message arrives or the next timer is due.
         MsgWaitForMultipleObjects(0, NULL, FALSE, wait_ms, QS_ALLINPUT);

@@ -36,9 +36,46 @@ handle_for_fd(int fd) {
 }
 
 /* ---- poll() --------------------------------------------------------------- */
+/* Whatever this sleeps between samples is pure latency on the keystroke path:
+ * the shell's echo is sitting in the pipe, already readable, for the whole
+ * interval. It used to be a flat Sleep(5) -- which at Windows' default 15.625
+ * ms timer granularity really sleeps ~15.8 ms, so a keystroke waited an average
+ * 8 ms just to be noticed. glfw now raises the process timer resolution to 1 ms
+ * (win32_init.c), which makes these sleeps worth what they say.
+ *
+ * On top of that, back off adaptively rather than at one fixed interval. Just
+ * after activity the next byte is usually microseconds away, so re-sample in a
+ * yielding spin before paying for a sleep at all; once the terminal has been
+ * quiet for a while, drop back to the cheap interval so an idle kitty is not a
+ * spinning CPU. The proper fix is overlapped reads on the pipes, which would
+ * remove the sampling entirely, but that means restructuring the child monitor.
+ *
+ * Timeout accounting uses QueryPerformanceCounter, not GetTickCount64: the tick
+ * count advances in whole timer ticks, so it cannot express a 3 ms timeout. */
+#define POLL_SPIN_MS   0.3     /* yield-spin this long before the first sleep */
+#define POLL_HOT_MS    250.0   /* activity newer than this: spin, then Sleep(1) */
+#define POLL_WARM_MS   2000.0  /* ... newer than this: Sleep(1), no spin       */
+
+static LONGLONG
+qpc_freq(void) {
+    static LONGLONG f;
+    if (!f) { LARGE_INTEGER x; QueryPerformanceFrequency(&x); f = x.QuadPart; }
+    return f;
+}
+
+static LONGLONG
+qpc_now(void) { LARGE_INTEGER x; QueryPerformanceCounter(&x); return x.QuadPart; }
+
+static double
+qpc_ms(LONGLONG from, LONGLONG to) { return (double)(to - from) * 1000.0 / (double)qpc_freq(); }
+
 int
 poll(struct pollfd *fds, nfds_t nfds, int timeout_ms) {
-    ULONGLONG start = GetTickCount64();
+    /* Thread local: one thread going quiet should not make another one sleepy. */
+    static __thread LONGLONG last_ready_at;
+    const LONGLONG start = qpc_now();
+    LONGLONG spin_until = 0;
+    int spin_window_set = 0;
     for (;;) {
         int ready = 0;
         WSAPOLLFD spoll[64];
@@ -67,10 +104,19 @@ poll(struct pollfd *fds, nfds_t nfds, int timeout_ms) {
             int r = WSAPoll(spoll, sn, 0);
             if (r > 0) for (int k = 0; k < sn; k++) if (spoll[k].revents) { fds[sidx[k]].revents = spoll[k].revents; ready++; }
         }
-        if (ready > 0) return ready;
+        if (ready > 0) { last_ready_at = qpc_now(); return ready; }
         if (timeout_ms == 0) return 0;
-        if (timeout_ms > 0 && (GetTickCount64() - start) >= (ULONGLONG)timeout_ms) return 0;
-        Sleep(5);
+        const LONGLONG now = qpc_now();
+        if (timeout_ms > 0 && qpc_ms(start, now) >= (double)timeout_ms) return 0;
+        const double idle_ms = last_ready_at ? qpc_ms(last_ready_at, now) : POLL_WARM_MS;
+        if (idle_ms < POLL_HOT_MS) {
+            if (!spin_window_set) {
+                spin_until = now + (LONGLONG)((double)qpc_freq() * POLL_SPIN_MS / 1000.0);
+                spin_window_set = 1;
+            }
+            if (now < spin_until) { SwitchToThread(); continue; }
+            Sleep(1);
+        } else Sleep(idle_ms < POLL_WARM_MS ? 1 : 5);
     }
 }
 
