@@ -21,7 +21,10 @@ cd "$ROOT"
 [ -x "$PY" ] || { echo "mingw python not found at $PY (set MINGW_ROOT)"; exit 1; }
 
 echo "==> building kitty"
-PYTHONUTF8=1 PATH="$MINGW/bin:$PATH" "$PY" setup.py build
+# --portable drops -march=native. Everything this script produces is meant to
+# run on someone else's machine, and a native build crashes on any CPU older
+# than the one that compiled it, with an illegal instruction and no message.
+PYTHONUTF8=1 PATH="$MINGW/bin:$PATH" "$PY" setup.py build --portable
 # The build emits .so names; Windows imports .pyd. Copy every time -- a stale
 # .pyd is used silently in preference to the .so that was just built, which
 # ships a package with none of the current changes in it.
