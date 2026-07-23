@@ -171,12 +171,35 @@ logo_png_file = os.path.join(kitty_base_dir, 'logo', 'kitty.png')
 beam_cursor_data_file = os.path.join(kitty_base_dir, 'logo', 'beam-cursor.png')
 shell_integration_dir = os.path.join(kitty_base_dir, 'shell-integration')
 fonts_dir = os.path.join(kitty_base_dir, 'fonts')
-try:
-    shell_path = os.environ.get('SHELL') or pwd.getpwuid(os.geteuid()).pw_shell or '/bin/sh'
-except KeyError:
-    with suppress(Exception):
-        print('Failed to read login shell via getpwuid() for current user, falling back to /bin/sh', file=sys.stderr)
-    shell_path = '/bin/sh'
+def _windows_default_shell() -> str:
+    # There is no login shell on Windows, so pick the one a Windows user
+    # expects. PowerShell 7 first, then the Windows PowerShell that ships with
+    # the OS, then COMSPEC, which is cmd.exe. Windows Terminal makes the same
+    # choice, and cmd is a poor first impression next to it.
+    #
+    # SHELL is honoured when it names something Windows can actually start.
+    # It is often inherited from an MSYS2 or git-bash session holding a POSIX
+    # path such as /bin/bash.exe, which CreateProcessW cannot resolve.
+    import shutil
+    shell = os.environ.get('SHELL')
+    if shell and os.path.exists(shell):
+        return shell
+    for exe in ('pwsh.exe', 'powershell.exe'):
+        found = shutil.which(exe)
+        if found:
+            return found
+    return os.environ.get('COMSPEC') or 'cmd.exe'
+
+
+if is_windows:
+    shell_path = _windows_default_shell()
+else:
+    try:
+        shell_path = os.environ.get('SHELL') or pwd.getpwuid(os.geteuid()).pw_shell or '/bin/sh'
+    except KeyError:
+        with suppress(Exception):
+            print('Failed to read login shell via getpwuid() for current user, falling back to /bin/sh', file=sys.stderr)
+        shell_path = '/bin/sh'
 # Keep this short as it is limited to 103 bytes on macOS
 # https://github.com/ansible/ansible/issues/11536#issuecomment-153030743
 ssh_control_master_template = 'kssh-{kitty_pid}-{ssh_placeholder}'
