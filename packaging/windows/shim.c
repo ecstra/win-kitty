@@ -38,14 +38,22 @@ static BOOL token_is(const wchar_t *s, const wchar_t *flag) {
 }
 
 /* Whether this invocation prints to the terminal and exits, rather than opening
- * a window. The GUI shim has to wait for those. Without the wait it returns to
- * the prompt immediately and the child's output arrives afterwards, landing
- * under a prompt that has already been drawn, which reads as kitty --version
- * printing nothing at all. Waiting on a window-opening invocation would block
- * the shell for the whole session, so only these forms wait. */
+ * a window. Only the version and help flags qualify, and both are answered by
+ * the launcher itself without starting Python.
+ *
+ * Two things are needed for them to be seen from another terminal. The shim has
+ * to wait, or it returns to the prompt first and the output lands under a
+ * prompt that is already drawn, reading as though nothing was printed. And the
+ * child has to be the console subsystem binary, because a GUI subsystem process
+ * is not captured by every shell even once it has attached to the parent
+ * console: PowerShell reads nothing from one, which is why the same command
+ * worked under cmd and looked silent under pwsh.
+ *
+ * The + entry points are deliberately not here. They belong to kitty itself and
+ * are not supported from a foreign terminal on Windows, the same call the
+ * kittens make, so they go to the GUI binary like every other invocation. */
 static BOOL prints_and_exits(const wchar_t *tail) {
     while (*tail == L' ' || *tail == L'\t') tail++;
-    if (*tail == L'+') return TRUE;   /* +list-fonts, +kitten, +runpy, ... */
     return token_is(tail, L"--version") || token_is(tail, L"-v")
         || token_is(tail, L"--help") || token_is(tail, L"-h");
 }
