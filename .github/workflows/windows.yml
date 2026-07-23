@@ -1,0 +1,90 @@
+name: Windows
+
+# The native Windows port. Upstream CI (ci.yml) covers Linux and macOS and
+# knows nothing about this build, so it lives in its own workflow.
+on:
+    push:
+        branches: [windows-native-port, master]
+    pull_request:
+    workflow_dispatch:
+    release:
+        types: [published]
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        name: Build, test and package
+        runs-on: windows-latest
+        defaults:
+            run:
+                shell: msys2 {0}
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Set up MSYS2
+              uses: msys2/setup-msys2@v2
+              with:
+                  msystem: MINGW64
+                  update: true
+                  # The build needs the same toolchain and libraries the port is
+                  # developed against. The library list matches the DLL closure
+                  # make-dist.sh bundles into the install tree.
+                  install: >-
+                      base-devel
+                      mingw-w64-x86_64-gcc
+                      mingw-w64-x86_64-pkgconf
+                      mingw-w64-x86_64-python
+                      mingw-w64-x86_64-go
+                      mingw-w64-x86_64-harfbuzz
+                      mingw-w64-x86_64-freetype
+                      mingw-w64-x86_64-fontconfig
+                      mingw-w64-x86_64-cairo
+                      mingw-w64-x86_64-libpng
+                      mingw-w64-x86_64-xxhash
+                      mingw-w64-x86_64-openssl
+                      mingw-w64-x86_64-ncurses
+                      mingw-w64-x86_64-simde
+                      mingw-w64-x86_64-lcms2
+
+            - name: Build
+              run: |
+                  set -euo pipefail
+                  # mingw64 first on PATH: the compiler loads its own DLLs through
+                  # PATH and cc1 dies without it.
+                  export PATH="/mingw64/bin:$PATH"
+                  PYTHONUTF8=1 python setup.py build --verbose
+                  # The build emits .so names and Windows imports .pyd. A stale
+                  # .pyd is imported silently in preference to the .so.
+                  cp -f kitty/fast_data_types.so kitty/fast_data_types.pyd
+                  cp -f kitty/glfw-win32.so kitty/glfw-win32.pyd
+                  cp -f kittens/transfer/rsync.so kittens/transfer/rsync.pyd
+
+            - name: Test
+              run: |
+                  export PATH="/mingw64/bin:$PATH"
+                  ./packaging/windows/run-tests.sh
+
+            - name: Package
+              run: |
+                  set -euo pipefail
+                  export PATH="/mingw64/bin:$PATH"
+                  export MINGW_ROOT=/mingw64
+                  export PYVER="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+                  ./packaging/windows/make-installer.sh
+
+            - name: Upload installer
+              uses: actions/upload-artifact@v4
+              with:
+                  name: kitty-setup
+                  path: dist/kitty-setup.exe
+                  if-no-files-found: error
+
+            - name: Attach installer to the release
+              if: github.event_name == 'release'
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: gh release upload "${{ github.event.release.tag_name }}" dist/kitty-setup.exe --clobber
