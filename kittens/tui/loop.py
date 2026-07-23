@@ -13,12 +13,19 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager, nullcontext, suppress
 from enum import Enum, IntFlag, auto
 from functools import partial
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kitty.constants import is_macos, is_windows
 from kitty.fast_data_types import FILE_TRANSFER_CODE, parse_input_from_terminal
 
-if is_windows:
+if TYPE_CHECKING:
+    # Keep the Windows console names visible to a type checker on every
+    # platform: the annotations below refer to them, and the import guarded by
+    # sys.platform is unreachable off Windows as far as the checker is
+    # concerned, which would leave them undefined.
+    from .loop_win32 import WinConsole, WinScreenSizeGetter
+
+if sys.platform == 'win32':
     # Windows has no termios and no controlling-tty device. The console backend
     # provides the raw-mode and size handling the Unix tty functions do.
     from .loop_win32 import TCSADRAIN, TCSAFLUSH, TCSANOW, WinConsole, WinScreenSizeGetter
@@ -587,7 +594,7 @@ class Loop:
                 nullcontext() if is_windows else signal_manager):
             if is_windows:
                 assert term_manager.console is not None
-                self._get_screen_size = WinScreenSizeGetter(term_manager.console)
+                self._get_screen_size = WinScreenSizeGetter(term_manager.console)  # ty: ignore[invalid-assignment]
             else:
                 self._get_screen_size: ScreenSizeGetter = screen_size_function(term_manager.tty_fd)
             image_manager = None

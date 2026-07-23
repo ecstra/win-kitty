@@ -521,7 +521,7 @@ class Child:
             use_pty = False
             resize_with_escape = True
         self.uses_conpty = use_pty
-        read_fd, write_fd, pty_id = fast_data_types.open_pty(cols, rows, use_pty, resize_with_escape)
+        read_fd, write_fd, pty_id = fast_data_types.open_pty(cols, rows, use_pty, resize_with_escape)  # ty: ignore[unresolved-attribute]
         cwd = self.cwd or os.getcwd()
         if not os.path.isdir(cwd):
             # CreateProcessW fails with ERROR_DIRECTORY (WinError 267) when the cwd
@@ -531,7 +531,7 @@ class Child:
             cwd = os.path.expanduser('~')
             if not os.path.isdir(cwd):
                 cwd = os.getcwd()
-        pid = fast_data_types.spawn(pty_id, exe, cwd, tuple(argv), env)
+        pid = fast_data_types.spawn(pty_id, exe, cwd, tuple(argv), env)  # ty: ignore[missing-argument,invalid-argument-type]
         self.pid = pid
         self.pty_id = pty_id
         self.windows_write_fd = write_fd

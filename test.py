@@ -13,7 +13,7 @@ def bootstrap_windows() -> None:
     import sys
     dll_dir = os.path.join(sys.base_prefix, 'bin')
     if os.path.isdir(dll_dir):
-        os.add_dll_directory(dll_dir)
+        os.add_dll_directory(dll_dir)  # ty: ignore[unresolved-attribute]
     stubs = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kitty', 'wincompat', 'pystubs')
     if os.path.isdir(stubs):
         sys.path.insert(0, stubs)
