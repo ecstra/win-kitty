@@ -2370,8 +2370,9 @@ class Boss:
         from kittens.runner import CLIOnlyKitten, KittenMetadata, create_kitten_handler
         is_wrapped = kitten in wrapped_kitten_names()
         if is_windows and is_wrapped and not os.access(kitten_exe(), os.X_OK):
-            # The Go kitten tool is not built on Windows, so the wrapped path
-            # cannot spawn. Run the kitten through the Python console launcher.
+            # Fallback for a build without kitten.exe (it is built by default):
+            # the wrapped path cannot spawn without it, so run the kitten
+            # through the Python console launcher instead.
             is_wrapped = False
         if window is None:
             w = self.active_window

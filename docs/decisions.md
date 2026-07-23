@@ -2,19 +2,17 @@
 
 Why some of the Windows choices are the way they are. Read this for the reasoning behind a choice. The code and the other docs say what the system does.
 
-## Always-on Gaussian blur instead of acrylic
+## Real acrylic via the DWM system backdrop
 
-The port uses ACCENT_ENABLE_BLURBEHIND, a plain Gaussian blur that stays applied whether or not the window is focused. It is not the frosted acrylic that Windows Terminal shows, and it has one tell: it gets lighter toward the edges of a maximized window, because the blur kernel runs out of samples past the screen edge. Acrylic was pursued at length and every window level path fails on an unpackaged OpenGL window:
+The port uses DWMWA_SYSTEMBACKDROP_TYPE set to DWMSBT_TRANSIENTWINDOW, the genuine Windows 11 acrylic material, the same one Windows Terminal shows. It is requested untinted: kitty's own background_opacity stays in charge of the colour, as on every other platform. Handing the tint to DWM instead blends it with DWM's own maths and a saturation boost, which reads darker and warmer than the configured colour.
 
-- The DWM system backdrop, DWMWA_SYSTEMBACKDROP_TYPE set to DWMSBT_TRANSIENTWINDOW, is real acrylic and looks correct while focused, but it goes opaque when the window is inactive (this is the acrylic material dropping, separate from the Mica inactive fallback), and it does not compose behind a DirectComposition surface.
-- Both accent blur states, BLURBEHIND and ACRYLICBLURBEHIND, render the same Gaussian blur on Windows 11 24H2. The acrylic material never appears, with any tint alpha. Microsoft neutered the private acrylic accent for non UWP windows years ago.
-- A separate borderless acrylic backdrop window pinned behind the main window shows real acrylic, but two independent top level windows cannot move in lockstep, so it trails the main window while dragging.
+This reverses an earlier decision. The port previously used the accent policy, ACCENT_ENABLE_ACRYLICBLURBEHIND, which on Windows 11 24H2 renders a plain Gaussian blur no matter what tint alpha it is given, and which tapered off over the outermost 64 pixels because the blur kernel cannot sample past the window boundary.
 
-The transparency itself is not the problem. Per pixel alpha holds across focus changes for the glass mode. What cannot be kept always on is the acrylic effect.
+The system backdrop had been rejected for one reason: it goes opaque the moment the window is deactivated. That turns out to be avoidable in four lines. The swap keys off the frame's active state, and that state is nothing more than the wParam DefWindowProc receives in WM_NCACTIVATE. Reporting active unconditionally keeps the material, and keeps the per pixel alpha that DWM otherwise also drops on deactivation. There is no cosmetic cost here because kitty draws its own caption, so nothing keys off the DWM active look.
 
-Windows Terminal gets always on desktop acrylic because it is a packaged WinUI app whose acrylic and alpha both live in a composition tree via DesktopAcrylicController, where focus state cannot touch them, and it samples the desktop because it has package identity. wezterm uses the same DWM system backdrop this port tried and has the identical inactive opacity bug filed (wezterm issue 6979), so it is not a counterexample.
+Two claims in the earlier reasoning were wrong and are worth recording. Neither a composition render path nor package identity is required: the backdrop composes with an ordinary OpenGL redirection surface, and this port has no DirectComposition surface for it to conflict with. Windows Terminal does reach acrylic a different way, through DesktopAcrylicController in a composition tree, but that is one way to solve it and not the only one. The conclusion that real acrylic had to wait for the installer and packaging phase was therefore wrong; it needed a message handler.
 
-Matching Windows Terminal therefore needs two things kitty lacks: a composition based render path (kitty renders with OpenGL, so its frames must go through a DirectComposition swapchain, proven to hold alpha when inactive only while it keeps presenting) and package identity for the host backdrop brush. Both belong with the installer and packaging work, so real acrylic is deferred to that phase rather than bolted on now.
+Note DwmExtendFrameIntoClientArea is still not used to expose the material, for the reason in the empty region section below.
 
 ## Keeping WS_CAPTION and hiding the frame
 

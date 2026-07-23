@@ -76,7 +76,6 @@ static bool loadLibraries(void) {
     _glfw.win32.user32.GetDpiForWindow = (void*)GetProcAddress(_glfw.win32.user32.instance, "GetDpiForWindow");
     _glfw.win32.user32.AdjustWindowRectExForDpi = (void*)GetProcAddress(_glfw.win32.user32.instance, "AdjustWindowRectExForDpi");
     _glfw.win32.user32.EnableNonClientDpiScaling = (void*)GetProcAddress(_glfw.win32.user32.instance, "EnableNonClientDpiScaling");
-    _glfw.win32.user32.SetWindowCompositionAttribute = (void*)GetProcAddress(_glfw.win32.user32.instance, "SetWindowCompositionAttribute");
 
     _glfw.win32.dwmapi.instance = LoadLibraryA("dwmapi.dll");
     if (_glfw.win32.dwmapi.instance) {
