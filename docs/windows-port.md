@@ -119,6 +119,10 @@ cp -f kitty/glfw-win32.so kitty/glfw-win32.pyd
 
 Run the result with `kitty\launcher\kitty.exe`.
 
+That build is tuned to the CPU it was compiled on. Pass `--portable` for one
+that runs anywhere, which is what the packaging scripts do, since a native
+build crashes on an older CPU with an illegal instruction and no message.
+
 ## Building the installer
 
 One command does everything. It builds kitty including the `.pyd` copy, builds both launchers and the Go `kitten` binary, assembles the self contained tree at `dist/kitty` with the Python standard library and every MinGW DLL the binaries need, smoke tests that tree with a clean PATH, builds and signs the Explorer shell extension, and compiles `dist/kitty-setup.exe` with Inno Setup.

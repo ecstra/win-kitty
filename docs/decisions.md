@@ -42,6 +42,23 @@ kitty and the pty bridge each ask separately, which looks redundant and is not. 
 
 The alternative was to leave the resolution alone and shorten the sleeps, which does nothing, since the rounding is applied to whatever is asked for.
 
+## Anything packaged is built without -march=native
+
+setup.py's build action compiles with `-march=native -mtune=native`, which is
+right for a local build and wrong for anything anyone else runs. The binary
+uses whatever instructions the build machine happened to support, so on an
+older CPU it dies with 0xC000001D, illegal instruction, and no message at all.
+It is a confusing failure to receive: `kitty --version` still works, because
+the launcher answers that itself before loading the extension that crashes.
+
+make-dist.sh passes `--portable` for that reason. Upstream reaches the same
+conclusion in its linux-package and linux-freeze actions, which build with
+native optimizations off, and the Windows packaging simply never did the same.
+
+This was not a CI problem, though CI is where it surfaced. An installer built
+on any machine would crash on a CPU older than that machine's, so every package
+produced before this was safe only by luck.
+
 ## Static shims are what goes on PATH
 
 `<install>\bin` holds two small statically linked forwarders rather than the real executables. An earlier version put `<install>\kitty\launcher` on PATH directly, which also exposed the MinGW runtime DLLs sitting next to the binaries to every other process on the system. It broke unrelated MinGW toolchains, whose compilers resolve their own runtime DLLs through PATH and loaded mismatched copies, with a failure that looks nothing like a PATH problem.
