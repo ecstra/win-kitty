@@ -24,7 +24,7 @@ from kitty.utils import ScreenSize
 # signatures; on Windows they are inert, so mirror the wincompat/termios.h values.
 TCSANOW, TCSADRAIN, TCSAFLUSH = 0, 1, 2
 
-kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)  # ty: ignore[unresolved-attribute]
 
 STD_INPUT_HANDLE = 0xFFFFFFF6   # (DWORD)-10
 STD_OUTPUT_HANDLE = 0xFFFFFFF5  # (DWORD)-11
@@ -102,7 +102,7 @@ class WinConsole:
             buf = (ctypes.c_char * len(chunk)).from_buffer_copy(chunk)
             nwritten = wintypes.DWORD(0)
             if not kernel32.WriteFile(self.hout, buf, len(chunk), ctypes.byref(nwritten), None):
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise ctypes.WinError(ctypes.get_last_error())  # ty: ignore[unresolved-attribute]
             if not nwritten.value:
                 break
             off += nwritten.value

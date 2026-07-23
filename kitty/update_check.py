@@ -112,7 +112,7 @@ def update_check() -> bool:
             'from kitty.update_check import run_worker; run_worker()'
         ], stdout=subprocess.PIPE,
             preexec_fn=None if is_windows else clear_handled_signals,
-            creationflags=subprocess.CREATE_NO_WINDOW if is_windows else 0)
+            creationflags=subprocess.CREATE_NO_WINDOW if is_windows else 0)  # ty: ignore[unresolved-attribute]
     except Exception as e:
         log_error(f'Failed to run kitty for update check, with error: {e}')
         return False

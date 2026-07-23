@@ -151,8 +151,8 @@ class Password(Handler):
         if key_event.matches('esc'):
             self.quit_loop(1)
 
-    def on_resize(self, screen_size: ScreenSize) -> None:
-        self.screen_size = screen_size
+    def on_resize(self, new_size: ScreenSize) -> None:
+        self.screen_size = new_size
         self.draw_screen()
 
     def on_interrupt(self) -> None:
@@ -389,18 +389,18 @@ class Choose(Handler):  # {{{
             self.response = self.response_on_accept
             self.quit_loop(0)
 
-    def on_click(self, ev: MouseEvent) -> None:
+    def on_click(self, mouse_event: MouseEvent) -> None:
         for letter, ranges in self.clickable_ranges.items():
             for r in ranges:
-                if r.has_point(ev.cell_x, ev.cell_y):
+                if r.has_point(mouse_event.cell_x, mouse_event.cell_y):
                     self.response = letter
                     self.quit_loop(0)
                     return
-        if self.hidden_text and self.replacement_range.has_point(ev.cell_x, ev.cell_y):
+        if self.hidden_text and self.replacement_range.has_point(mouse_event.cell_x, mouse_event.cell_y):
             self.unhide()
 
-    def on_resize(self, screen_size: ScreenSize) -> None:
-        self.screen_size = screen_size
+    def on_resize(self, new_size: ScreenSize) -> None:
+        self.screen_size = new_size
         self.draw_screen()
 
     def on_interrupt(self) -> None:

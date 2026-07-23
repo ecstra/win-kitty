@@ -48,6 +48,21 @@ jobs:
                       mingw-w64-x86_64-ncurses
                       mingw-w64-x86_64-lcms2
 
+            - name: Fetch the bundled Nerd Font
+              run: |
+                  set -euo pipefail
+                  # setup.py copies Symbols Nerd Font Mono out of the system font
+                  # directories into fonts/, which is gitignored, and fails the
+                  # build when it cannot find it. A runner has no such font
+                  # installed, so fetch the archive upstream CI uses and put the
+                  # one file it wants in place. add_builtin_fonts skips when the
+                  # destination already exists.
+                  mkdir -p fonts /tmp/nerd
+                  curl -fsSL -o /tmp/nerd.tar.xz https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz
+                  tar -xf /tmp/nerd.tar.xz -C /tmp/nerd
+                  find /tmp/nerd -name 'SymbolsNerdFontMono-Regular.ttf' -exec cp {} fonts/ \;
+                  test -f fonts/SymbolsNerdFontMono-Regular.ttf
+
             - name: Build
               run: |
                   set -euo pipefail

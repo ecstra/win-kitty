@@ -1644,7 +1644,7 @@ class TabManager:  # {{{
                         next_active_tab = left_tabs[max(0, min(idx_before_removal, len(left_tabs) - 1))]
                     else:
                         next_active_tab = self.tabs[max(0, min(self.active_tab_idx, len(self.tabs) - 1))]
-                self._set_active_tab(self.tabs.index(next_active_tab), store_in_history=False)
+                self._set_active_tab(self.tabs.index(next_active_tab), store_in_history=False)  # ty: ignore[invalid-argument-type]
         else:
             if len(self.tabs):
                 if active_tab_before_removal is None:

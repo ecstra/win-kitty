@@ -818,10 +818,10 @@ class WindowsIntegration(DesktopIntegration):
         try:
             import winreg
             key_path = r'Software\Classes\AppUserModelId\\' + self.app_user_model_id
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
-                winreg.SetValueEx(key, 'DisplayName', 0, winreg.REG_SZ, 'kitty')
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:  # ty: ignore[unresolved-attribute]
+                winreg.SetValueEx(key, 'DisplayName', 0, winreg.REG_SZ, 'kitty')  # ty: ignore[unresolved-attribute]
                 if os.path.exists(logo_png_file):
-                    winreg.SetValueEx(key, 'IconUri', 0, winreg.REG_SZ, logo_png_file)
+                    winreg.SetValueEx(key, 'IconUri', 0, winreg.REG_SZ, logo_png_file)  # ty: ignore[unresolved-attribute]
         except Exception as e:
             log_error(f'Failed to register kitty AppUserModelID for notifications: {e}')
 
