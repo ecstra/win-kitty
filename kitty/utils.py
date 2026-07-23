@@ -183,6 +183,13 @@ def read_screen_size(fd: int = -1) -> ScreenSize:
     buf = array.array('H', [0, 0, 0, 0])
     if fd < 0:
         fd = sys.stdout.fileno()
+    if is_windows:
+        # No TIOCGWINSZ on Windows. The console reports its size in cells only,
+        # so the pixel dimensions stay zero, which is what callers such as the
+        # help formatter already tolerate (they read cols).
+        import shutil
+        size = shutil.get_terminal_size()
+        return ScreenSize(size.lines, size.columns, 0, 0, 0, 0)
     fcntl.ioctl(fd, termios.TIOCGWINSZ, cast(bytearray, buf))
     rows, cols, width, height = tuple(buf)
     cell_width, cell_height = width // (cols or 1), height // (rows or 1)
