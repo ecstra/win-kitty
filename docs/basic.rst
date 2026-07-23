@@ -154,8 +154,11 @@ Edit :file:`kitty.conf`             :sc:`edit_config_file` (also :kbd:`⌘+,` on
 Reload :file:`kitty.conf`           :sc:`reload_config_file` (also :kbd:`⌃+⌘+,` on macOS)
 Debug :file:`kitty.conf`            :sc:`debug_config` (also :kbd:`⌥+⌘+,` on macOS)
 Open a |kitty| shell                :sc:`kitty_shell`
-Increase background opacity         :sc:`increase_background_opacity`
-Decrease background opacity         :sc:`decrease_background_opacity`
-Full background opacity             :sc:`full_background_opacity`
-Reset background opacity            :sc:`reset_background_opacity`
+Select the whole screen             :sc:`select_all`
 ==================================  =======================
+
+.. note::
+   The background opacity shortcuts are no longer bound by default. They used
+   :kbd:`ctrl+shift+a` as a leader, which is now :ac:`select_all`. The
+   :ac:`set_background_opacity` action is still there to bind by hand, see
+   :opt:`dynamic_background_opacity`.

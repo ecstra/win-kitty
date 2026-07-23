@@ -25,6 +25,7 @@ if is_windows:
     open_tty = close_tty = normal_tty = raw_tty = None
 else:
     import termios
+
     from kitty.fast_data_types import close_tty, normal_tty, open_tty, raw_tty
     TCSANOW, TCSADRAIN, TCSAFLUSH = termios.TCSANOW, termios.TCSADRAIN, termios.TCSAFLUSH
 from kitty.key_encoding import ALT, CTRL, SHIFT, backspace_key, decode_key_event, enter_key

@@ -31,6 +31,7 @@ import termios
 import threading
 import time
 
+
 def set_winsize(fd: int, rows: int, cols: int) -> None:
     try:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
@@ -123,9 +124,11 @@ def main() -> None:
     rows, cols = 24, 80
     while args and args[0] != '--':
         if args[0] == '--rows':
-            rows = int(args[1]); args = args[2:]
+            rows = int(args[1])
+            args = args[2:]
         elif args[0] == '--cols':
-            cols = int(args[1]); args = args[2:]
+            cols = int(args[1])
+            args = args[2:]
         else:
             raise SystemExit(f'Unknown option: {args[0]}')
     if not args or args[0] != '--' or len(args) < 2:
@@ -241,7 +244,8 @@ def main() -> None:
 
     tin = threading.Thread(target=pump_input, daemon=True)
     tout = threading.Thread(target=pump_output, daemon=True)
-    tin.start(); tout.start()
+    tin.start()
+    tout.start()
 
     # Reap the child directly rather than trusting pty-master EOF: with the
     # Cygwin/native interop a helper process can keep the pty slave open after

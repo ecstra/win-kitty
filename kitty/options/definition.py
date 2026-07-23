@@ -1961,10 +1961,10 @@ Note that you must also set :opt:`background_opacity` to something less than 1 f
 opt('dynamic_background_opacity', 'no',
     option_type='to_bool', ctype='bool',
     long_text='''
-Allow changing of the :opt:`background_opacity` dynamically, using either
-keyboard shortcuts (:sc:`increase_background_opacity` and
-:sc:`decrease_background_opacity`) or the remote control facility. Changing
-this option by reloading the config is not supported.
+Allow changing of the :opt:`background_opacity` dynamically, using either the
+:ac:`set_background_opacity` action, which has no default shortcut, or the
+remote control facility. Changing this option by reloading the config is not
+supported.
 '''
     )
 
