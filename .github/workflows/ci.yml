@@ -11,14 +11,12 @@ on:
         paths-ignore:
             - '**.md'
             - '**.rst'
-            - 'README.asciidoc'
             - 'docs/**'
             - 'LICENSE'
     pull_request:
         paths-ignore:
             - '**.md'
             - '**.rst'
-            - 'README.asciidoc'
             - 'docs/**'
             - 'LICENSE'
     workflow_dispatch:
@@ -62,15 +60,16 @@ jobs:
                       mingw-w64-x86_64-openssl
                       mingw-w64-x86_64-ncurses
                       mingw-w64-x86_64-lcms2
+                      mingw-w64-x86_64-ruff
 
             - name: Lint
               run: |
                   set -euo pipefail
                   export PATH="/mingw64/bin:$PATH"
                   # ruff runs the same everywhere, so this catches what it
-                  # caught on upstream's Linux runner.
-                  python -m pip install --quiet --disable-pip-version-check ruff
-                  python -m ruff check .
+                  # caught on upstream's Linux runner. It comes from pacman
+                  # above because the mingw python ships without pip.
+                  ruff check .
 
             - name: Fetch the bundled Nerd Font
               run: |
