@@ -4,6 +4,12 @@ This is a native Windows build of kitty. It runs on Windows directly, with no WS
 
 For how the pieces work, read [windows-internals.md](windows-internals.md). For why they are built that way, read [decisions.md](decisions.md).
 
+## Status
+
+This is a young port and it has plenty of bugs. Daily use works, and the parts listed under "What works" have been used enough to trust, but anything off that path is likely to be rough or broken. Expect to hit things nobody has hit yet.
+
+Bug reports for the Windows build belong on the fork at https://github.com/ecstra/win-kitty and not on the upstream kitty tracker. None of this code is upstream, so upstream cannot act on it. See [CONTRIBUTING.md](../CONTRIBUTING.md).
+
 ## Installing
 
 Run `dist/kitty-setup.exe`. It asks for administrator rights, because it installs for all users and writes to `C:\Program Files\kitty`.
@@ -40,10 +46,23 @@ Close any running kitty first. The source tree keeps its own development build a
 
 ## What is not there yet
 
-- Four kittens do not run. dnd, panel, quick-access-terminal, and desktop-ui are marked `(not supported on Windows)` in the `kitten` command list and print a clear message if you run one anyway.
+Known missing, and confirmed so.
+
+- Remote control. `kitty @`, the `listen_on` option, and everything built on the control socket. kitty uses a Unix domain socket for it, and the Python build here has no `socket.AF_UNIX`, so the socket cannot be created at all.
+- Four kittens. dnd, panel, quick-access-terminal, and desktop-ui are marked `(not supported on Windows)` in the `kitten` command list and print a clear message if you run one anyway.
 - Dragging content out of a kitty window. Dropping onto a window works, the other direction does not.
-- Kittens refuse to start outside kitty. This is deliberate. On Windows a kitten needs kitty's own input and output path, and in another terminal it would misbehave in ways that look like bugs, so it exits with a message instead.
-- Running `kitty --version` and other `kitty` subcommands from an interactive foreign shell can print nothing. Captured or redirected output is fine, and `kitten` is fine. If you need the output interactively, run `<install>\kitty\launcher\kitty-console.exe` instead.
+- The `kitty +something` entry points from another terminal. They reach the window binary and print nothing. Inside kitty they work as normal. `kitty +icat` is removed on Windows, since it only forwards to `kitten icat`, which will not run outside kitty anyway.
+- The full `kitty --help` option list. From another terminal `--help` prints a short pointer to the online documentation instead, because the formatter needs a terminal size that Windows reports differently. `--version` prints normally.
+
+Deliberate, not missing.
+
+- Kittens refuse to start outside kitty. On Windows a kitten needs kitty's own input and output path, and in another terminal it misbehaves in ways that look like bugs, so it exits with a message. Inside kitty every ported kitten works.
+
+Not tested, so treat as unknown rather than working.
+
+- The ssh kitten, the file transfer kitten, and anything else that expects a Unix host environment.
+- Sessions, watchers, and startup scripts.
+- Anything that depends on remote control, which cannot work today.
 
 ## Shells
 
@@ -52,6 +71,26 @@ Windows console programs get a pseudoconsole, which is how a Windows terminal no
 MSYS2 and Cygwin shells are detected from their own directory and started through the pty bridge instead, so they run on a genuine Cygwin pty. This is what stops the cursor bouncing and the flicker you otherwise get from conhost redrawing on its own cadence. kitty also copies its terminfo entry into the MSYS2 tree the first time, because the MSYS2 runtime only turns on console support for native Windows programs when it can find the terminfo for `$TERM`.
 
 To turn the bridge off and use a pseudoconsole for these shells too, set `KITTY_NO_CYGWIN_PTY=1` in the environment.
+
+## What this port adds that other platforms do not have
+
+Things here that exist only because the platform needed them. The internals doc explains each one.
+
+- ConPTY spawning: Windows console programs run on a pseudoconsole, created at the real window size.
+- The Cygwin pty bridge: MSYS2 and Cygwin shells run on a genuine Cygwin pty, which is what removes the cursor bouncing and flicker conhost causes. `KITTY_NO_CYGWIN_PTY=1` turns it off.
+- terminfo installed into the MSYS2 tree, so native Windows programs run from those shells get keyboard input and the right size.
+- A title bar drawn by kitty, with caption buttons, matching the terminal background.
+- Windows 11 acrylic through the DWM system backdrop, which keeps the material and the transparency when the window loses focus.
+- `background_opacity` scaled by the factor WinUI applies, so the same number means the same thing here as in Windows Terminal.
+- Desktop notifications as real Windows toasts.
+- An "Open in kitty" entry in both the modern and the classic Explorer menus.
+- An installer that adds a Start menu entry, a PATH entry through small forwarding shims, and an optional desktop shortcut.
+- A 1 ms timer resolution request in kitty and in the bridge, which is where most of the typing latency went.
+- The real monitor refresh rate, rather than an assumed 60 Hz.
+- A side channel pipe that carries kitten output and the graphics protocol around conhost.
+- Config reloading over a named Windows event, since there is no SIGUSR1.
+- A default shell of pwsh, then powershell.exe, then cmd.
+- Shell integration for pwsh and for cmd, alongside the usual zsh and bash through MSYS2.
 
 ## Windows defaults
 
