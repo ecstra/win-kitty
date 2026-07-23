@@ -18,6 +18,10 @@
 /kitty.app/
 /glad/out/
 /kitty/launcher/kitt*
+# The Windows port keeps two launcher sources in that directory, and the
+# pattern above, which is there for the built launcher, was swallowing them.
+!/kitty/launcher/kitty.rc
+!/kitty/launcher/kitty.ico
 /*.dSYM/
 __pycache__/
 /glfw/wayland-*-client-protocol.[ch]
