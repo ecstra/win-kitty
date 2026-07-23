@@ -7,8 +7,7 @@
 
 <p align="center">
   <br>
-  <a href="https://github.com/ecstra/win-kitty/actions/workflows/windows.yml"><img alt="Windows build" src="https://github.com/ecstra/win-kitty/actions/workflows/windows.yml/badge.svg"></a>
-  <a href="https://github.com/ecstra/win-kitty/actions/workflows/ci.yml"><img alt="Upstream CI" src="https://github.com/ecstra/win-kitty/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/ecstra/win-kitty/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ecstra/win-kitty/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="GPLv3 licence" src="https://img.shields.io/badge/licence-GPLv3-yellow.svg"></a>
   <a href="https://github.com/ecstra/win-kitty/releases"><img alt="Windows 10 and 11" src="https://img.shields.io/badge/windows-10_|_11-0078D6.svg"></a>
   <a href="https://sw.kovidgoyal.net/kitty/"><img alt="kitty 0.48.0" src="https://img.shields.io/badge/kitty-0.48.0-brightgreen.svg"></a>
