@@ -46,7 +46,6 @@ jobs:
                       mingw-w64-x86_64-xxhash
                       mingw-w64-x86_64-openssl
                       mingw-w64-x86_64-ncurses
-                      mingw-w64-x86_64-simde
                       mingw-w64-x86_64-lcms2
 
             - name: Build
