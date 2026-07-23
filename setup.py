@@ -182,6 +182,7 @@ class Options:
     debug: bool = False
     verbose: int = 0
     sanitize: bool = False
+    portable: bool = False
     prefix: str = './linux-package'
     dir_for_static_binaries: str = 'build/static'
     skip_code_generation: bool = False
@@ -2156,6 +2157,13 @@ def option_parser() -> argparse.ArgumentParser:  # {{{
         help='Turn on sanitization to detect memory access errors and undefined behavior. This is a big performance hit.'
     )
     p.add_argument(
+        '--portable',
+        default=Options.portable,
+        action='store_true',
+        help='Build without -march=native, so the result runs on any CPU of the same architecture rather than only'
+        ' on the machine that built it. Use this for anything you intend to distribute.'
+    )
+    p.add_argument(
         '--prefix',
         default=Options.prefix,
         help='Where to create the linux package'
@@ -2409,7 +2417,7 @@ def do_build(args: Options) -> None:
     with CompilationDatabase(args.incremental) as cdb:
         args.compilation_database = cdb
         if args.action == 'build':
-            build(args)
+            build(args, native_optimizations=not args.portable)
             if is_macos:
                 create_minimal_macos_bundle(args, launcher_dir)
             else:
