@@ -6,64 +6,8 @@ See https://sw.kovidgoyal.net/kitty/[the kitty website].
 
 '''
 
-== Native Windows port
-
-This branch adds a native Windows build of kitty, by *ecstra* <gotham47g@gmail.com>.
-kitty itself is created and maintained by Kovid Goyal.
-
-It runs on Windows directly. There is no WSL, no X server, and no Cygwin layer
-under the terminal itself. Windows console programs run through the
-pseudoconsole API, MSYS2 and Cygwin shells run on a real Cygwin pty, and the
-terminal is drawn with OpenGL, the same rendering path kitty uses everywhere
-else.
-
-What you get is a full kitty. Tabs and OS windows, scrollback, mouse selection,
-the Windows clipboard, ligatures and fonts, kittens such as icat, hints,
-unicode_input, diff and themes, desktop notifications as real Windows toasts,
-and transparency with the genuine Windows 11 acrylic material that stays put
-when the window loses focus. The title bar is drawn by kitty, so it matches the
-terminal background.
-
-=== Installing
-
-Run `dist\kitty-setup.exe` and accept the administrator prompt. It installs to
-`C:\Program Files\kitty` and offers to add kitty to your PATH, to add an
-"Open in kitty" entry to the Explorer right click menu, and to create a desktop
-shortcut.
-
-To build the installer yourself, run this from git-bash or an MSYS2 shell.
-
-----
-./packaging/windows/make-installer.sh
-----
-
-That one command builds everything and produces `dist/kitty-setup.exe`.
-
-=== Documentation
-
-* link:docs/windows-port.md[docs/windows-port.md]: installing, building, the Windows defaults, and what is not there yet.
-* link:docs/windows-internals.md[docs/windows-internals.md]: how each Windows piece works.
-* link:docs/decisions.md[docs/decisions.md]: why the choices were made, including the ones that were reversed.
-
-=== Status and known gaps
-
-This is a young port with plenty of bugs. Daily use works and the feature list
-above has been used enough to trust, but anything off that path is likely to be
-rough. Report what you find here rather than on the upstream kitty tracker,
-since none of this code is upstream. See link:CONTRIBUTING.md[CONTRIBUTING.md].
-
-What is missing today.
-
-* Remote control, meaning `kitty @` and the `listen_on` option. Windows Python has no `socket.AF_UNIX`, so the control socket cannot be created.
-* Four kittens, namely dnd, panel, quick-access-terminal, and desktop-ui.
-* Dragging content out of a window, though dropping onto one works.
-* The `kitty +something` entry points when run from another terminal, and the full `kitty --help` option list there.
-
-Kittens deliberately refuse to start outside kitty on Windows, because they
-depend on kitty's own input and output path. Inside kitty they work.
-
-link:docs/windows-port.md[docs/windows-port.md] has the full list, including
-what is simply untested.
+*Native Windows port* (runs natively on Windows, no WSL) by *ecstra* <gotham47g@gmail.com>.
+kitty itself is created and maintained by Kovid Goyal; this branch adds the Windows port.
 
 '''
 
