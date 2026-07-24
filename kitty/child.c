@@ -281,6 +281,7 @@ typedef struct {
     HANDLE child_stdout; /* pipe mode: child's stdout (inherited at spawn) */
     HANDLE process;      /* child process handle, for reaping */
     HANDLE wait_handle;  /* RegisterWaitForSingleObject registration on process */
+    HANDLE job;          /* job object owning the child's whole process tree */
     int    read_fd;      /* CRT fd wrapping out_read */
     int    write_fd;     /* CRT fd wrapping in_write */
 } PtyEntry;
@@ -439,6 +440,36 @@ child_exit_callback(PVOID ctx UNUSED, BOOLEAN timed_out UNUSED) {
     windows_wakeup_child_monitor();
 }
 
+/* Windows has no process group for a terminal to hang up, and TerminateProcess
+ * ends one process rather than a tree. child-monitor's hangup() therefore only
+ * ever reached kitty's direct child, which is enough for a ConPTY shell but not
+ * for one started through the Cygwin pty bridge: there the tree is kitty ->
+ * bridge python -> shell, and killing the bridge left the shell running. Worse,
+ * TerminateProcess gives the bridge no chance to run its own SIGTERM handler,
+ * so its "pass the hangup on to the shell" path never fired either.
+ *
+ * Every orphan holds a Cygwin pty and Cygwin has 128 of them, so closed windows
+ * accumulated until pty.fork() in the bridge began failing with "out of pty
+ * devices" and no msys shell would start at all.
+ *
+ * A job object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE says on Windows what
+ * SIGHUP to a process group says on Unix: when kitty lets go of the job, the
+ * child and everything it started go too. Closing the handle is what kills, so
+ * it holds even when kitty dies without running any cleanup of its own. */
+static HANDLE
+create_kill_on_close_job(void) {
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    if (!job) return NULL;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li;
+    ZeroMemory(&li, sizeof li);
+    li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li)) {
+        CloseHandle(job);
+        return NULL;
+    }
+    return job;
+}
+
 /* spawn(pty_id, exe, cwd, argv_tuple, env_tuple) -> pid */
 static PyObject*
 spawn(PyObject *self UNUSED, PyObject *args) {
@@ -471,8 +502,10 @@ spawn(PyObject *self UNUSED, PyObject *args) {
                 si.StartupInfo.hStdInput = ptys[id].child_stdin;
                 si.StartupInfo.hStdOutput = ptys[id].child_stdout;
                 si.StartupInfo.hStdError = ptys[id].child_stdout;
+                // CREATE_SUSPENDED so the child joins the job below before it
+                // runs, and so cannot start anything outside it in the meantime.
                 ok = CreateProcessW(wexe, cmdline, NULL, NULL, TRUE,
-                                    EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
+                                    EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | CREATE_SUSPENDED,
                                     envblock, wcwd, &si.StartupInfo, &pi);
             }
         } else if (UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, ptys[id].hpc, sizeof(HPCON), NULL, NULL)) {
@@ -486,7 +519,7 @@ spawn(PyObject *self UNUSED, PyObject *args) {
             SetStdHandle(STD_OUTPUT_HANDLE, NULL);
             SetStdHandle(STD_ERROR_HANDLE, NULL);
             ok = CreateProcessW(wexe, cmdline, NULL, NULL, FALSE,
-                                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
                                 envblock, wcwd, &si.StartupInfo, &pi);
             SetStdHandle(STD_INPUT_HANDLE, saved[0]);
             SetStdHandle(STD_OUTPUT_HANDLE, saved[1]);
@@ -502,6 +535,15 @@ spawn(PyObject *self UNUSED, PyObject *args) {
     free(cmdline); free(envblock); free(wcwd); free(wexe);
     if (!ok) { PyErr_SetFromWindowsErr((int)err); return NULL; }
 
+    /* Put the child in a job before letting it run, so anything it starts is in
+     * the job too. Resume whatever happens here: a child left suspended never
+     * runs at all, which is a worse failure than an un-jobbed one that leaks. */
+    ptys[id].job = create_kill_on_close_job();
+    if (ptys[id].job && !AssignProcessToJobObject(ptys[id].job, pi.hProcess)) {
+        CloseHandle(ptys[id].job);
+        ptys[id].job = NULL;
+    }
+    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     ptys[id].process = pi.hProcess;   /* kept for reaping */
     /* ConPTY keeps the output pipe open after the child exits (no EOF), so kitty
@@ -557,6 +599,10 @@ windows_pty_close_for(int read_fd) {
              * process handle it watches is closed. */
             if (ptys[i].wait_handle) UnregisterWaitEx(ptys[i].wait_handle, INVALID_HANDLE_VALUE);
             if (pClosePseudoConsole && ptys[i].hpc) pClosePseudoConsole(ptys[i].hpc);
+            /* Dropping the job kills the child and everything it started. This
+             * is what stops a bridge-launched shell outliving its window and
+             * holding a Cygwin pty for the rest of the session. */
+            if (ptys[i].job) CloseHandle(ptys[i].job);
             if (ptys[i].process) CloseHandle(ptys[i].process);
             if (ptys[i].write_fd >= 0) _close(ptys[i].write_fd);
             memset(&ptys[i], 0, sizeof(PtyEntry));
