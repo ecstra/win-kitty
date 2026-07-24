@@ -112,6 +112,35 @@ Windows equivalent of a Unix socket's ACL is a named pipe, which kitty already
 uses for the graphics bypass, and that is the shape a stricter transport would
 take if one is wanted later.
 
+## Kittens run as kitten.exe, not through Python
+
+Most kittens exist twice in this tree: an older Python implementation under
+`kittens/`, and the Go one that `kitten.exe` provides. kitty chooses between them
+with `wrapped_kitten_names()`, whose contents are baked into the build as the
+`WRAPPED_KITTENS` define.
+
+That define was being dropped on Windows, so the list arrived empty and every
+kitten went down the Python path. The result was confusing rather than obviously
+broken: kittens whose Python version still works here, such as `ask` behind tab
+renaming and the paste confirmation, ran but in a reduced form, missing things
+like arrow key navigation. Kittens whose Python version needs more terminal
+machinery than exists here, `hints` and `unicode_input`, did nothing at all, so
+`ctrl+shift+e` and `ctrl+shift+u` appeared dead.
+
+The cause was in `setup.py`. `get_source_specific_defines` compares the source
+path against literals written with forward slashes, while `find_c_files` builds
+those paths with `os.path.join`, so on Windows they arrive as
+`kitty\data-types.c` and match nothing. Every define it hands out was lost:
+`WRAPPED_KITTENS` and `KITTY_VCS_REV` from `data-types.c`, the version numbers
+from `screen.c`, `HAS_COPY_FILE_RANGE` from `fast-file-copy.c`, and the whole
+`library_paths` lookup. It went unnoticed because `wincompat/win_prelude.h`
+carries an `#ifndef WRAPPED_KITTENS` fallback of `""`, which turned a missing
+define into an empty list rather than a compile error.
+
+Only `vt-parser-dump.c` escaped, because it is appended as a hardcoded forward
+slash literal rather than through `os.path.join`, which is why `--dump-commands`
+worked while everything around it did not.
+
 ## Shells
 
 Windows console programs get a pseudoconsole, which is how a Windows terminal normally talks to a shell.
