@@ -68,6 +68,7 @@
 #include <wincodec.h>
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "win32_acrylic.h"
@@ -78,7 +79,19 @@
 // on that path.
 static const float sc_noiseOpacity = 0.02f;
 
-#define CHECK(expr) do { HRESULT _hr = (expr); if (FAILED(_hr)) return _hr; } while (0)
+// Set KITTY_ACRYLIC_DEBUG=1 to trace which step gives up. Every failure here
+// is silent by design, since the window still works without the material.
+static bool acrylicDebug(void) {
+    static int cached = -1;
+    if (cached < 0) { const char* v = getenv("KITTY_ACRYLIC_DEBUG"); cached = v && *v && *v != '0'; }
+    return cached != 0;
+}
+#define ADBG(...) do { if (acrylicDebug()) { fprintf(stderr, "acrylic: " __VA_ARGS__); fputc('\n', stderr); fflush(stderr); } } while (0)
+
+#define CHECK(expr) do { \
+    HRESULT _hr = (expr); \
+    if (FAILED(_hr)) { ADBG("%s failed: 0x%08x", #expr, (unsigned)_hr); return _hr; } \
+} while (0)
 
 
 
@@ -732,6 +745,10 @@ static HRESULT CreateNoiseBrush(Compositor *compositor, ID3D11Device *d3dDevice,
 #define ACRYLIC_GL_COLOR_ATTACHMENT0 0x8CE0
 #define ACRYLIC_GL_FRAMEBUFFER_COMPLETE 0x8CD5
 #define ACRYLIC_GL_TEXTURE_2D 0x0DE1
+#define ACRYLIC_GL_READ_FRAMEBUFFER 0x8CA8
+#define ACRYLIC_GL_DRAW_FRAMEBUFFER 0x8CA9
+#define ACRYLIC_GL_COLOR_BUFFER_BIT 0x00004000
+#define ACRYLIC_GL_NEAREST 0x2600
 
 typedef HANDLE(WINAPI *PFN_wglDXOpenDeviceNV)(void *);
 typedef BOOL(WINAPI *PFN_wglDXCloseDeviceNV)(HANDLE);
@@ -746,6 +763,8 @@ typedef void(APIENTRY *PFN_glBindFramebuffer)(unsigned int, unsigned int);
 typedef void(APIENTRY *PFN_glFramebufferTexture2D)(unsigned int, unsigned int, unsigned int, unsigned int, int);
 typedef unsigned int(APIENTRY *PFN_glCheckFramebufferStatus)(unsigned int);
 typedef void(APIENTRY *PFN_glFlush)(void);
+typedef void(APIENTRY *PFN_glGetIntegerv)(unsigned int, int *);
+typedef void(APIENTRY *PFN_glBlitFramebuffer)(int, int, int, int, int, int, int, int, unsigned int, unsigned int);
 
 typedef struct AcrylicGL {
     PFN_wglDXOpenDeviceNV OpenDevice;
@@ -761,7 +780,15 @@ typedef struct AcrylicGL {
     PFN_glFramebufferTexture2D FramebufferTexture2D;
     PFN_glCheckFramebufferStatus CheckFramebufferStatus;
     PFN_glFlush Flush;
+    PFN_glGetIntegerv GetIntegerv;
+    PFN_glBlitFramebuffer BlitFramebuffer;
 } AcrylicGL;
+
+// One per thread, not one per window, and it lives as long as the thread does.
+// Releasing it when a window closes would leave the next window unable to make
+// another (CreateDispatcherQueueController answers RPC_E_WRONG_THREAD once the
+// thread already has one).
+static IUnknown *g_dispatcherController;
 
 typedef struct _GLFWacrylicWin32 {
     ID3D11Device *d3dDevice;
@@ -783,6 +810,7 @@ typedef struct _GLFWacrylicWin32 {
     unsigned int glFbo;
 
     int width, height;
+    int pendingWidth, pendingHeight;  // 0 when there is nothing to apply
     unsigned int tintRgb;
     float tintOpacity;
     bool locked;      // interop texture currently locked for GL use
@@ -861,6 +889,7 @@ static bool loadGLEntryPoints(AcrylicGL *gl) {
     gl->BindFramebuffer = (PFN_glBindFramebuffer) _glfw.wgl.GetProcAddress("glBindFramebuffer");
     gl->FramebufferTexture2D = (PFN_glFramebufferTexture2D) _glfw.wgl.GetProcAddress("glFramebufferTexture2D");
     gl->CheckFramebufferStatus = (PFN_glCheckFramebufferStatus) _glfw.wgl.GetProcAddress("glCheckFramebufferStatus");
+    gl->BlitFramebuffer = (PFN_glBlitFramebuffer) _glfw.wgl.GetProcAddress("glBlitFramebuffer");
     // The GL 1.1 entry points live in opengl32 itself, not in the ICD, so
     // wglGetProcAddress does not return them.
     {
@@ -869,11 +898,12 @@ static bool loadGLEntryPoints(AcrylicGL *gl) {
         gl->GenTextures = (PFN_glGenTextures) GetProcAddress(opengl32, "glGenTextures");
         gl->DeleteTextures = (PFN_glDeleteTextures) GetProcAddress(opengl32, "glDeleteTextures");
         gl->Flush = (PFN_glFlush) GetProcAddress(opengl32, "glFlush");
+        gl->GetIntegerv = (PFN_glGetIntegerv) GetProcAddress(opengl32, "glGetIntegerv");
     }
     return gl->OpenDevice && gl->RegisterObject && gl->UnregisterObject && gl->LockObjects &&
            gl->UnlockObjects && gl->GenFramebuffers && gl->BindFramebuffer &&
            gl->FramebufferTexture2D && gl->CheckFramebufferStatus && gl->GenTextures &&
-           gl->DeleteTextures && gl->Flush;
+           gl->DeleteTextures && gl->Flush && gl->BlitFramebuffer && gl->GetIntegerv;
 }
 
 static void unbindBackBuffer(_GLFWacrylicWin32 *a) {
@@ -897,7 +927,7 @@ static bool bindBackBuffer(_GLFWacrylicWin32 *a) {
     a->interopTexture = a->gl.RegisterObject(a->interopDevice, backBuffer, a->glTexture,
                                              ACRYLIC_GL_TEXTURE_2D, WGL_ACCESS_READ_WRITE_NV);
     ID3D11Texture2D_Release(backBuffer);
-    if (!a->interopTexture) return false;
+    if (!a->interopTexture) { ADBG("wglDXRegisterObjectNV failed: %lu", GetLastError()); return false; }
 
     if (!a->gl.LockObjects(a->interopDevice, 1, &a->interopTexture)) {
         a->gl.UnregisterObject(a->interopDevice, a->interopTexture);
@@ -909,7 +939,13 @@ static bool bindBackBuffer(_GLFWacrylicWin32 *a) {
     a->gl.BindFramebuffer(ACRYLIC_GL_FRAMEBUFFER, a->glFbo);
     a->gl.FramebufferTexture2D(ACRYLIC_GL_FRAMEBUFFER, ACRYLIC_GL_COLOR_ATTACHMENT0,
                                ACRYLIC_GL_TEXTURE_2D, a->glTexture, 0);
-    if (a->gl.CheckFramebufferStatus(ACRYLIC_GL_FRAMEBUFFER) != ACRYLIC_GL_FRAMEBUFFER_COMPLETE) {
+    const bool complete =
+        a->gl.CheckFramebufferStatus(ACRYLIC_GL_FRAMEBUFFER) == ACRYLIC_GL_FRAMEBUFFER_COMPLETE;
+    // Leave the default framebuffer bound. kitty renders through
+    // bind_framebuffer_for_output(), which rebinds 0 every frame, so this FBO
+    // is only ever a blit destination in Present, never the draw target.
+    a->gl.BindFramebuffer(ACRYLIC_GL_FRAMEBUFFER, 0);
+    if (!complete) {
         unbindBackBuffer(a);
         return false;
     }
@@ -1002,8 +1038,6 @@ bool _glfwWin32AcrylicCreate(_GLFWwindow *window) {
     a->tintRgb = 0x1e1e1e;
     a->tintOpacity = 1.0f;
 
-    if (!loadGLEntryPoints(&a->gl)) { free(a); return false; }
-
     GetClientRect(window->win32.handle, &client);
     a->width = client.right - client.left;
     a->height = client.bottom - client.top;
@@ -1011,6 +1045,24 @@ bool _glfwWin32AcrylicCreate(_GLFWwindow *window) {
     if (a->height < 1) a->height = 1;
 
     if (FAILED(RoInitialize(RO_INIT_SINGLETHREADED))) { /* already initialised is fine */ }
+
+    // Windows.UI.Composition refuses to activate on a thread with no
+    // DispatcherQueue, and says so as a bare E_ACCESSDENIED from
+    // RoActivateInstance. kitty's main thread pumps its own message loop, so
+    // the queue only has to exist, not run anything. A failure here is not
+    // fatal on its own: the thread may already have a queue we did not make,
+    // in which case RoActivateInstance below succeeds anyway.
+    if (!g_dispatcherController) {
+        DispatcherQueueOptionsC options;
+        options.dwSize = sizeof(options);
+        options.threadType = 2;     // DQTYPE_THREAD_CURRENT
+        options.apartmentType = 0;  // DQTAT_COM_NONE
+        HRESULT hr = CreateDispatcherQueueController(options, (void **)&g_dispatcherController);
+        if (FAILED(hr)) {
+            ADBG("CreateDispatcherQueueController: 0x%08x (continuing)", (unsigned)hr);
+            g_dispatcherController = NULL;
+        }
+    }
 
     if (FAILED(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                                  NULL, 0, D3D11_SDK_VERSION, &a->d3dDevice, NULL, NULL))) goto fail;
@@ -1032,20 +1084,17 @@ bool _glfwWin32AcrylicCreate(_GLFWwindow *window) {
     if (FAILED(IDXGIFactory2_CreateSwapChainForComposition(dxgiFactory, (IUnknown *)a->d3dDevice,
                                                            &swapDesc, NULL, &a->swapChain))) goto fail;
 
-    a->interopDevice = a->gl.OpenDevice(a->d3dDevice);
-    if (!a->interopDevice) goto fail;
-
     if (FAILED(createCompositionTree(a, window->win32.handle))) goto fail;
 
     window->win32.acrylic = a;
     ok = true;
+    ADBG("composition tree created, %dx%d", a->width, a->height);
 
 fail:
     if (dxgiFactory) IDXGIFactory2_Release(dxgiFactory);
     if (dxgiAdapter) IDXGIAdapter_Release(dxgiAdapter);
     if (dxgiDevice) IDXGIDevice_Release(dxgiDevice);
     if (!ok) {
-        if (a->interopDevice && a->gl.CloseDevice) a->gl.CloseDevice(a->interopDevice);
         if (a->swapChain) IDXGISwapChain1_Release(a->swapChain);
         if (a->d3dDevice) ID3D11Device_Release(a->d3dDevice);
         free(a);
@@ -1059,7 +1108,7 @@ void _glfwWin32AcrylicDestroy(_GLFWwindow *window) {
     window->win32.acrylic = NULL;
 
     unbindBackBuffer(a);
-    if (a->interopDevice) a->gl.CloseDevice(a->interopDevice);
+    if (a->interopDevice && a->gl.CloseDevice) a->gl.CloseDevice(a->interopDevice);
     if (a->acrylicBrush) a->acrylicBrush->lpVtbl->Release(a->acrylicBrush);
     if (a->acrylicVisual) a->acrylicVisual->lpVtbl->Release(a->acrylicVisual);
     if (a->noiseBrushBase) a->noiseBrushBase->lpVtbl->Release(a->noiseBrushBase);
@@ -1070,6 +1119,8 @@ void _glfwWin32AcrylicDestroy(_GLFWwindow *window) {
     if (a->noiseName) WindowsDeleteString(a->noiseName);
     if (a->swapChain) IDXGISwapChain1_Release(a->swapChain);
     if (a->d3dDevice) ID3D11Device_Release(a->d3dDevice);
+    // g_dispatcherController is deliberately not released: it belongs to the
+    // thread and the next window needs it.
     free(a);
 }
 
@@ -1082,40 +1133,84 @@ void _glfwWin32AcrylicSetTint(_GLFWwindow *window, unsigned int rgb, float opaci
     if (a->acrylicVisual) buildAcrylicBrush(a);
 }
 
+// Everything that needs a current GL context lives here, not in Create.
+// wglGetProcAddress returns NULL without one, and _glfwRefreshContextAttribs
+// leaves no context current after a window is built, so Create runs with none.
 bool _glfwWin32AcrylicBindFramebuffer(_GLFWwindow *window) {
     _GLFWacrylicWin32 *a = acrylic_of(window);
     if (!a || a->bound) return a != NULL && a->bound;
 
-    a->gl.GenTextures(1, &a->glTexture);
-    a->gl.GenFramebuffers(1, &a->glFbo);
-    a->bound = bindBackBuffer(a);
-    if (!a->bound) {
-        a->gl.DeleteTextures(1, &a->glTexture);
-        a->glTexture = 0;
+    if (!loadGLEntryPoints(&a->gl)) { ADBG("WGL_NV_DX_interop2 or FBO entry points missing"); return false; }
+
+    if (!a->interopDevice) {
+        a->interopDevice = a->gl.OpenDevice(a->d3dDevice);
+        if (!a->interopDevice) { ADBG("wglDXOpenDeviceNV failed: %lu", GetLastError()); return false; }
     }
+
+    if (!a->glTexture) a->gl.GenTextures(1, &a->glTexture);
+    if (!a->glFbo) a->gl.GenFramebuffers(1, &a->glFbo);
+
+    a->bound = bindBackBuffer(a);
+    ADBG("bind framebuffer: %s", a->bound ? "ok" : "FAILED");
     return a->bound;
 }
 
+// Only records the new size. WM_SIZE arrives with no GL context current, and
+// unregistering the interop object needs one -- without it the swapchain keeps
+// a live reference to the back buffer and ResizeBuffers fails, which used to
+// leave the window with nothing presenting at all. applyPendingResize does the
+// real work from Present, where the context is guaranteed current.
 void _glfwWin32AcrylicResize(_GLFWwindow *window, int width, int height) {
     _GLFWacrylicWin32 *a = acrylic_of(window);
-    if (!a || !a->bound || width < 1 || height < 1) return;
-    if (width == a->width && height == a->height) return;
+    if (!a || width < 1 || height < 1) return;
+    if (width == a->width && height == a->height) { a->pendingWidth = a->pendingHeight = 0; return; }
+    a->pendingWidth = width;
+    a->pendingHeight = height;
+}
 
-    a->width = width;
-    a->height = height;
+static void applyPendingResize(_GLFWacrylicWin32 *a) {
+    const int width = a->pendingWidth, height = a->pendingHeight;
+    if (!width || !height) return;
+    a->pendingWidth = a->pendingHeight = 0;
 
     unbindBackBuffer(a);
-    if (FAILED(IDXGISwapChain1_ResizeBuffers(a->swapChain, 2, (UINT)width, (UINT)height,
-                                             DXGI_FORMAT_B8G8R8A8_UNORM, 0))) {
-        a->bound = false;
+    HRESULT hr = IDXGISwapChain1_ResizeBuffers(a->swapChain, 2, (UINT)width, (UINT)height,
+                                               DXGI_FORMAT_B8G8R8A8_UNORM, 0);
+    if (FAILED(hr)) {
+        ADBG("ResizeBuffers %dx%d failed: 0x%08x", width, height, (unsigned)hr);
+        a->bound = bindBackBuffer(a);  // keep presenting at the old size
         return;
     }
+    a->width = width;
+    a->height = height;
     a->bound = bindBackBuffer(a);
+    ADBG("resized to %dx%d: %s", width, height, a->bound ? "ok" : "FAILED");
 }
 
 void _glfwWin32AcrylicPresent(_GLFWwindow *window) {
     _GLFWacrylicWin32 *a = acrylic_of(window);
     if (!a || !a->bound) return;
+
+    applyPendingResize(a);
+    if (!a->bound) return;
+
+    // kitty has just finished drawing into the default framebuffer, which on a
+    // window with no redirection surface presents nowhere. Copy it into the
+    // swapchain back buffer, which is what the composition tree shows.
+    //
+    // The destination Y range is inverted on purpose. OpenGL puts the origin at
+    // the bottom left, a DXGI texture puts it at the top left, so a
+    // like-for-like copy arrives upside down.
+    {
+        int previous = 0;
+        a->gl.GetIntegerv(0x8CA6 /* GL_DRAW_FRAMEBUFFER_BINDING */, &previous);
+        a->gl.BindFramebuffer(ACRYLIC_GL_READ_FRAMEBUFFER, 0);
+        a->gl.BindFramebuffer(ACRYLIC_GL_DRAW_FRAMEBUFFER, a->glFbo);
+        a->gl.BlitFramebuffer(0, 0, a->width, a->height,
+                              0, a->height, a->width, 0,
+                              ACRYLIC_GL_COLOR_BUFFER_BIT, ACRYLIC_GL_NEAREST);
+        a->gl.BindFramebuffer(ACRYLIC_GL_FRAMEBUFFER, (unsigned int) previous);
+    }
 
     a->gl.Flush();
     a->gl.UnlockObjects(a->interopDevice, 1, &a->interopTexture);

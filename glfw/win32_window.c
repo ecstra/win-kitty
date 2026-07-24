@@ -5,6 +5,7 @@
 #include "internal.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <errno.h>
 #include <ole2.h>
@@ -595,11 +596,20 @@ static void ensureCaptionButtons(_GLFWwindow* window) {
         wc.hCursor = LoadCursorW(NULL, (LPCWSTR) IDC_ARROW); wc.lpszClassName = CAPTION_CLASS;
         RegisterClassExW(&wc); classReady = true;
     }
-    // A child (not popup) window so DWM animates it together with the main
-    // window during minimize/maximize/restore instead of snapping it ahead.
-    // WS_EX_LAYERED child windows are supported on Windows 8+.
-    HWND overlay = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE,
-        CAPTION_CLASS, L"", WS_CHILD, 0, 0, 10, 10,
+    // A child window composites into its parent's redirection surface. The
+    // acrylic path removes that surface (WS_EX_NOREDIRECTIONBITMAP), so a child
+    // has nowhere to draw and the buttons vanish. An owned popup carries its
+    // own surface and stays visible.
+    //
+    // The child form is kept for every other mode because DWM animates a child
+    // together with the parent through minimize/maximize/restore, where a popup
+    // snaps ahead. That does not cost anything here: the acrylic path disables
+    // those transitions anyway, since the animation is DWM scaling a snapshot
+    // and the material cannot follow it.
+    const bool ownedPopup = window->win32.acrylic != NULL;
+    HWND overlay = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_NOACTIVATE | (ownedPopup ? WS_EX_TOOLWINDOW : 0),
+        CAPTION_CLASS, L"", ownedPopup ? WS_POPUP : WS_CHILD, 0, 0, 10, 10,
         window->win32.handle, NULL, _glfw.win32.instance, NULL);
     if (!overlay) return;
     CaptionState* st = calloc(1, sizeof(CaptionState));
@@ -618,10 +628,18 @@ static void positionCaptionButtons(_GLFWwindow* window) {
     int strip = titlebarHeightPx(owner);
     int bw, bh, gap, pad; cbLayout(overlay, &bw, &bh, &gap, &pad);
     int W = pad * 2 + CB_COUNT * bw + (CB_COUNT - 1) * gap;
-    // top-right of the client area; as a child window these are parent-client
-    // coordinates, so the buttons ride along with the parent through animations.
+    // Top-right of the client area. A child window wants parent-client
+    // coordinates, so the buttons ride along with the parent through
+    // animations. The acrylic path uses an owned popup instead (see
+    // ensureCaptionButtons), and a popup is positioned in screen coordinates.
     RECT cr; GetClientRect(owner, &cr);
-    SetWindowPos(overlay, HWND_TOP, cr.right - W, cr.top, W, strip,
+    int x = cr.right - W, y = cr.top;
+    if (!(GetWindowLongW(overlay, GWL_STYLE) & WS_CHILD)) {
+        POINT origin = { x, y };
+        ClientToScreen(owner, &origin);
+        x = origin.x; y = origin.y;
+    }
+    SetWindowPos(overlay, HWND_TOP, x, y, W, strip,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
     cbPaint(overlay);
 }
@@ -752,10 +770,22 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
     }
     window->win32.customFrame = window->decorated && !window->monitor;
     if (window->win32.transparent) updateWindowComposition(window);
-    // The framebuffer swap has to happen with the context current, which it is
-    // right after creation. If either step fails the window keeps the plain
-    // path and simply has no acrylic.
-    if (window->win32.acrylic) _glfwWin32AcrylicBindFramebuffer(window);
+    if (window->win32.acrylic) {
+        // _glfwRefreshContextAttribs restores whatever context was current
+        // before it ran, which during window creation is none. Binding the
+        // swapchain to GL needs one, so make it current for the call.
+        _GLFWwindow* previous = _glfwPlatformGetTls(&_glfw.contextSlot);
+        glfwMakeContextCurrent((GLFWwindow*) window);
+        if (!_glfwWin32AcrylicBindFramebuffer(window)) {
+            // No WGL_NV_DX_interop2, so nothing can reach the swapchain. Drop
+            // the material rather than show an empty window: the redirection
+            // surface is already gone, but glass still composites.
+            _glfwWin32AcrylicDestroy(window);
+            window->win32.blur = 0;
+            updateWindowComposition(window);
+        }
+        glfwMakeContextCurrent((GLFWwindow*) previous);
+    }
     styleTitlebar(window);
     if (window->win32.customFrame) {
         ensureCaptionButtons(window);
@@ -767,8 +797,14 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
 }
 
 void _glfwPlatformDestroyWindow(_GLFWwindow* window) {
-    // Before the context goes: releasing the interop objects needs it current.
-    _glfwWin32AcrylicDestroy(window);
+    if (window->win32.acrylic) {
+        // Unregistering the interop objects needs the context that registered
+        // them, and it has to happen before that context is destroyed.
+        _GLFWwindow* previous = _glfwPlatformGetTls(&_glfw.contextSlot);
+        glfwMakeContextCurrent((GLFWwindow*) window);
+        _glfwWin32AcrylicDestroy(window);
+        glfwMakeContextCurrent((GLFWwindow*) (previous == window ? NULL : previous));
+    }
     if (window->context.destroy) window->context.destroy(window);
     if (window->win32.captionButtons) {
         DestroyWindow(window->win32.captionButtons);
