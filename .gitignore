@@ -40,3 +40,9 @@ _codeql_detected_source_root
 WINDOWS_TODO.md
 dist/
 packaging/windows/cert/
+
+# Stray output from "go build ./tools/cmd", which writes the binary into the
+# working directory. Anchored to the root so the tools/cmd source tree is not
+# caught by it.
+/cmd
+/cmd.exe
