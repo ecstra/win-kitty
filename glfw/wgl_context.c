@@ -5,6 +5,7 @@
 #include "internal.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "win32_acrylic.h"
 
