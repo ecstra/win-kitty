@@ -2,7 +2,7 @@
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 
-from . import BaseTest
+from . import BaseTest, skip_on_windows
 
 
 class TestTUI(BaseTest):
@@ -42,6 +42,11 @@ class TestTUI(BaseTest):
         le.backspace()
         self.assertTrue(le.pending_bell)
 
+    # kitty/multiprocessing.py patches multiprocessing.util.spawnv_passfds, which
+    # is POSIX only. Windows spawns through popen_spawn_win32 instead, so the
+    # patch never applies and the worker is started as bare kitty.exe. Making
+    # this work needs a Windows equivalent of that patch, see WINDOWS_TODO.
+    @skip_on_windows('multiprocessing spawn is patched through a POSIX only hook')
     def test_multiprocessing_spawn(self):
         from kitty.multiprocessing import test_spawn
         test_spawn()

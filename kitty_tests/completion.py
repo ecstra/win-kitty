@@ -10,11 +10,12 @@ import tempfile
 
 from kitty.constants import kitten_exe as kitten
 
-from . import BaseTest
+from . import BaseTest, skip_on_windows
 
 
 class TestCompletion(BaseTest):
 
+    @skip_on_windows('the fixture separates executables by the POSIX execute bit')
     def test_completion(self):
         with tempfile.TemporaryDirectory() as tdir:
             completion(self, tdir)

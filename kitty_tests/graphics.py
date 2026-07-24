@@ -13,7 +13,7 @@ from io import BytesIO
 
 from kitty.fast_data_types import base64_decode, base64_encode, has_avx2, has_sse4_2, load_png_data, shm_unlink, shm_write, test_xor64
 
-from . import BaseTest, parse_bytes
+from . import BaseTest, is_windows, parse_bytes
 
 try:
     from PIL import Image
@@ -459,7 +459,22 @@ class TestGraphics(BaseTest):
         self.ae(img['data'], random_data)
 
         # Test loading from file
+        class ClosedTempFile:
+            # Stands in for NamedTemporaryFile where the handle must not stay open.
+            def __init__(self, name): self.name = name
+            def close(self):
+                with suppress(OSError): os.unlink(self.name)
+
         def load_temp(prefix='tty-graphics-protocol-'):
+            if is_windows:
+                fd, name = tempfile.mkstemp(prefix=prefix)
+                os.close(fd)
+                with open(name, 'wb') as w: w.write(random_data)
+                sl(name, s=1024, v=8, t='f', expecting_data=random_data)
+                self.assertTrue(os.path.exists(name))
+                with open(name, 'wb') as w: w.write(compressed_random_data)
+                sl(name, s=1024, v=8, t='t', o='z', expecting_data=random_data)
+                return ClosedTempFile(name)
             f = tempfile.NamedTemporaryFile(prefix=prefix)
             f.write(random_data), f.flush()
             sl(f.name, s=1024, v=8, t='f', expecting_data=random_data)
@@ -477,12 +492,13 @@ class TestGraphics(BaseTest):
         f.close()
 
         # Test loading from POSIX SHM
-        name = '/kitty-test-shm'
-        shm_write(name, random_data)
-        sl(name, s=1024, v=8, t='s', expecting_data=random_data)
-        self.assertRaises(
-            FileNotFoundError, shm_unlink, name
-        )  # check that file was deleted
+        if not is_windows:  # POSIX shared memory, which Windows has no equivalent of
+            name = '/kitty-test-shm'
+            shm_write(name, random_data)
+            sl(name, s=1024, v=8, t='s', expecting_data=random_data)
+            self.assertRaises(
+                FileNotFoundError, shm_unlink, name
+            )  # check that file was deleted
         s.reset()
         self.assertEqual(g.disk_cache.total_size, 0)
 
