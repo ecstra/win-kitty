@@ -18,9 +18,11 @@ mostly a record of what the answer is not.
 - pwsh is a native Windows program, so kitty runs it on a ConPTY. Every byte
   passes through conhost and the markers are gone before kitty sees them.
 - conhost does in fact split every PSReadLine repaint, and the split is
-  measurable. `kitty/wincompat/conpty_repaint_probe.c` spawns a shell on a
-  pseudoconsole and timestamps every write. pwsh emits the cursor hide alone,
-  then the text and the cursor show about ten milliseconds later:
+  measurable. Measured by spawning a shell on a pseudoconsole, typing a scripted
+  sequence into it, and timestamping every read from the output pipe;
+  `kitty/wincompat/conpty_poc.c` is the same skeleton and is the quickest thing
+  to copy if this needs redoing. pwsh emits the cursor hide alone, then the text
+  and the cursor show about ten milliseconds later:
 
       [4] 2655.34ms   9 bytes: \e[m\e[?25l
       [5] 2664.40ms  25 bytes: \e[93m\x08ab    \e[2;41H\e[?25h
@@ -80,5 +82,3 @@ out even if waiting longer turns out to work. That rules out shipping a larger
 - `kitty/vt-parser.c`, `run_worker` and `vt_parser_commit_write`, is the
   deferral. `new_input_at` is stamped on the first unconsumed byte and cleared
   after a parse.
-- `kitty/wincompat/conpty_repaint_probe.c` is the measurement tool. It is not in
-  the build; compile it directly with gcc.
