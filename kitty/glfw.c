@@ -1524,6 +1524,9 @@ init_window_chrome_state(WindowChromeState *s, color_type active_window_bg, floa
     s->resizable = OPT(macos_window_resizable);
 #else
     if (global_state.is_wayland) { SET_TCOL(OPT(wayland_titlebar_color)); }
+#ifdef _WIN32
+    else { s->color = active_window_bg; s->use_system_color = false; }
+#endif
 #endif
     s->background_blur = should_blur ? OPT(background_blur) : 0;
     s->hide_window_decorations = OPT(hide_window_decorations);
@@ -1552,6 +1555,14 @@ apply_window_chrome_state(GLFWwindow *w, WindowChromeState new_state, int width,
             glfwSetWindowAttrib(w, GLFW_DECORATED, !hide_window_decorations);
             glfwSetWindowSize(w, width, height);
         }
+#ifdef _WIN32
+        // Publish the background colour so the win32 backend can match the
+        // caption to it. glfwSetWindowBlur re-reads this and restyles the caption.
+        { char tb[16]; snprintf(tb, sizeof tb, "%06x", (unsigned)(new_state.color & 0xffffff)); setenv("KITTY_TITLEBAR_RGB", tb, 1); }
+        // The acrylic material is tinted with these two, so it needs the
+        // configured opacity, not the discounted one the renderer uses.
+        { char bo[16]; snprintf(bo, sizeof bo, "%.4f", (double)OPT(background_opacity)); setenv("KITTY_BACKGROUND_OPACITY", bo, 1); }
+#endif
         glfwSetWindowBlur(w, new_state.background_blur);
         if (global_state.is_wayland) {
             if (glfwWaylandSetTitlebarColor) glfwWaylandSetTitlebarColor(w, new_state.color, new_state.use_system_color);
@@ -1917,6 +1928,19 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     }
     OSWindow *w = add_os_window();
     w->handle = glfw_window;
+    // The tab-bar VAO was created in add_os_window() before this window's handle
+    // existed, so it inherited whatever GL context happened to be current. VAOs are
+    // per-context and not shared, so a second OS window created at runtime lands its
+    // tab-bar VAO in the previously focused window's context, and binding it here
+    // renders another window's cell data. Recreate it now that the correct context
+    // is current. (Init-time windows happen to have the right context already.)
+    {
+        extern ssize_t create_cell_vao(void);
+        extern void remove_vao(ssize_t vao_idx);
+        make_os_window_context_current(w);
+        if (w->tab_bar_render_data.vao_idx > -1) remove_vao(w->tab_bar_render_data.vao_idx);
+        w->tab_bar_render_data.vao_idx = create_cell_vao();
+    }
     w->disallow_title_changes = disallow_override_title;
     if (lsc != NULL) {
         w->is_layer_shell = true;

@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"testing"
 )
 
@@ -281,10 +280,10 @@ func TestLinkAt(t *testing.T) {
 	}
 	info1, _ := os.Stat(filepath.Join(tmp, "original.txt"))
 	info2, _ := os.Stat(filepath.Join(tmp, "hardlink.txt"))
-	s1 := info1.Sys().(*syscall.Stat_t)
-	s2 := info2.Sys().(*syscall.Stat_t)
-	if s1.Ino != s2.Ino {
-		t.Error("hard link should share the same inode")
+	// os.SameFile rather than comparing st_ino: syscall.Stat_t does not exist on
+	// Windows, and this is the question it is really asking.
+	if !os.SameFile(info1, info2) {
+		t.Error("hard link should refer to the same file")
 	}
 }
 
@@ -299,7 +298,10 @@ func TestReadLinkAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadLinkAt abs: %v", err)
 	}
-	if abs != "/absolute/path" {
+	// ToSlash: Windows normalises separators when it stores a reparse point, so
+	// the target comes back with backslashes. What is being tested is that the
+	// target round-trips, not which separator the filesystem chose to keep.
+	if filepath.ToSlash(abs) != "/absolute/path" {
 		t.Errorf("abs link: got %q, want %q", abs, "/absolute/path")
 	}
 
@@ -307,7 +309,7 @@ func TestReadLinkAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadLinkAt rel: %v", err)
 	}
-	if rel != "relative/path" {
+	if filepath.ToSlash(rel) != "relative/path" {
 		t.Errorf("rel link: got %q, want %q", rel, "relative/path")
 	}
 
@@ -534,7 +536,7 @@ func TestCopyFolderContents_NoHardlinks_NoFollowSymlinks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("readlink %s: %v", s.path, err)
 		}
-		if got != s.want {
+		if filepath.ToSlash(got) != s.want {
 			t.Errorf("symlink %s: got target %q, want %q", s.path, got, s.want)
 		}
 	}
@@ -542,8 +544,8 @@ func TestCopyFolderContents_NoHardlinks_NoFollowSymlinks(t *testing.T) {
 	// With Disallow_hardlinks, files must have different inodes from source.
 	srcInfo, _ := os.Stat(filepath.Join(src, "file1.txt"))
 	dstInfo, _ := os.Stat(filepath.Join(dst, "file1.txt"))
-	if srcInfo.Sys().(*syscall.Stat_t).Ino == dstInfo.Sys().(*syscall.Stat_t).Ino {
-		t.Error("files should not share inodes when Disallow_hardlinks=true")
+	if os.SameFile(srcInfo, dstInfo) {
+		t.Error("files should not be the same file when Disallow_hardlinks=true")
 	}
 }
 
@@ -572,10 +574,8 @@ func TestCopyFolderContents_WithHardlinks(t *testing.T) {
 	for _, name := range []string{"file.txt", "sub/file2.txt"} {
 		sInfo, _ := os.Stat(filepath.Join(src, name))
 		dInfo, _ := os.Stat(filepath.Join(dst, name))
-		sIno := sInfo.Sys().(*syscall.Stat_t).Ino
-		dIno := dInfo.Sys().(*syscall.Stat_t).Ino
-		if sIno != dIno {
-			t.Errorf("%s: expected same inode (hardlink), got src=%d dst=%d", name, sIno, dIno)
+		if !os.SameFile(sInfo, dInfo) {
+			t.Errorf("%s: expected the same file (hardlink)", name)
 		}
 	}
 }

@@ -16,7 +16,7 @@ from kitty.constants import is_macos, kitten_exe, kitty_base_dir, runtime_dir
 from kitty.fast_data_types import CURSOR_BEAM, shm_unlink
 from kitty.utils import SSHConnectionData
 
-from . import BaseTest, retry_on_failure
+from . import BaseTest, retry_on_failure, skip_on_windows
 from .shell_integration import bash_ok, basic_shell_env
 
 
@@ -26,6 +26,7 @@ def files_in(path):
             yield os.path.relpath(os.path.join(record[0], f), path)
 
 
+@skip_on_windows('the ssh kitten drives a pty and expects a Unix host environment')
 class SSHKitten(BaseTest):
 
     @retry_on_failure()

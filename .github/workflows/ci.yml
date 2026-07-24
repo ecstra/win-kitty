@@ -1,222 +1,117 @@
 name: CI
-on: [push, pull_request]
-env:
-    CI: 'true'
-    ASAN_OPTIONS: detect_leaks=0
-    LC_ALL: en_US.UTF-8
-    LANG: en_US.UTF-8
+
+# This fork exists for the native Windows port, so that is what CI builds and
+# tests. Upstream's Linux and macOS matrix was dropped: it exercised platforms
+# this fork does not change, and the port's own code is covered here.
+on:
+    push:
+        branches: [windows-native-port, master]
+        # Documentation cannot break the build, so do not spend a runner on it.
+        # Written out twice because GitHub Actions does not support YAML anchors.
+        paths-ignore:
+            - '**.md'
+            - '**.rst'
+            - 'docs/**'
+            - 'LICENSE'
+    pull_request:
+        paths-ignore:
+            - '**.md'
+            - '**.rst'
+            - 'docs/**'
+            - 'LICENSE'
+    workflow_dispatch:
 
 permissions:
-  contents: read # to fetch code (actions/checkout)
+    contents: read
 
 jobs:
-    linux:
-        name: Linux (python=${{ matrix.pyver }} cc=${{ matrix.cc }} sanitize=${{ matrix.sanitize }})
-        runs-on: ubuntu-latest
-        env:
-            CC: ${{ matrix.cc }}
-            KITTY_SANITIZE: ${{ matrix.sanitize }}
-
-        strategy:
-            matrix:
-                python: [a, b, c]
-                cc: [gcc, clang]
-                include:
-                    - python: a
-                      pyver: "3.12"
-                      sanitize: 0
-
-                    - python: b
-                      pyver: "3.13"
-                      sanitize: 1
-
-                    - python: c
-                      pyver: "3.14"
-                      sanitize: 1
-
-
-                exclude:
-                    - python: a
-                      cc: clang
-                    - python: b
-                      cc: clang
-                    - python: c
-                      cc: gcc
+    build:
+        name: Build, test and package
+        runs-on: windows-latest
+        defaults:
+            run:
+                shell: msys2 {0}
 
         steps:
-          - name: Checkout source code
-            uses: actions/checkout@v7.0.0
-            with:
-              fetch-depth: 10
-              persist-credentials: false
+            - uses: actions/checkout@v4
 
-          - name: Set up Python ${{ matrix.pyver }}
-            uses: actions/setup-python@v6.3.0
-            with:
-              python-version: ${{ matrix.pyver }}
+            - name: Set up MSYS2
+              uses: msys2/setup-msys2@v2
+              with:
+                  msystem: MINGW64
+                  update: true
+                  # The build needs the same toolchain and libraries the port is
+                  # developed against. The library list matches the DLL closure
+                  # make-dist.sh bundles into the install tree.
+                  install: >-
+                      base-devel
+                      mingw-w64-x86_64-gcc
+                      mingw-w64-x86_64-pkgconf
+                      mingw-w64-x86_64-python
+                      mingw-w64-x86_64-go
+                      mingw-w64-x86_64-harfbuzz
+                      mingw-w64-x86_64-freetype
+                      mingw-w64-x86_64-fontconfig
+                      mingw-w64-x86_64-cairo
+                      mingw-w64-x86_64-libpng
+                      mingw-w64-x86_64-xxhash
+                      mingw-w64-x86_64-openssl
+                      mingw-w64-x86_64-ncurses
+                      mingw-w64-x86_64-lcms2
+                      mingw-w64-x86_64-ruff
 
-          - name: Install Go
-            uses: actions/setup-go@v6.5.0
-            with:
-              go-version-file: go.mod
+            - name: Lint
+              run: |
+                  set -euo pipefail
+                  export PATH="/mingw64/bin:$PATH"
+                  # ruff runs the same everywhere, so this catches what it
+                  # caught on upstream's Linux runner. It comes from pacman
+                  # above because the mingw python ships without pip.
+                  ruff check .
 
-          - name: Build kitty
-            run: python .github/workflows/ci.py build
+            - name: Fetch the bundled Nerd Font
+              run: |
+                  set -euo pipefail
+                  # setup.py copies Symbols Nerd Font Mono out of the system font
+                  # directories into fonts/, which is gitignored, and fails the
+                  # build when it cannot find it. A runner has no such font
+                  # installed, so fetch the archive upstream CI uses and put the
+                  # one file it wants in place. add_builtin_fonts skips when the
+                  # destination already exists.
+                  mkdir -p fonts /tmp/nerd
+                  curl -fsSL -o /tmp/nerd.tar.xz https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz
+                  tar -xf /tmp/nerd.tar.xz -C /tmp/nerd
+                  find /tmp/nerd -name 'SymbolsNerdFontMono-Regular.ttf' -exec cp {} fonts/ \;
+                  test -f fonts/SymbolsNerdFontMono-Regular.ttf
 
-          - name: Test kitty
-            run: python .github/workflows/ci.py test
+            - name: Build
+              run: |
+                  set -euo pipefail
+                  # mingw64 first on PATH: the compiler loads its own DLLs through
+                  # PATH and cc1 dies without it.
+                  export PATH="/mingw64/bin:$PATH"
+                  PYTHONUTF8=1 python setup.py build --verbose
 
-    linux-package:
-        name: Linux package
-        runs-on: ubuntu-latest
-        env:
-            CFLAGS: -funsigned-char
-        steps:
-          - name: Checkout source code
-            uses: actions/checkout@v7.0.0
-            with:
-              fetch-depth: 0  # needed for :commit: docs role
-              persist-credentials: false
+            - name: Test
+              run: |
+                  export PATH="/mingw64/bin:$PATH"
+                  ./packaging/windows/run-tests.sh
 
-          - name: Test for trailing whitespace
-            run: if grep -Inr '\s$' kitty kitty_tests kittens docs *.py *.asciidoc *.rst *.go .gitattributes .gitignore; then echo Trailing whitespace found, aborting.; exit 1; fi
+            - name: Package
+              run: |
+                  set -euo pipefail
+                  export PATH="/mingw64/bin:$PATH"
+                  export MINGW_ROOT=/mingw64
+                  export PYVER="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+                  ./packaging/windows/make-installer.sh
 
-          - name: Test for bad code block formatting
-            run: if grep -Inr ':code:`\s' kitty kitty_tests kittens docs *.py *.asciidoc *.rst *.go .gitattributes .gitignore; then echo Space at code block start found, aborting.; exit 1; fi
-
-          - name: Set up Python
-            uses: actions/setup-python@v6.3.0
-            with:
-              python-version: "3.14"
-
-          - name: Install Go
-            uses: actions/setup-go@v6.5.0
-            with:
-              go-version-file: go.mod
-              cache: false
-
-          - name: Cache Go build artifacts separately
-            uses: actions/cache@v6.1.0
-            with:
-              path: |
-                ~/.cache/go-build
-                ~/go/pkg/mod
-              key: ${{ runner.os }}-golang-static-${{ hashFiles('**/go.sum') }}
-              restore-keys: |
-                ${{ runner.os }}-golang-static-
-
-          - name: Install build-only deps
-            run: python -m pip install -r docs/requirements.txt ruff ty types-requests types-docutils types-Pygments
-
-          - name: Run ruff
-            run: ruff check .
-
-          - name: Run gofmt
-            run: go version && python .github/workflows/ci.py gofmt
-
-          - name: Build kitty package
-            run: python .github/workflows/ci.py package
-
-          - name: Build kitty
-            run: python setup.py build --debug
-
-          - name: Run type checking
-            run: which python && ./test.py type-check
-
-          - name: Run go vet
-            run: go version && go vet -tags testing ./...
-
-          - name: Build docs
-            run: make FAIL_WARN=1 docs
-
-          - name: Build static kittens
-            run: python setup.py build-static-binaries
-
-    bundle:
-        name: Bundle test (${{ matrix.os }})
-        runs-on: ${{ matrix.os }}
-        strategy:
-            matrix:
-                os: [ubuntu-latest, macos-latest]
-        env:
-            KITTY_BUNDLE: 1
-            KITTY_SANITIZE: 1
-        steps:
-          - name: Checkout source code
-            uses: actions/checkout@v7.0.0
-            with:
-              fetch-depth: 10
-              persist-credentials: false
-
-          - name: Install Go
-            uses: actions/setup-go@v6.5.0
-            with:
-              go-version-file: go.mod
-
-          - name: Build kitty
-            run: which python3 && python3 .github/workflows/ci.py build
-
-          - name: Test kitty
-            run: python3 .github/workflows/ci.py test
-
-    brew:
-        name: macOS Brew
-        runs-on: macos-latest
-        steps:
-          - name: Checkout source code
-            uses: actions/checkout@v7.0.0
-            with:
-              fetch-depth: 0  # needed for :commit: docs role
-              persist-credentials: false
-
-          - name: Set up Python
-            uses: actions/setup-python@v6.3.0
-            with:
-              python-version: "3.14"
-
-          - name: Install Go
-            uses: actions/setup-go@v6.5.0
-            with:
-              go-version-file: go.mod
-
-          - name: Build kitty
-            run: python3 .github/workflows/ci.py build
-
-          - name: Test kitty
-            run: python3 .github/workflows/ci.py test
-
-          - name: Install deps for docs
-            run: python3 -m pip install -r docs/requirements.txt
-
-          - name: Builds docs
-            run: make FAIL_WARN=1 docs
-
-          - name: Build kitty package
-            run: python3 .github/workflows/ci.py package
-
-          - name: Run benchmarks
-            run: ./benchmark.py
-
-    linux-dev:
-        name: Test ./dev.sh and benchmark
-        runs-on: ubuntu-latest
-        steps:
-          - name: Checkout source code
-            uses: actions/checkout@v7.0.0
-            with:
-              fetch-depth: 10
-              persist-credentials: false
-
-          - name: Install build deps
-            run: sudo apt-get update && sudo apt-get install -y curl xz-utils build-essential git pkg-config libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev libxkbcommon-x11-dev libfontconfig-dev libx11-xcb-dev libdbus-1-dev
-
-          - name: Install Go
-            uses: actions/setup-go@v6.5.0
-            with:
-              go-version-file: go.mod
-
-          - name: Build kitty
-            run: ./dev.sh build
-
-          - name: Run benchmarks
-            run: ./benchmark.py
+            # Every run leaves the installer as a build artifact, which is how you
+            # get a build to try. Releases are made by hand: nothing here writes
+            # to one, so publishing a release does not trigger a build and no
+            # asset is attached without someone deciding to.
+            - name: Upload installer
+              uses: actions/upload-artifact@v4
+              with:
+                  name: kitty-setup
+                  path: dist/kitty-setup.exe
+                  if-no-files-found: error

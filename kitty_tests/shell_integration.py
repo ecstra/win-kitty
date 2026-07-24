@@ -17,7 +17,7 @@ from kitty.constants import is_macos, kitten_exe, kitty_base_dir, shell_integrat
 from kitty.fast_data_types import CURSOR_BEAM, CURSOR_BLOCK, CURSOR_UNDERLINE
 from kitty.shell_integration import setup_bash_env, setup_fish_env, setup_zsh_env
 
-from . import BaseTest
+from . import BaseTest, skip_on_windows
 
 
 @lru_cache
@@ -108,6 +108,7 @@ def safe_env_for_running_shell(argv, home_dir, rc='', shell='zsh', with_kitten=F
     return ans
 
 
+@skip_on_windows('drives a POSIX shell over a pty, and MSYS2 supplying bash is not the same as the platform supporting it')
 class ShellIntegration(BaseTest):
 
     with_kitten = False

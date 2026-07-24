@@ -228,6 +228,138 @@ wakeup_io_loop(ChildMonitor *self, bool in_signal_handler) {
     wakeup_loop(&self->io_loop_data, in_signal_handler, "io_loop");
 }
 
+#ifdef _WIN32
+/* Called from child.c's process-exit thread-pool callback (the Windows stand-in
+ * for SIGCHLD). Wake the io_loop so it reaps exited children. */
+void
+windows_wakeup_child_monitor(void) {
+    if (the_monitor) wakeup_io_loop(the_monitor, false);
+}
+
+/* Windows has no SIGUSR1, so a config-reload request (e.g. from the themes
+ * kitten after it writes the chosen theme) is delivered via a per-process named
+ * event. A dedicated thread waits on it and sets the same flag the SIGUSR1
+ * handler would on POSIX, then wakes the io_loop. The event name embeds kitty's
+ * pid so the kitten, which knows it via KITTY_PID, can open and signal it. */
+static HANDLE reload_event = NULL;
+
+static DWORD WINAPI
+reload_event_waiter(LPVOID param) {
+    HANDLE ev = (HANDLE)param;
+    while (WaitForSingleObject(ev, INFINITE) == WAIT_OBJECT_0) {
+        reload_config_signal_received = true;
+        windows_wakeup_child_monitor();
+    }
+    return 0;
+}
+
+static void
+start_windows_reload_listener(void) {
+    if (reload_event) return;
+    wchar_t name[64];
+    _snwprintf(name, sizeof(name) / sizeof(name[0]), L"Local\\kitty-reload-%lu", (unsigned long)GetCurrentProcessId());
+    reload_event = CreateEventW(NULL, FALSE, FALSE, name);  /* auto-reset, initially non-signaled */
+    if (reload_event) {
+        HANDLE t = CreateThread(NULL, 0, reload_event_waiter, reload_event, 0, NULL);
+        if (t) CloseHandle(t);
+    }
+}
+
+/* Graphics-protocol side channel. Windows ConPTY (conhost) re-renders the child's
+ * output into a text grid and drops escape sequences it does not understand, so
+ * the kitty graphics protocol APC (\x1b_G...) written by a kitten never survives
+ * the trip to kitty. Instead a kitten sends the transmit command straight to kitty
+ * over this named pipe; we inject it into the target window's parser below, on the
+ * io_loop thread, exactly like bytes read from a child. The image is then placed
+ * with unicode placeholders, which are plain text and pass through conhost intact.
+ * The pipe name embeds kitty's pid (the kitten knows it via KITTY_PID); the first
+ * 8 bytes of each message are the target window id (little-endian), the rest is the
+ * raw graphics command. */
+#define GFX_QUEUE_SZ 64
+typedef struct { id_type window_id; uint8_t *data; size_t sz; } GfxInjection;
+static GfxInjection gfx_queue[GFX_QUEUE_SZ];
+static unsigned gfx_queue_count = 0;
+static pthread_mutex_t gfx_queue_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool gfx_listener_started = false;
+
+/* Enqueue one chunk for injection, blocking (with backpressure on the pipe
+ * connection) while the queue is full. Dropping is not an option: the payload
+ * is a VT byte stream and a lost chunk would corrupt the window's parser state. */
+static void
+gfx_enqueue_chunk(id_type window_id, uint8_t *payload, size_t sz) {
+    for (;;) {
+        pthread_mutex_lock(&gfx_queue_lock);
+        if (gfx_queue_count < GFX_QUEUE_SZ) {
+            gfx_queue[gfx_queue_count++] = (GfxInjection){.window_id = window_id, .data = payload, .sz = sz};
+            pthread_mutex_unlock(&gfx_queue_lock);
+            windows_wakeup_child_monitor();
+            return;
+        }
+        pthread_mutex_unlock(&gfx_queue_lock);
+        windows_wakeup_child_monitor();
+        Sleep(1);
+    }
+}
+
+/* One thread per client connection, so a long-lived streaming client (a kitten
+ * TUI routing its output around conhost) does not block one-shot clients (icat
+ * image transmits, edit-in-kitty DCS). The first 8 bytes are the target window
+ * id; every subsequent chunk is injected into that window's parser as it
+ * arrives, so both one-shot messages and continuous streams work: the parser
+ * is incremental and does not care how the bytes are split. */
+static DWORD WINAPI
+gfx_connection_handler(LPVOID param) {
+    HANDLE pipe = (HANDLE)param;
+    uint8_t hdr[8];
+    size_t hread = 0;
+    DWORD got = 0;
+    while (hread < 8) {
+        if (!ReadFile(pipe, hdr + hread, (DWORD)(8 - hread), &got, NULL) || got == 0) goto done;
+        hread += got;
+    }
+    id_type window_id = 0;
+    for (unsigned i = 0; i < 8; i++) window_id |= ((id_type)hdr[i]) << (8u * i);
+    for (;;) {
+        uint8_t *buf = malloc(1u << 16);
+        if (!buf) break;
+        if (!ReadFile(pipe, buf, 1u << 16, &got, NULL) || got == 0) { free(buf); break; }
+        gfx_enqueue_chunk(window_id, buf, got);
+    }
+done:
+    DisconnectNamedPipe(pipe);
+    CloseHandle(pipe);
+    return 0;
+}
+
+static DWORD WINAPI
+graphics_pipe_waiter(LPVOID param) {
+    (void)param;
+    char name[64];
+    snprintf(name, sizeof(name), "\\\\.\\pipe\\kitty-gfx-%lu", (unsigned long)GetCurrentProcessId());
+    while (true) {
+        HANDLE pipe = CreateNamedPipeA(name, PIPE_ACCESS_INBOUND,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES,
+            0, 1u << 16, 0, NULL);
+        if (pipe == INVALID_HANDLE_VALUE) return 0;
+        if (!ConnectNamedPipe(pipe, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
+            CloseHandle(pipe); continue;
+        }
+        HANDLE t = CreateThread(NULL, 0, gfx_connection_handler, pipe, 0, NULL);
+        if (t) CloseHandle(t);
+        else { DisconnectNamedPipe(pipe); CloseHandle(pipe); }
+    }
+    return 0;
+}
+
+static void
+start_windows_graphics_listener(void) {
+    if (gfx_listener_started) return;
+    gfx_listener_started = true;
+    HANDLE t = CreateThread(NULL, 0, graphics_pipe_waiter, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+}
+#endif
+
 static void* io_loop(void *data);
 static void* talk_loop(void *data);
 static void send_response_to_peer(id_type peer_id, const char *msg, size_t msg_sz, bool is_async_response);
@@ -284,6 +416,10 @@ start(PyObject *s, PyObject *a UNUSED) {
     }
     ret = pthread_create(&self->io_thread, NULL, io_loop, self);
     if (ret != 0) return PyErr_Format(PyExc_OSError, "Failed to start I/O thread with error: %s", strerror(ret));
+#ifdef _WIN32
+    start_windows_reload_listener();
+    start_windows_graphics_listener();
+#endif
 
     Py_RETURN_NONE;
 }
@@ -538,7 +674,15 @@ parse_input(ChildMonitor *self) {
             Message *msg = msgs + i;
             PyObject *resp = NULL;
             if (msg->data) {
-                resp = PyObject_CallMethod(global_state.boss, "peer_message_received", "y#KO", msg->data, (int)msg->sz, msg->peer_id, msg->is_remote_control_peer ? Py_True : Py_False);
+                // The length must be passed as Py_ssize_t: PY_SSIZE_T_CLEAN is
+                // set, so y# reads eight bytes here. Passing an int is harmless
+                // on the SysV ABI, where this argument still lands in a register
+                // and the write to its low half zeroes the top. Win64 passes only
+                // four arguments in registers, so this one is the first on the
+                // stack, and four bytes of stale stack were being read as the top
+                // half of the length. The result was a nonsense size and a
+                // MemoryError instead of a remote control command.
+                resp = PyObject_CallMethod(global_state.boss, "peer_message_received", "y#KO", msg->data, (Py_ssize_t)msg->sz, msg->peer_id, msg->is_remote_control_peer ? Py_True : Py_False);
                 free(msg->data);
                 if (!resp) PyErr_Print();
             }
@@ -614,6 +758,12 @@ mark_for_close(ChildMonitor *self, PyObject *args) {
 
 static bool
 pty_resize(int fd, struct winsize *dim) {
+#ifdef _WIN32
+    // No ioctl on Windows: resize the pseudoconsole directly.
+    extern int windows_pty_resize_for(int read_fd, int cols, int rows);
+    windows_pty_resize_for(fd, dim->ws_col, dim->ws_row);
+    return true;
+#else
     while(true) {
         if (ioctl(fd, TIOCSWINSZ, dim) == -1) {
             if (errno == EINTR) continue;
@@ -625,6 +775,7 @@ pty_resize(int fd, struct winsize *dim) {
         break;
     }
     return true;
+#endif
 }
 
 static PyObject *
@@ -1217,8 +1368,9 @@ close_os_window(ChildMonitor *self, OSWindow *os_window) {
     int x = 0, y = 0;
     if (os_window->handle && !global_state.is_wayland) glfwGetWindowPos(os_window->handle, &x, &y);
     bool is_layer_shell = os_window->is_layer_shell;
+    bool is_maximized = os_window->handle && glfwGetWindowAttrib(os_window->handle, GLFW_MAXIMIZED);
     destroy_os_window(os_window);
-    call_boss(on_os_window_closed, "KiiiiO", os_window->id, x, y, w, h, is_layer_shell ? Py_True : Py_False);
+    call_boss(on_os_window_closed, "KiiiiOO", os_window->id, x, y, w, h, is_layer_shell ? Py_True : Py_False, is_maximized ? Py_True : Py_False);
     for (size_t t=0; t < os_window->num_tabs; t++) {
         Tab *tab = os_window->tabs + t;
         for (size_t w = 0; w < tab->num_windows; w++) mark_child_for_close(self, tab->windows[w].id);
@@ -1404,6 +1556,9 @@ process_global_state(void *data) {
         input_read = true;
     }
     if (parse_input(self)) input_read = true;
+    // After parsing, so every pointer shape sequence read this tick collapses
+    // into a single change, and before rendering, so it lands on this frame.
+    apply_pending_mouse_pointer_shape();
     render(now, input_read);
 #ifdef __APPLE__
     if (has_cocoa_pending_actions) {
@@ -1468,6 +1623,12 @@ hangup(pid_t pid) {
 
 static void
 cleanup_child(ssize_t i) {
+#ifdef _WIN32
+    // Release the pty entry before its read fd is closed and the number reused,
+    // otherwise a later child that reuses the fd gets its input misrouted.
+    extern void windows_pty_close_for(int read_fd);
+    windows_pty_close_for(children[i].fd);
+#endif
     safe_close(children[i].fd, __FILE__, __LINE__);
     hangup(children[i].pid);
 }
@@ -1591,6 +1752,43 @@ reap_children(ChildMonitor *self, bool enable_close_on_child_death) {
     }
 }
 
+#ifdef _WIN32
+/* Windows has no SIGCHLD and no waitpid(-1), so nothing triggers reap_children
+ * above. The io_loop calls this each pass instead. It checks every live child's
+ * process handle and marks the exited ones for removal, reaching the same end
+ * state as the pty EOF path on Unix. One non-blocking wait per child, and child.c
+ * wakes the loop the moment a child exits.
+ *
+ * A ConPTY never reports EOF, so this is the only signal that a shell has exited.
+ * That means the window always closes on shell exit, regardless of
+ * close_on_child_death (Windows cannot tell whether a backgrounded process still
+ * holds the console, which is the case that option exists to preserve). */
+static void
+windows_reap_children(ChildMonitor *self) {
+    extern bool windows_pty_child_exited(int read_fd, int *status);
+    children_mutex(lock);
+    for (size_t i = 0; i < self->count; i++) {
+        int status = 0;
+        if (children[i].pid <= 0 || children[i].needs_removal) continue;
+        if (!windows_pty_child_exited(children[i].fd, &status)) continue;
+        children[i].needs_removal = true;
+        children[i].exit_status = status;
+        children[i].child_died = true;
+        // mirror mark_monitored_pids inline (we already hold children_lock)
+        for (ssize_t j = (ssize_t)monitored_pids_count - 1; j >= 0; j--) {
+            if (children[i].pid == monitored_pids[j]) {
+                if (reaped_pids_count < arraysz(reaped_pids)) {
+                    reaped_pids[reaped_pids_count].status = status;
+                    reaped_pids[reaped_pids_count++].pid = children[i].pid;
+                }
+                remove_i_from_array(monitored_pids, (size_t)j, monitored_pids_count);
+            }
+        }
+    }
+    children_mutex(unlock);
+}
+#endif
+
 #ifdef KITTY_PRINT_BYTES_SENT_TO_CHILD
 static void
 print_text(const unsigned char *text, ssize_t sz) {
@@ -1609,6 +1807,13 @@ static void
 write_to_child(int fd, Screen *screen) {
     size_t written = 0;
     ssize_t ret = 0;
+#ifdef _WIN32
+    // On Windows the child's "fd" is the pty read side; writes must go to the
+    // ConPTY input pipe instead.
+    extern int windows_pty_write_fd_for(int read_fd);
+    int wfd = windows_pty_write_fd_for(fd);
+    if (wfd >= 0) fd = wfd;
+#endif
     screen_mutex(lock, write);
     while (written < screen->write_buf_used) {
         ret = write(fd, screen->write_buf + written, screen->write_buf_used - written);
@@ -1643,6 +1848,43 @@ write_to_child(int fd, Screen *screen) {
     screen_mutex(unlock, write);
 }
 
+#ifdef _WIN32
+/* Drain graphics commands the pipe waiter queued and feed each into its target
+ * window's parser. Runs on the io_loop thread, so filling the parser write buffer
+ * here is serialized with read_bytes() the same way. */
+static void
+drain_graphics_injections(ChildMonitor *self, bool *data_received) {
+    GfxInjection local[GFX_QUEUE_SZ];
+    unsigned count;
+    pthread_mutex_lock(&gfx_queue_lock);
+    count = gfx_queue_count;
+    for (unsigned i = 0; i < count; i++) local[i] = gfx_queue[i];
+    gfx_queue_count = 0;
+    pthread_mutex_unlock(&gfx_queue_lock);
+    for (unsigned i = 0; i < count; i++) {
+        Screen *screen = NULL;
+        for (size_t c = 0; c < self->count; c++) {
+            if (children[c].id == local[i].window_id) { screen = children[c].screen; break; }
+        }
+        if (screen) {
+            size_t off = 0;
+            while (off < local[i].sz) {
+                size_t space = 0;
+                uint8_t *buf = vt_parser_create_write_buffer(screen->vt_parser, &space);
+                if (!space) break;
+                size_t n = local[i].sz - off;
+                if (n > space) n = space;
+                memcpy(buf, local[i].data + off, n);
+                vt_parser_commit_write(screen->vt_parser, n);
+                off += n;
+            }
+            *data_received = true;
+        }
+        free(local[i].data);
+    }
+}
+#endif
+
 static void*
 io_loop(void *data) {
     // The I/O thread loop
@@ -1655,6 +1897,11 @@ io_loop(void *data) {
     set_thread_name("KittyChildMon");
 
     while (LIKELY(!self->shutting_down)) {
+#ifdef _WIN32
+        // Detect exited children (no SIGCHLD here) so remove_children below closes
+        // their window. child.c wakes this loop when a process exits.
+        windows_reap_children(self);
+#endif
         children_mutex(lock);
         remove_children(self);
         add_children(self);
@@ -1725,6 +1972,9 @@ io_loop(void *data) {
                 perror("Call to poll() failed");
             }
         }
+#ifdef _WIN32
+        drain_graphics_injections(self, &data_received);
+#endif
 #define WAKEUP { wakeup_main_loop(); last_main_loop_wakeup_at = now; has_pending_wakeups = false; }
         // we only wakeup the main loop after input_delay as wakeup is an expensive operation
         // on some platforms, such as cocoa

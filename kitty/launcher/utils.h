@@ -25,6 +25,12 @@ static const char* home = NULL;
 static void
 ensure_home_path(void) {
     if (home) return;
+#ifdef _WIN32
+    // Prefer the native home. $HOME under msys/Git-Bash is a POSIX-style path
+    // (e.g. /c/Users/name) that native Windows file APIs cannot open.
+    home = getenv("USERPROFILE");
+    if (home && home[0]) return;
+#endif
     home = getenv("HOME");
     if (!home || !home[0]) {
         struct passwd* pw = getpwuid(geteuid());
@@ -99,13 +105,26 @@ clean_path(char *path) {
     return write_ptr - path - 1;
 }
 
+static bool
+is_absolute_path(const char *p) {
+#ifdef _WIN32
+    // Windows absolute paths: drive-letter (C:\ or C:/), UNC (\\...) or the
+    // root-relative forms (/ or \) that msys and native APIs both accept.
+    if (p[0] == '/' || p[0] == '\\') return true;
+    if (p[0] && p[1] == ':' && (p[2] == '/' || p[2] == '\\' || p[2] == 0)) return true;
+    return false;
+#else
+    return p[0] == '/';
+#endif
+}
+
 static size_t
 lexical_absolute_path(const char* relative, char *output, size_t outsz) {
     size_t rlen = strlen(relative);
     char *limit = output + outsz;
     char* write_ptr = output;      // Points to the location to write normalized characters
 #define _ensure_space(n) if (write_ptr + n + 1 >= limit) { fprintf(stderr, "Out of buffer space making absolute path for: %s with cwd: %s\n", relative, output); exit(1); }
-    if (relative[0] != '/') {
+    if (!is_absolute_path(relative)) {
         if (!getcwd(output, outsz)) {
             perror("Getting the current working directory failed with error");
             exit(1);

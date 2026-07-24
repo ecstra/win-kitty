@@ -200,6 +200,14 @@ def init_env(
         if has_memfd_create:
             ans.cppflags.append('-DHAS_MEMFD_CREATE')
 
+    elif module == 'win32':
+        # windowsapp/d3d11/dxgi/windowscodecs are for the acrylic composition
+        # tree in win32_acrylic.c. There is no d2d1: that header supplies enum
+        # values only, nothing calls into it.
+        ans.ldpaths.extend(
+            '-lopengl32 -lgdi32 -luser32 -ldwmapi -lws2_32 -lshell32 -limm32 -lgdiplus -lole32 -luuid'
+            ' -lwindowsapp -ld3d11 -ldxgi -ldxguid -lwindowscodecs'.split())
+
     return ans
 
 

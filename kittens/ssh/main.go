@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/emmansun/base64"
-	"golang.org/x/sys/unix"
 
 	"github.com/kovidgoyal/go-shm"
 	"github.com/kovidgoyal/kitty"
@@ -73,10 +72,8 @@ func get_destination(hostname string) (username, hostname_for_match string) {
 
 func read_data_from_shared_memory(shm_name string) ([]byte, error) {
 	data, err := shm.ReadWithSizeAndUnlink(shm_name, func(s fs.FileInfo) error {
-		if stat, ok := s.Sys().(syscall.Stat_t); ok {
-			if os.Getuid() != int(stat.Uid) || os.Getgid() != int(stat.Gid) {
-				return fmt.Errorf("Incorrect owner on SHM file")
-			}
+		if err := check_shm_owner(s); err != nil {
+			return err
 		}
 		if s.Mode().Perm() != 0o600 {
 			return fmt.Errorf("Incorrect permissions on SHM file")
@@ -667,7 +664,7 @@ func run_ssh(ssh_args, server_args, found_extra_args []string, ssh_config_channe
 		if err != nil {
 			return 1, fmt.Errorf("Could not parse delegate command: %#v with error: %w", host_opts.Delegate, err)
 		}
-		return 1, unix.Exec(utils.FindExe(delegate_cmd[0]), utils.Concat(delegate_cmd, ssh_args, server_args), os.Environ())
+		return 1, utils.Exec(utils.FindExe(delegate_cmd[0]), utils.Concat(delegate_cmd, ssh_args, server_args), os.Environ())
 	}
 	master_is_alive, master_checked := false, false
 	var control_master_args []string
@@ -773,7 +770,7 @@ func run_ssh(ssh_args, server_args, found_extra_args []string, ssh_config_channe
 		restore_escape_codes += "\x1b[#Q"
 	}
 	sigs := make(chan os.Signal, 8)
-	signal.Notify(sigs, unix.SIGINT, unix.SIGTERM)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	cleaned_up := false
 	cleanup := func() {
 		if !cleaned_up {
@@ -825,9 +822,7 @@ func run_ssh(ssh_args, server_args, found_extra_args []string, ssh_config_channe
 		if exit_err, ok := errors.AsType[*exec.ExitError](err); ok {
 			if state := exit_err.ProcessState.String(); state == "signal: interrupt" {
 				cleanup()
-				_ = unix.Kill(os.Getpid(), unix.SIGINT)
-				// Give the signal time to be delivered
-				time.Sleep(20 * time.Millisecond)
+				reraise_sigint_to_self()
 			}
 			return exit_err.ExitCode(), nil
 		}
@@ -854,12 +849,12 @@ func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 			if invargs.Msg != "" {
 				fmt.Fprintln(os.Stderr, invargs.Msg)
 			}
-			return 1, unix.Exec(SSHExe(), []string{"ssh"}, os.Environ())
+			return 1, utils.Exec(SSHExe(), []string{"ssh"}, os.Environ())
 		}
 		return 1, err
 	}
 	if passthrough {
-		return 1, unix.Exec(SSHExe(), utils.Concat([]string{"ssh"}, ssh_args, server_args), os.Environ())
+		return 1, utils.Exec(SSHExe(), utils.Concat([]string{"ssh"}, ssh_args, server_args), os.Environ())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

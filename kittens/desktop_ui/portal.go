@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/kovidgoyal/dbus"
@@ -23,7 +24,6 @@ import (
 	"github.com/kovidgoyal/dbus/prop"
 	"github.com/kovidgoyal/kitty/tools/utils"
 	"github.com/kovidgoyal/kitty/tools/utils/style"
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -338,7 +338,7 @@ func IsDir(x string) bool {
 
 var WritableDataDirs = sync.OnceValue(func() (ans []string) {
 	for _, x := range DataDirs() {
-		if err := os.MkdirAll(x, 0o755); err == nil && unix.Access(x, unix.W_OK) == nil {
+		if err := os.MkdirAll(x, 0o755); err == nil && utils.Access(x, utils.AccessWrite) == nil {
 			ans = append(ans, x)
 		}
 	}
@@ -396,7 +396,7 @@ func enable_portal() (err error) {
 	for _, x := range WritableDataDirs() {
 		// Find-or-create the first available xdg-desktop-portals/portals directory
 		q := filepath.Join(x, "xdg-desktop-portal", "portals")
-		if (unix.Access(q, unix.W_OK) == nil && IsDir(q)) || (os.MkdirAll(q, 0o755) == nil) {
+		if (utils.Access(q, utils.AccessWrite) == nil && IsDir(q)) || (os.MkdirAll(q, 0o755) == nil) {
 			portals_dir = q
 			break
 		}
@@ -711,7 +711,7 @@ func (self *Portal) Cleanup() {
 	self.lock.Lock()
 	defer self.lock.Unlock()
 	if self.file_chooser_first_instance != nil {
-		self.file_chooser_first_instance.Process.Signal(unix.SIGTERM)
+		self.file_chooser_first_instance.Process.Signal(syscall.SIGTERM)
 		ch := make(chan int)
 		go func() {
 			self.file_chooser_first_instance.Wait()
@@ -750,7 +750,7 @@ func (self *Portal) run_file_chooser(cfd ChooseFilesData) (response uint32, resu
 			if raw, err := os.ReadFile(pid_path); err == nil {
 				if pid, err := strconv.Atoi(string(raw)); err == nil {
 					child_killed.Store(true)
-					unix.Kill(pid, unix.SIGTERM)
+					kill_pid(pid)
 				}
 			}
 		}
@@ -800,7 +800,7 @@ func (self *Portal) run_file_chooser(cfd ChooseFilesData) (response uint32, resu
 		}
 		if self.file_chooser_first_instance == nil {
 			fifo_path := filepath.Join(tdir, "fifo")
-			if err := unix.Mkfifo(fifo_path, 0600); err != nil {
+			if err := make_fifo(fifo_path, 0600); err != nil {
 				log.Println("cannot run file chooser as failed to create a fifo directory with error: ", err)
 				return nil
 			}

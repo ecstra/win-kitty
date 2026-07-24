@@ -1,3 +1,26 @@
+### The native Windows port
+
+This fork carries the native Windows port, which lives at
+https://github.com/ecstra/win-kitty and is not part of upstream kitty.
+
+Anything about the Windows build belongs here, not on the upstream tracker.
+That means bug reports, feature requests, and pull requests that touch the
+Windows code, the installer, the pty bridge, or the Windows documentation.
+Upstream cannot act on any of it, because none of this code is upstream, so
+filing it there only costs the maintainer time.
+
+Open a pull request against this fork. The port is young and has plenty of
+bugs, so reports are useful even when they are rough. Say which Windows
+version you are on, which shell you were running, and whether the shell was a
+Windows one such as pwsh or cmd or an MSYS2 or Cygwin one, since those take
+completely different paths through the code. See
+[docs/windows-port.md](docs/windows-port.md) for what is known to be missing
+before reporting, and [docs/windows-internals.md](docs/windows-internals.md)
+if you want to work on it.
+
+Bugs that reproduce on Linux or macOS as well are upstream bugs, and those do
+belong on the upstream tracker below.
+
 ### Reporting bugs
 
 Please first search existing bug reports (especially closed ones) for a report

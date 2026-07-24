@@ -10,11 +10,24 @@ from typing import Any
 
 from .conf.utils import BadLine, parse_config_base
 from .conf.utils import load_config as _load_config
-from .constants import cache_dir, defconf
+from .constants import cache_dir, defconf, is_windows
 from .options.types import Options, defaults, option_names
 from .options.utils import KeyboardMode, KeyboardModeMap, KeyDefinition, MouseMap, MouseMapping, build_action_aliases
+from .types import FloatEdges
 from .typing_compat import TypedDict
 from .utils import log_error
+
+if is_windows:
+    # Windows-native port defaults. The custom title-bar strip already provides
+    # the top spacing, so use a tiny top padding with normal left/right/bottom
+    # padding for readability, and align the grid to the top-left so the first
+    # line sits just below the title bar. An explicit setting in kitty.conf still
+    # overrides these (they only change the built-in defaults).
+    defaults.window_padding_width = FloatEdges(left=10.0, top=1.0, right=10.0, bottom=10.0)
+    defaults.placement_strategy = 'top-left'
+    # Windows apps do not prompt before closing a terminal window, so default to
+    # no close confirmation. Users can still set confirm_os_window_close.
+    defaults.confirm_os_window_close = (0, False)
 
 
 def option_names_for_completion() -> tuple[str, ...]:

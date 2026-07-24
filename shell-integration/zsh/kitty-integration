@@ -361,6 +361,16 @@ _ksi_deferred_init() {
         preexec_functions+=(_ksi_preexec)
     fi
 
+    if [[ "$OSTYPE" == (msys|cygwin)* ]]; then
+        # MSYS2's /etc/profile exports PS1 (meant for bash) and zsh keeps the
+        # export flag when the prompt is redefined, so child shells and native
+        # programs (bash, sh, and cmd.exe via PROMPT) inherit a zsh-syntax
+        # prompt string they cannot interpret: bash tries to run the embedded
+        # $(...) functions and cmd renders the %F{...} codes literally.
+        # Prompts are per-shell state, never meant for the environment.
+        builtin typeset -g +x PS1 PROMPT 2> /dev/null
+    fi
+
     builtin typeset -ag precmd_functions
     if (( $+functions[_ksi_precmd] )); then
         precmd_functions=(${precmd_functions:/_ksi_deferred_init/_ksi_precmd})
@@ -402,7 +412,12 @@ _ksi_deferred_init() {
 
     builtin alias edit-in-kitty="kitten edit-in-kitty"
 
-    if (( ! opt[(Ie)no-sudo] )) ; then
+    # The sudo wrapper below preserves TERMINFO across sudo via the Unix
+    # `sudo VAR=value cmd` env-passing syntax. On Cygwin/MSYS2 the sudo on PATH is
+    # Microsoft's sudo.exe, which does not understand that syntax -- it treats
+    # TERMINFO=... as the command to run and fails with "Command not found",
+    # breaking sudo entirely. Skip the wrapper there (a real Unix sudo still gets it).
+    if (( ! opt[(Ie)no-sudo] )) && [[ "$OSTYPE" != (cygwin|msys)* ]] ; then
         if [[ -n "$TERMINFO" && ! ( -r "/usr/share/terminfo/x/xterm-kitty" || -r "/usr/share/terminfo/78/xterm-kitty" ) ]]; then
             sudo() {
                 # Ensure terminfo is available in sudo

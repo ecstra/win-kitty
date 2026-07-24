@@ -239,6 +239,17 @@ read_exe_path(char *exe, size_t buf_sz) {
     return false;
 }
 
+#elif defined(_WIN32)
+
+static bool
+read_exe_path(char *exe, size_t buf_sz) {
+    wchar_t wpath[4096];
+    DWORD n = GetModuleFileNameW(NULL, wpath, 4096);
+    if (n == 0 || n >= 4096) { fprintf(stderr, "GetModuleFileName failed\n"); return false; }
+    if (WideCharToMultiByte(CP_UTF8, 0, wpath, -1, exe, (int) buf_sz, NULL, NULL) == 0) { fprintf(stderr, "Failed to convert exe path to UTF-8\n"); return false; }
+    return true;
+}
+
 #else
 
 static bool
@@ -283,6 +294,31 @@ reopen_to_null(const char *mode, FILE *stream) {
 
 static bool
 ensure_working_stdio(void) {
+#ifdef _WIN32
+    // kitty.exe is a GUI-subsystem binary, so when run from a terminal it gets
+    // no console and anything it prints (kitty --version, kitty +list-fonts,
+    // startup errors) silently vanishes. Attach to the parent's console when
+    // there is one, wiring up only the std streams that were not already
+    // redirected somewhere real by the caller. The usability checks must
+    // happen BEFORE AttachConsole: attaching fills in the std handles, but the
+    // CRT's FILE streams stay bound to the old descriptors until freopen. A
+    // handle can also be inherited yet unusable (a GUI parent like the PATH
+    // shim passes stale values), so validate with GetFileType rather than
+    // testing for NULL alone.
+#define usable(which) (GetStdHandle(which) != NULL && GetStdHandle(which) != INVALID_HANDLE_VALUE \
+                       && GetFileType(GetStdHandle(which)) != FILE_TYPE_UNKNOWN)
+    bool no_in = !usable(STD_INPUT_HANDLE);
+    bool no_out = !usable(STD_OUTPUT_HANDLE);
+    bool no_err = !usable(STD_ERROR_HANDLE);
+#undef usable
+    if (GetConsoleWindow() == NULL) AttachConsole(ATTACH_PARENT_PROCESS);
+    if (GetConsoleWindow() != NULL) {  // attached now, or inherited from the parent
+        if (no_in) freopen("CONIN$", "r", stdin);
+        if (no_out) freopen("CONOUT$", "w", stdout);
+        if (no_err) freopen("CONOUT$", "w", stderr);
+    }
+    return true;
+#endif
 #define C(which, mode) { \
     int fd = fileno(which); \
     if (fd < 0) { if (!reopen_to_null(mode, which)) return false; } \
@@ -378,13 +414,39 @@ handle_fast_commandline(CLISpec *cli_spec, const char *instance_group_prefix) {
             &subcommand_cli_spec, cli_spec->original_argc, cli_spec->original_argv);
         swap_cli_spec;
     }
-    if (get_bool_cli_val(cli_spec, "help")) return;
+    if (get_bool_cli_val(cli_spec, "help")) {
+#ifdef _WIN32
+        // Answer here rather than letting Python print the full option list.
+        // That path formats itself to the terminal width, which it reads with
+        // a TIOCGWINSZ ioctl that Windows does not have, so it died on a
+        // traceback. Even fixed, the full list is of little use from another
+        // terminal: kitty is a window, and its settings live in kitty.conf.
+        printf("kitty opens a terminal window. Run it with no arguments to start one.\n");
+        printf("Settings go in kitty.conf. The full list of command line options is at\n");
+        printf("https://sw.kovidgoyal.net/kitty/invocation/\n");
+        exit(0);
+#endif
+        return;
+    }
     if (get_bool_cli_val(cli_spec, "version")) {
         if (isatty(STDOUT_FILENO)) {
             printf("\x1b[3mkitty\x1b[23m \x1b[32m%s\x1b[39m created by \x1b[1;34mKovid Goyal\x1b[22;39m\n", KITTY_VERSION);
         } else {
             printf("kitty %s created by Kovid Goyal\n", KITTY_VERSION);
         }
+#ifdef _WIN32
+        // The same credit line version() in kitty/cli.py prints, repeated here
+        // because this path never reaches Python: the launcher answers
+        // --version itself and exits. Truecolor is emitted in the semicolon
+        // form because conhost mangles the colon form and drops the colour.
+        if (isatty(STDOUT_FILENO)) {
+            printf("\x1b[3mWindows native port by \x1b[23m"
+                   "\x1b[38;2;253;151;31mecstra\x1b[39m "
+                   "\x1b[2m<\x1b[22m\x1b[96mgotham47g@gmail.com\x1b[39m\x1b[2m>\x1b[22m\n");
+        } else {
+            printf("Windows native port by ecstra <gotham47g@gmail.com>\n");
+        }
+#endif
         exit(0);
     }
     opts.session = get_string_cli_val(cli_spec, "session");

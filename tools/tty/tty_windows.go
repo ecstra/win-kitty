@@ -1,0 +1,405 @@
+//go:build windows
+
+// License: GPLv3 Copyright: 2024, Kovid Goyal, <kovid at kovidgoyal.net>
+
+package tty
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/emmansun/base64"
+	"golang.org/x/sys/windows"
+
+	"github.com/kovidgoyal/kitty/tools/utils"
+)
+
+const (
+	TCSANOW   = 0
+	TCSADRAIN = 1
+	TCSAFLUSH = 2
+)
+
+// Winsize is a platform neutral terminal size, mirroring the fields of
+// unix.Winsize so callers work unchanged.
+type Winsize struct {
+	Row, Col, Xpixel, Ypixel uint16
+}
+
+// On Windows a kitten's stdio is either pipes (an overlay kitten, kitty on the
+// other end) or a real console (a kitten run straight from the shell). Term wraps
+// the read (stdin) and write (stdout) handles. For a pipe there is nothing to
+// toggle: kitty already feeds pre-encoded key sequences. For a real console the
+// termios-style operations translate into SetConsoleMode calls so the kitten gets
+// raw, per-key VT input instead of cooked, line-buffered input.
+type Term struct {
+	in, out       *os.File
+	owns_file     bool
+	in_console    bool   // in is a real console (needs raw mode + polling reads)
+	out_console   bool   // out is a real console
+	in_orig_mode  uint32 // console modes saved by enable_raw_mode, restored on close
+	out_orig_mode uint32
+	raw_active    bool
+	// When a kitten runs on a real console inside kitty, its output would pass
+	// through conhost, which re-renders it on its own frame cadence (flicker,
+	// cursor bouncing). bypass streams the output straight into kitty's parser
+	// over the per-process bypass pipe instead; out is kept for console mode
+	// changes and size queries only.
+	bypass io.WriteCloser
+}
+
+type TermiosOperation func(*Term)
+
+var (
+	SetRaw          TermiosOperation = func(t *Term) { t.enable_raw_mode() }
+	SetNoEcho       TermiosOperation = func(*Term) {}
+	SetNoCanonical  TermiosOperation = func(*Term) {}
+	SetReadPassword TermiosOperation = func(*Term) {}
+	SetBlockingRead TermiosOperation = func(*Term) {}
+)
+
+// enable_raw_mode puts a real console into VT/raw mode so the kitten receives
+// per-key escape sequences (arrows and the like) rather than cooked line input.
+// When in/out are pipes GetConsoleMode fails and this is a no-op.
+func (self *Term) enable_raw_mode() {
+	if self.in != nil {
+		h := windows.Handle(self.in.Fd())
+		var m uint32
+		if windows.GetConsoleMode(h, &m) == nil {
+			self.in_console = true
+			self.in_orig_mode = m
+			nm := (m &^ (windows.ENABLE_ECHO_INPUT | windows.ENABLE_LINE_INPUT | windows.ENABLE_PROCESSED_INPUT)) | windows.ENABLE_VIRTUAL_TERMINAL_INPUT
+			windows.SetConsoleMode(h, nm)
+		}
+	}
+	if self.out != nil {
+		h := windows.Handle(self.out.Fd())
+		var m uint32
+		if windows.GetConsoleMode(h, &m) == nil {
+			self.out_console = true
+			self.out_orig_mode = m
+			nm := m | windows.ENABLE_PROCESSED_OUTPUT | windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING | windows.DISABLE_NEWLINE_AUTO_RETURN
+			windows.SetConsoleMode(h, nm)
+		}
+	}
+	self.raw_active = true
+}
+
+func (self *Term) restore_console() {
+	if !self.raw_active {
+		return
+	}
+	self.raw_active = false
+	if self.in_console && self.in != nil {
+		// Restore the saved input mode, but force the cooked flags on. PowerShell
+		// (PSReadLine) runs a child with the console still in its own raw
+		// line-editing mode and does not re-initialize it when the child exits
+		// normally, so restoring that raw mode verbatim would leave the prompt
+		// unable to read input (only Ctrl+C, which makes PSReadLine reset, recovers
+		// it). The next prompt sets whatever mode it wants over this.
+		mode := self.in_orig_mode | windows.ENABLE_PROCESSED_INPUT | windows.ENABLE_LINE_INPUT | windows.ENABLE_ECHO_INPUT
+		windows.SetConsoleMode(windows.Handle(self.in.Fd()), mode)
+	}
+	if self.out_console && self.out != nil {
+		windows.SetConsoleMode(windows.Handle(self.out.Fd()), self.out_orig_mode)
+	}
+}
+
+func SetReadTimeout(d time.Duration) TermiosOperation { return func(*Term) {} }
+
+func IsTerminal(fd uintptr) bool {
+	// os.Stdin/Stdout/Stderr .Fd() return the underlying console HANDLE on Windows,
+	// not 0/1/2, so a fd<=2 check is always false and misfires (e.g. icat then
+	// treats the console stdin as piped image data and decodes empty -> EOF). A
+	// handle is a terminal iff it is a console; pipes and files are not.
+	var mode uint32
+	return windows.GetConsoleMode(windows.Handle(fd), &mode) == nil
+}
+
+func WrapTerm(fd int, name string, operations ...TermiosOperation) (self *Term, err error) {
+	if name == "" {
+		name = fmt.Sprintf("<fd: %d>", fd)
+	}
+	f := os.NewFile(uintptr(fd), name)
+	if f == nil {
+		return nil, os.ErrInvalid
+	}
+	self = &Term{in: f, out: f, owns_file: true}
+	_ = self.ApplyOperations(TCSANOW, operations...)
+	return
+}
+
+// open_console_handle opens a console pseudo-file (CONIN$/CONOUT$) with sharing so
+// it works even while the shell already holds the console.
+func open_console_handle(name string, access uint32) (*os.File, error) {
+	p, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.CreateFile(p, access, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(h), name), nil
+}
+
+func OpenControllingTerm(operations ...TermiosOperation) (self *Term, err error) {
+	// The Windows equivalent of /dev/tty is the console itself, opened as
+	// CONIN$/CONOUT$. Open it directly so terminal I/O works even when stdin or
+	// stdout are redirected (e.g. `echo x | kitten clipboard`, where stdin is a
+	// pipe and reading it would hit EOF instead of the terminal). Overlay kittens
+	// run over pipes with no console, so GetConsoleMode fails there and we fall
+	// back to the stdio kitty talks to them over.
+	var mode uint32
+	if windows.GetConsoleMode(windows.Handle(os.Stdout.Fd()), &mode) == nil {
+		access := uint32(windows.GENERIC_READ | windows.GENERIC_WRITE)
+		if in, ierr := open_console_handle("CONIN$", access); ierr == nil {
+			if out, oerr := open_console_handle("CONOUT$", access); oerr == nil {
+				self = &Term{in: in, out: out, owns_file: true}
+				if os.Getenv("KITTY_WINDOW_ID") != "" && os.Getenv("KITTY_PID") != "" {
+					// Running inside kitty on a real console: writing to the
+					// console means conhost re-renders our output on its own
+					// frame cadence (flicker, cursor bouncing). Stream output
+					// straight into kitty's parser instead; the console stays
+					// for keyboard input and size queries.
+					if w, berr := utils.OpenKittyBypassStream(); berr == nil {
+						self.bypass = w
+					}
+				}
+				_ = self.ApplyOperations(TCSANOW, operations...)
+				return
+			}
+			in.Close()
+		}
+	}
+	self = &Term{in: os.Stdin, out: os.Stdout}
+	_ = self.ApplyOperations(TCSANOW, operations...)
+	return
+}
+
+func OpenTerm(name string, operations ...TermiosOperation) (self *Term, err error) {
+	// Windows has no /dev/tty, so use the standard pipes.
+	return OpenControllingTerm(operations...)
+}
+
+func (self *Term) Fd() int {
+	if self.in == nil {
+		return -1
+	}
+	return int(self.in.Fd())
+}
+
+func (self *Term) Close() error {
+	self.restore_console()
+	var err error
+	if self.bypass != nil {
+		self.bypass.Close()
+		self.bypass = nil
+	}
+	if self.owns_file {
+		if self.out != nil && self.out != self.in {
+			self.out.Close()
+		}
+		if self.in != nil {
+			err = self.in.Close()
+		}
+	}
+	self.in, self.out = nil, nil
+	return err
+}
+
+func (self *Term) Read(b []byte) (int, error) {
+	if self.in == nil {
+		return 0, os.ErrClosed
+	}
+	if !self.in_console {
+		return self.in.Read(b)
+	}
+	// A console read blocks with no way to select on it, so poll with a short
+	// timeout: the reader goroutine can then notice a shutdown request between
+	// polls. "No data yet" becomes a temporary error the loop already ignores.
+	h := windows.Handle(self.in.Fd())
+	ev, err := windows.WaitForSingleObject(h, 75)
+	if err != nil {
+		return 0, err
+	}
+	if ev != windows.WAIT_OBJECT_0 {
+		return 0, syscall.EAGAIN
+	}
+	n, rerr := self.in.Read(b)
+	if n == 0 && rerr == nil {
+		return 0, syscall.EAGAIN
+	}
+	return n, rerr
+}
+
+// CloseRead makes a blocking Read in another goroutine return. For a pipe (an
+// overlay kitten) close the read side. For a real console do NOT close the handle
+// (it is the shell's shared stdin); cancel any pending read instead, and rely on
+// the polling Read noticing the loop's quit channel.
+func (self *Term) CloseRead() error {
+	if self.in == nil {
+		return nil
+	}
+	if self.in_console {
+		windows.CancelIoEx(windows.Handle(self.in.Fd()), nil)
+		return nil
+	}
+	return self.in.Close()
+}
+func (self *Term) Write(b []byte) (int, error) {
+	if self.bypass != nil {
+		return self.bypass.Write(b)
+	}
+	return self.out.Write(b)
+}
+
+func (self *Term) WriteString(s string) (int, error) {
+	if self.bypass != nil {
+		return self.bypass.Write(utils.UnsafeStringToBytes(s))
+	}
+	return self.out.WriteString(s)
+}
+
+func (self *Term) WriteAll(b []byte) error {
+	for len(b) > 0 {
+		n, err := self.Write(b)
+		if err != nil {
+			return err
+		}
+		b = b[n:]
+	}
+	return nil
+}
+
+func (self *Term) WriteAllString(s string) error {
+	return self.WriteAll(utils.UnsafeStringToBytes(s))
+}
+
+func (self *Term) ReadWithTimeout(b []byte, d time.Duration) (int, error) {
+	// There is no fd-select on Windows pipes; timeouts are handled a level up by
+	// the loop's reader goroutine. Read is console-aware (polls a real console).
+	return self.Read(b)
+}
+
+func (self *Term) ApplyOperations(when uintptr, operations ...TermiosOperation) error {
+	for _, op := range operations {
+		op(self)
+	}
+	return nil
+}
+
+func (self *Term) PopState() error                 { return nil }
+func (self *Term) PopStateWhen(when uintptr) error { return nil }
+func (self *Term) Restore() error                  { self.restore_console(); return nil }
+func (self *Term) RestoreWhen(when uintptr) error  { self.restore_console(); return nil }
+func (self *Term) RestoreAndClose() error          { return self.Close() }
+func (self *Term) WasEchoOnOriginally() bool       { return false }
+
+func (self *Term) Suspend() (resume func() error, err error) {
+	return func() error { return nil }, nil
+}
+
+func (self *Term) SuspendAndRun(callback func() error) error {
+	return callback()
+}
+
+// An overlay kitten's stdio is a pipe with no ioctl, so kitty passes its size in
+// the environment. A standalone kitten in a real console queries it directly. fd
+// should be a console OUTPUT handle. Pixel sizes are left zero (consoles do not
+// report them; kittens that need pixels ask kitty over the wire).
+func GetSize(fd int) (*Winsize, error) {
+	ans := &Winsize{Row: 24, Col: 80}
+	haveEnv := false
+	if v, err := strconv.Atoi(os.Getenv("OVERLAID_WINDOW_LINES")); err == nil && v > 0 {
+		ans.Row = uint16(v)
+		haveEnv = true
+	}
+	if v, err := strconv.Atoi(os.Getenv("OVERLAID_WINDOW_COLS")); err == nil && v > 0 {
+		ans.Col = uint16(v)
+		haveEnv = true
+	}
+	if !haveEnv && fd >= 0 {
+		var info windows.ConsoleScreenBufferInfo
+		if windows.GetConsoleScreenBufferInfo(windows.Handle(fd), &info) == nil {
+			if r := int(info.Window.Bottom) - int(info.Window.Top) + 1; r > 0 {
+				ans.Row = uint16(r)
+			}
+			if c := int(info.Window.Right) - int(info.Window.Left) + 1; c > 0 {
+				ans.Col = uint16(c)
+			}
+		}
+	}
+	return ans, nil
+}
+
+func (self *Term) GetSize() (*Winsize, error) {
+	fd := -1
+	if self.out != nil {
+		fd = int(self.out.Fd())
+	}
+	return GetSize(fd)
+}
+
+func Ctermid() string { return "CON" }
+
+func (self *Term) DebugPrintln(a ...any) {
+	msg := fmt.Appendln(nil, a...)
+	const limit = 2048
+	encoded := make([]byte, limit*2)
+	for i := 0; i < len(msg); i += limit {
+		end := min(i+limit, len(msg))
+		chunk := msg[i:end]
+		encoded = encoded[:cap(encoded)]
+		base64.StdEncoding.Encode(encoded, chunk)
+		_, _ = self.WriteString("\x1bP@kitty-print|")
+		_, _ = self.Write(encoded)
+		_, _ = self.WriteString("\x1b\\")
+	}
+}
+
+var KittyStdout = sync.OnceValue(func() *os.File {
+	if fds := os.Getenv(`KITTY_STDIO_FORWARDED`); fds != "" {
+		if fd, err := strconv.Atoi(fds); err == nil && fd > -1 {
+			if f := os.NewFile(uintptr(fd), "<kitty_stdout>"); f != nil {
+				return f
+			}
+		}
+	}
+	return nil
+})
+
+func DebugPrintln(a ...any) {
+	if f := KittyStdout(); f != nil {
+		fmt.Fprintln(f, a...)
+		return
+	}
+	term, err := OpenControllingTerm()
+	if err == nil {
+		defer term.Close()
+		term.DebugPrintln(a...)
+	}
+}
+
+func ReadSingleByteFromTerminal() (b byte, err error) {
+	term, err := OpenControllingTerm()
+	if err != nil {
+		return 0, err
+	}
+	defer term.Close()
+	ans := []byte{0}
+	for {
+		n, err := term.Read(ans)
+		if err != nil {
+			return 0, err
+		}
+		if n > 0 {
+			return ans[0], nil
+		}
+	}
+}

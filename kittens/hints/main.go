@@ -112,12 +112,24 @@ func hints_text_color(confval string) (ans string) {
 func main(_ *cli.Command, o *Options, args []string) (rc int, err error) {
 	o.HintsTextColor = hints_text_color(o.HintsTextColor)
 	output := tui.KittenOutputSerializer()
-	if tty.IsTerminal(os.Stdin.Fd()) {
-		return 1, fmt.Errorf("You must pass the text to be hinted on STDIN")
-	}
-	stdin, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		return 1, fmt.Errorf("Failed to read from STDIN with error: %w", err)
+	var stdin []byte
+	if p := os.Getenv("KITTY_STDIN_DATA_FILE"); p != "" {
+		// On Windows kitty delivers the text to hint via a temp file, because the
+		// overlay kitten's stdin pipe carries keyboard input (see boss.py
+		// run_kitten_with_metadata). Reading os.Stdin here would consume keystrokes.
+		stdin, err = os.ReadFile(p)
+		os.Remove(p)
+		if err != nil {
+			return 1, fmt.Errorf("Failed to read hinted text from %s with error: %w", p, err)
+		}
+	} else {
+		if tty.IsTerminal(os.Stdin.Fd()) {
+			return 1, fmt.Errorf("You must pass the text to be hinted on STDIN")
+		}
+		stdin, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			return 1, fmt.Errorf("Failed to read from STDIN with error: %w", err)
+		}
 	}
 	if len(args) > 0 && o.CustomizeProcessing == "" && o.Type != "linenum" {
 		return 1, fmt.Errorf("Extra command line arguments present: %s", strings.Join(args, " "))

@@ -1,3 +1,5 @@
+//go:build !windows
+
 // License: GPLv3 Copyright: 2022, Kovid Goyal, <kovid at kovidgoyal.net>
 
 package tty
@@ -346,16 +348,25 @@ func (self *Term) DebugPrintln(a ...any) {
 	}
 }
 
-func GetSize(fd int) (*unix.Winsize, error) {
+// Winsize is a platform neutral terminal size. It mirrors the fields of
+// unix.Winsize so callers work unchanged on Windows.
+type Winsize struct {
+	Row, Col, Xpixel, Ypixel uint16
+}
+
+func GetSize(fd int) (*Winsize, error) {
 	for {
 		sz, err := unix.IoctlGetWinsize(fd, unix.TIOCGWINSZ)
 		if err != unix.EINTR {
-			return sz, err
+			if err != nil {
+				return nil, err
+			}
+			return &Winsize{Row: sz.Row, Col: sz.Col, Xpixel: sz.Xpixel, Ypixel: sz.Ypixel}, nil
 		}
 	}
 }
 
-func (self *Term) GetSize() (*unix.Winsize, error) {
+func (self *Term) GetSize() (*Winsize, error) {
 	return GetSize(self.Fd())
 }
 

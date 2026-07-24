@@ -5,13 +5,13 @@ package show_key
 import (
 	"errors"
 	"fmt"
-	"github.com/kovidgoyal/kitty/tools/cli/markup"
-	"github.com/kovidgoyal/kitty/tools/tty"
 	"io"
 	"os"
 	"strings"
+	"syscall"
 
-	"golang.org/x/sys/unix"
+	"github.com/kovidgoyal/kitty/tools/cli/markup"
+	"github.com/kovidgoyal/kitty/tools/tty"
 )
 
 var _ = fmt.Print
@@ -68,7 +68,7 @@ func run_legacy_loop(opts *Options) (err error) {
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			if !(errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EBUSY)) {
+			if !(errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EBUSY)) {
 				return err
 			}
 		}

@@ -11,7 +11,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/kovidgoyal/kitty/tools/config"
 	"github.com/kovidgoyal/kitty/tools/utils"
@@ -19,7 +18,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/utils/shlex"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -186,7 +184,7 @@ func resolve_file_spec(spec string, is_glob bool) ([]string, error) {
 		}
 		return files, nil
 	}
-	err := unix.Access(ans, unix.R_OK)
+	err := utils.Access(ans, utils.AccessRead)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("%s does not exist", spec)
@@ -273,8 +271,8 @@ func excluded(pattern, path string) bool {
 }
 
 func get_file_data(callback func(h *tar.Header, data []byte) error, seen map[file_unique_id]string, local_path, arcname string, exclude_patterns []string) error {
-	var s unix.Stat_t
-	if err := unix.Lstat(local_path, &s); err != nil {
+	s, err := os.Lstat(local_path)
+	if err != nil {
 		return err
 	}
 	cb := func(h *tar.Header, data []byte, arcname string) error {
@@ -283,17 +281,14 @@ func get_file_data(callback func(h *tar.Header, data []byte) error, seen map[fil
 			h.Name = strings.TrimRight(h.Name, "/") + "/"
 		}
 		h.Size = int64(len(data))
-		h.Mode = int64(s.Mode & 0777) // discard the setuid, setgid and sticky bits
-		h.ModTime = time.Unix(s.Mtim.Unix())
-		h.AccessTime = time.Unix(s.Atim.Unix())
-		h.ChangeTime = time.Unix(s.Ctim.Unix())
+		h.Mode = int64(s.Mode().Perm())
+		h.ModTime = s.ModTime()
 		h.Format = tar.FormatPAX
 		return callback(h, data)
 	}
 	// we only copy regular files, directories and symlinks
-	switch s.Mode & unix.S_IFMT {
-	case unix.S_IFBLK, unix.S_IFIFO, unix.S_IFCHR, unix.S_IFSOCK: // ignored
-	case unix.S_IFLNK: // symlink
+	switch {
+	case s.Mode()&os.ModeSymlink != 0: // symlink
 		target, err := os.Readlink(local_path)
 		if err != nil {
 			return err
@@ -305,7 +300,7 @@ func get_file_data(callback func(h *tar.Header, data []byte) error, seen map[fil
 		if err != nil {
 			return err
 		}
-	case unix.S_IFDIR: // directory
+	case s.IsDir(): // directory
 		local_path = filepath.Clean(local_path)
 		type entry struct {
 			path, arcname string
@@ -348,8 +343,8 @@ func get_file_data(callback func(h *tar.Header, data []byte) error, seen map[fil
 				}
 			}
 		}
-	case unix.S_IFREG: // Regular file
-		fid := file_unique_id{dev: uint64(s.Dev), inode: uint64(s.Ino)}
+	case s.Mode().IsRegular(): // Regular file
+		fid := get_file_unique_id(s)
 		if prev, ok := seen[fid]; ok { // Hard link
 			return cb(&tar.Header{Typeflag: tar.TypeLink, Linkname: prev}, nil, arcname)
 		}

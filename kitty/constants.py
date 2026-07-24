@@ -27,6 +27,7 @@ str_version: str = '.'.join(map(str, version))
 _plat = sys.platform.lower()
 is_macos: bool = 'darwin' in _plat
 is_freebsd: bool = 'freebsd' in _plat
+is_windows: bool = 'win32' in _plat
 is_running_from_develop: bool = False
 RC_ENCRYPTION_PROTOCOL_VERSION = '1'
 website_base_url = 'https://sw.kovidgoyal.net/kitty/'
@@ -69,6 +70,9 @@ else:
 
 @run_once
 def kitty_exe() -> str:
+    # The launcher binary is kitty.exe on Windows. Without the suffix, spawning it
+    # (e.g. for overlay kittens) fails with "file not found".
+    exe_name = 'kitty.exe' if is_windows else 'kitty'
     rpath = kitty_run_data.get('bundle_exe_dir')
     if not rpath:
         items = os.environ.get('PATH', '').split(os.pathsep) + [os.path.join(kitty_base_dir, 'kitty', 'launcher')]
@@ -76,17 +80,30 @@ def kitty_exe() -> str:
         for candidate in filter(None, items):
             if candidate not in seen:
                 seen.add(candidate)
-                if os.access(os.path.join(candidate, 'kitty'), os.X_OK):
+                if os.access(os.path.join(candidate, exe_name), os.X_OK):
                     rpath = candidate
                     break
         else:
             raise RuntimeError('kitty binary not found')
-    return os.path.join(rpath, 'kitty')
+    return os.path.join(rpath, exe_name)
 
 
 @run_once
 def kitten_exe() -> str:
-    return os.path.join(os.path.dirname(kitty_exe()), 'kitten')
+    return os.path.join(os.path.dirname(kitty_exe()), 'kitten.exe' if is_windows else 'kitten')
+
+
+@run_once
+def kitten_host_exe() -> str:
+    # GUI-subsystem kitty.exe cannot attach to the pseudoconsole it is spawned
+    # into, so a Python kitten launched through it has no console and no stdio. On
+    # Windows kittens run through a console-subsystem twin of the launcher, which
+    # does attach to the pty. Elsewhere the normal kitty binary hosts them.
+    if is_windows:
+        host = os.path.join(os.path.dirname(kitty_exe()), 'kitty-console.exe')
+        if os.access(host, os.X_OK):
+            return host
+    return kitty_exe()
 
 
 def _get_config_dir() -> str:
@@ -154,12 +171,35 @@ logo_png_file = os.path.join(kitty_base_dir, 'logo', 'kitty.png')
 beam_cursor_data_file = os.path.join(kitty_base_dir, 'logo', 'beam-cursor.png')
 shell_integration_dir = os.path.join(kitty_base_dir, 'shell-integration')
 fonts_dir = os.path.join(kitty_base_dir, 'fonts')
-try:
-    shell_path = os.environ.get('SHELL') or pwd.getpwuid(os.geteuid()).pw_shell or '/bin/sh'
-except KeyError:
-    with suppress(Exception):
-        print('Failed to read login shell via getpwuid() for current user, falling back to /bin/sh', file=sys.stderr)
-    shell_path = '/bin/sh'
+def _windows_default_shell() -> str:
+    # There is no login shell on Windows, so pick the one a Windows user
+    # expects. PowerShell 7 first, then the Windows PowerShell that ships with
+    # the OS, then COMSPEC, which is cmd.exe. Windows Terminal makes the same
+    # choice, and cmd is a poor first impression next to it.
+    #
+    # SHELL is honoured when it names something Windows can actually start.
+    # It is often inherited from an MSYS2 or git-bash session holding a POSIX
+    # path such as /bin/bash.exe, which CreateProcessW cannot resolve.
+    import shutil
+    shell = os.environ.get('SHELL')
+    if shell and os.path.exists(shell):
+        return shell
+    for exe in ('pwsh.exe', 'powershell.exe'):
+        found = shutil.which(exe)
+        if found:
+            return found
+    return os.environ.get('COMSPEC') or 'cmd.exe'
+
+
+if is_windows:
+    shell_path = _windows_default_shell()
+else:
+    try:
+        shell_path = os.environ.get('SHELL') or pwd.getpwuid(os.geteuid()).pw_shell or '/bin/sh'
+    except KeyError:
+        with suppress(Exception):
+            print('Failed to read login shell via getpwuid() for current user, falling back to /bin/sh', file=sys.stderr)
+        shell_path = '/bin/sh'
 # Keep this short as it is limited to 103 bytes on macOS
 # https://github.com/ansible/ansible/issues/11536#issuecomment-153030743
 ssh_control_master_template = 'kssh-{kitty_pid}-{ssh_placeholder}'
@@ -211,7 +251,7 @@ def detect_if_wayland_ok() -> bool:
 
 
 def is_wayland(opts: Optional['Options'] = None) -> bool:
-    if is_macos:
+    if is_macos or is_windows:
         return False
     if opts is None:
         return bool(getattr(is_wayland, 'ans'))
@@ -294,7 +334,8 @@ def local_docs() -> str:
 @run_once
 def wrapped_kitten_names() -> frozenset[str]:
     import kitty.fast_data_types as f
-    return frozenset(f.wrapped_kitten_names())
+    ans = frozenset(f.wrapped_kitten_names())
+    return ans
 
 
 _supports_window_occlusion = False

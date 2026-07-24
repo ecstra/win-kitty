@@ -8,7 +8,7 @@ import subprocess
 from collections.abc import Callable, Iterable
 from contextlib import suppress
 
-from .constants import shell_integration_dir
+from .constants import is_windows, shell_integration_dir
 from .fast_data_types import get_options
 from .options.types import Options, defaults
 from .types import run_once
@@ -42,14 +42,44 @@ def is_new_zsh_install(env: dict[str, str], zdotdir: str | None) -> bool:
 
 
 def get_zsh_zdotdir_from_global_zshenv(env: dict[str, str], argv: list[str]) -> str | None:
+    if is_windows:
+        # Skip this probe on Windows. It spawns an *interactive* zsh to read a global
+        # /etc/zshenv ZDOTDIR, but a GUI kitty has no controlling terminal for that
+        # interactive shell to talk to, so it blocks for seconds on the MAIN thread --
+        # freezing the whole UI on every shell spawn (startup and each new tab). Giving
+        # it DEVNULL stdin did not help (it wants a tty, not stdin). Detecting a
+        # global-zshenv ZDOTDIR is niche; skipping it just treats ZDOTDIR as unset.
+        return None
     exe = which(argv[0], only_system=True) or 'zsh'
     with suppress(Exception):
         return subprocess.check_output([exe, '--norcs', '--interactive', '-c', 'echo -n $ZDOTDIR'], env=env).decode('utf-8')
     return None
 
 
+def as_msys2_path(p: str) -> str:
+    # C:\a\b -> /c/a/b, the MSYS2/Cygwin drive-mount convention. MSYS2 does not
+    # auto-convert ZDOTDIR, so kitty must hand zsh a POSIX path or it cannot resolve it.
+    drive, rest = os.path.splitdrive(p)
+    if len(drive) == 2 and drive[1] == ':':
+        return '/' + drive[0].lower() + rest.replace('\\', '/')
+    return p.replace('\\', '/')
+
+
 def setup_zsh_env(env: dict[str, str], argv: list[str]) -> None:
     zdotdir = env.get('ZDOTDIR')
+    if is_windows:
+        # is_new_zsh_install below cannot see the user's rc files on Windows: kitty's
+        # env HOME is the Windows home, not zsh's MSYS2 /home/<user>, and the global
+        # zshenv probe is skipped, so the normal "bail if new install" path would never
+        # wire up the integration. Wire it up unconditionally -- our .zshenv restores
+        # ZDOTDIR and sources the user's real rc from $HOME (which zsh resolves to the
+        # MSYS2 home). ZDOTDIR must be a POSIX path or MSYS2 zsh cannot resolve it.
+        if zdotdir is not None:
+            env['KITTY_ORIG_ZDOTDIR'] = zdotdir
+        else:
+            env.pop('KITTY_ORIG_ZDOTDIR', None)
+        env['ZDOTDIR'] = as_msys2_path(os.path.join(shell_integration_dir, 'zsh'))
+        return
     if is_new_zsh_install(env, zdotdir):
         if zdotdir is None:
             # Try to get ZDOTDIR from /etc/zshenv, when all startup files are not present
@@ -172,10 +202,41 @@ def fish_serialize_env(env: dict[str, str]) -> str:
     return '\n'.join(ans)
 
 
+def setup_powershell_env(env: dict[str, str], argv: list[str]) -> None:
+    # PowerShell has no ENV or ZDOTDIR style startup hook, so dot-source the
+    # integration script by appending it to the launch command. Skip when the
+    # shell is run non-interactively (an explicit command or script was given),
+    # since -Command would consume the rest of the line.
+    non_interactive = {'c', 'command', 'f', 'file', 'e', 'ec', 'encodedcommand', 'commandwithargs', 'cwa'}
+    for a in argv[1:]:
+        if a.lstrip('-/').lower() in non_interactive:
+            return
+    script = os.path.join(shell_integration_dir, 'powershell', 'kitty.ps1')
+    # -Command must come last as its value is the remainder of the line.
+    argv.extend(('-NoExit', '-Command', f". '{script}'"))
+
+
+def setup_cmd_env(env: dict[str, str], argv: list[str]) -> None:
+    # cmd.exe has no prompt hook, but its PROMPT variable expands $E to ESC on
+    # Windows 10 plus. Build a prompt that emits an OSC 133;A mark then an OSC 2
+    # title set to the current path ($P), followed by the usual "path>" prompt.
+    # $E\ is the string terminator that ends each OSC.
+    existing = env.get('PROMPT') or '$P$G'
+    if ']133;A' in existing or ']2;' in existing:
+        return  # inherited a prompt that already carries the escape codes
+    ksi = env.get('KITTY_SHELL_INTEGRATION', '')
+    mark = '' if 'no-prompt-mark' in ksi else '$E]133;A$E\\'
+    title = '' if 'no-title' in ksi else '$E]2;$P$E\\'
+    env['PROMPT'] = mark + title + existing
+
+
 ENV_MODIFIERS = {
     'fish': setup_fish_env,
     'zsh': setup_zsh_env,
     'bash': setup_bash_env,
+    'pwsh': setup_powershell_env,
+    'powershell': setup_powershell_env,
+    'cmd': setup_cmd_env,
 }
 
 ENV_SERIALIZERS: dict[str, Callable[[dict[str, str]], str]] = {

@@ -46,37 +46,67 @@ func AtomicWriteFile(path string, data io.Reader, perm os.FileMode) (err error) 
 		err = nil
 		npath = path
 	}
-	if err == nil {
-		path = npath
-		path, err = filepath.Abs(path)
-		if err == nil {
-			var f *os.File
-			f, err = os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".atomic-write-")
-			if err == nil {
-				removed := false
-				defer func() {
-					if err == nil {
-						err = f.Close()
-					} else {
-						f.Close()
-					}
-					if !removed {
-						os.Remove(f.Name())
-						removed = true
-					}
-				}()
-				if _, err = io.Copy(f, data); err == nil {
-					if err = f.Chmod(perm); err == nil {
-						if err = f.Sync(); err == nil { // Sync before rename to ensure we dont end up with a zero sized file
-							if err = os.Rename(f.Name(), path); err == nil {
-								removed = true
-							}
-						}
-					}
+	if err != nil {
+		return
+	}
+	path = npath
+	if path, err = filepath.Abs(path); err != nil {
+		return
+	}
+	var f *os.File
+	if f, err = os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".atomic-write-"); err != nil {
+		return
+	}
+	tempname := f.Name()
+	closed, renamed := false, false
+	closeTemp := func() {
+		if !closed {
+			f.Close()
+			closed = true
+		}
+	}
+	defer func() {
+		closeTemp()
+		if !renamed {
+			os.Remove(tempname)
+		}
+	}()
+	if _, err = io.Copy(f, data); err != nil {
+		return
+	}
+	if err = f.Chmod(perm); err != nil {
+		return
+	}
+	if err = f.Sync(); err != nil { // Sync before rename to ensure we dont end up with a zero sized file
+		return
+	}
+	// Windows cannot rename a file while a handle to it is open, so close the temp
+	// file before renaming it over the destination (this is fine on POSIX too).
+	closeTemp()
+	if err = os.Rename(tempname, path); err != nil {
+		// On Windows, Rename (MoveFileEx with REPLACE_EXISTING) fails with
+		// ERROR_ACCESS_DENIED when the destination is read-only or carries
+		// restrictive attributes left by another process -- e.g. switching the
+		// shell between MSYS2 and PowerShell can leave a cached file unwritable.
+		// Clear the destination and retry, automating the "just delete the file"
+		// workaround. Gated on a permission error so a cross-device rename (which
+		// removing the destination could not fix) still surfaces its real error.
+		if errors.Is(err, fs.ErrPermission) {
+			if st, statErr := os.Stat(path); statErr == nil && !st.IsDir() {
+				renameErr := err
+				os.Chmod(path, 0o600)
+				if rmErr := os.Remove(path); rmErr == nil {
+					err = os.Rename(tempname, path)
+				} else {
+					err = renameErr // keep the more informative rename error
 				}
 			}
 		}
+		if err != nil {
+			return
+		}
 	}
+	renamed = true
 	return
 }
 

@@ -677,7 +677,21 @@ HANDLER(handle_move_event) {
         return;
     }
     Screen *screen = w->render_data.screen;
-    if (OPT(detect_urls)) detect_url(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y);
+    // Hover detection of URLs is for a screen the user is reading. Once the
+    // application has grabbed the mouse it owns that screen and repaints it
+    // freely, and kitty is forwarding every motion to it, so running detection
+    // against content being rewritten underneath made the answer flip between
+    // moves and the pointer alternate between the hyperlink shape and the
+    // grabbed one. Seen with the mouse-demo kitten, which repaints in full
+    // hundreds of times while the mouse crosses it.
+    //
+    // The shape still has to be recomputed on every move even when detection is
+    // skipped: it is what keeps a shape the application set with OSC 22 applied
+    // as the pointer moves within the region that asked for it. Clicking a URL
+    // is unaffected either way, mouse_open_url runs detection itself.
+    if (OPT(detect_urls) && screen->modes.mouse_tracking_mode == NO_TRACKING) {
+        detect_url(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y);
+    } else set_mouse_cursor_for_screen(screen);
     if (should_handle_in_kitty(w, screen, button)) {
         handle_mouse_movement_in_kitty(w, button, mouse_cell_changed | cell_half_changed);
     } else {
@@ -1124,6 +1138,34 @@ focus_in_event(void) {
     set_mouse_cursor(mouse_cursor_shape);
 }
 
+/* An application that repaints on mouse motion pops and pushes its pointer
+ * shape on every move: the mouse-demo kitten does exactly that, once per
+ * redraw. Applying each of those to the OS separately puts the fallback shape
+ * on screen in between, and whether that is visible depends on how the child's
+ * output happens to be split across reads. Under a Cygwin pty the pop and the
+ * push land in one batch and the fallback is overwritten before it is drawn,
+ * but conhost splits the stream on its own frame cadence, so on Windows it
+ * survives long enough to be seen as the pointer flashing back to the arrow.
+ *
+ * So record what the shape should be and apply it once per tick, after all
+ * input has been parsed. A pop followed by a push then costs one change rather
+ * than two, and the intermediate never reaches the screen. The OS window is
+ * remembered by id because callback_os_window is only set while a callback is
+ * running, and applying happens later. */
+static id_type pointer_shape_to_apply_for_os_window = 0;
+
+void
+apply_pending_mouse_pointer_shape(void) {
+    if (!pointer_shape_to_apply_for_os_window) return;
+    OSWindow *osw = os_window_for_id(pointer_shape_to_apply_for_os_window);
+    pointer_shape_to_apply_for_os_window = 0;
+    if (!osw) return;
+    OSWindow *orig = global_state.callback_os_window;
+    global_state.callback_os_window = osw;
+    set_mouse_cursor(mouse_cursor_shape);
+    global_state.callback_os_window = orig;
+}
+
 void
 update_mouse_pointer_shape(void) {
     mouse_cursor_shape = TEXT_POINTER;
@@ -1140,7 +1182,9 @@ update_mouse_pointer_shape(void) {
             set_mouse_cursor_for_screen(r.window->render_data.screen);
         }
     }
-    set_mouse_cursor(mouse_cursor_shape);
+    // Deferred to apply_pending_mouse_pointer_shape, see above.
+    pointer_shape_to_apply_for_os_window = global_state.callback_os_window ? global_state.callback_os_window->id : 0;
+    request_tick_callback();
 }
 
 void

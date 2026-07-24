@@ -20,14 +20,52 @@ import (
 	"github.com/kovidgoyal/kitty/tools/tui/graphics"
 	"github.com/kovidgoyal/kitty/tools/utils"
 	"github.com/kovidgoyal/kitty/tools/utils/style"
-
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
 
 type Place struct {
 	width, height, left, top int
+}
+
+// query_pixel_size asks the terminal for its text-area size in pixels via CSI 14 t
+// and parses the CSI 4 ; height ; width t reply. Used on Windows, where the
+// console reports only cell counts. Returns 0, 0 if the terminal does not answer.
+func query_pixel_size() (width, height uint16) {
+	term, err := tty.OpenControllingTerm(tty.SetRaw)
+	if err != nil {
+		return 0, 0
+	}
+	defer term.RestoreAndClose()
+	if err = term.WriteAllString("\x1b[14t"); err != nil {
+		return 0, 0
+	}
+	var buf []byte
+	tmp := make([]byte, 64)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		n, _ := term.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+			if buf[len(buf)-1] == 't' {
+				break
+			}
+		}
+	}
+	s := string(buf)
+	if i := strings.Index(s, "\x1b[4;"); i >= 0 {
+		s = s[i+len("\x1b[4;"):]
+		if j := strings.IndexByte(s, 't'); j >= 0 {
+			if parts := strings.Split(s[:j], ";"); len(parts) == 2 {
+				h, _ := strconv.Atoi(parts[0])
+				w, _ := strconv.Atoi(parts[1])
+				if w > 0 && h > 0 {
+					return uint16(w), uint16(h)
+				}
+			}
+		}
+	}
+	return 0, 0
 }
 
 var opts *Options
@@ -59,7 +97,7 @@ var files_channel chan input_arg
 var output_channel chan *image_data
 var num_of_items int
 var keep_going *atomic.Bool
-var screen_size *unix.Winsize
+var screen_size *tty.Winsize
 var fit_mode fit_t
 
 func send_output(imgd *image_data) {
@@ -158,6 +196,12 @@ func print_error(format string, args ...any) {
 
 func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 	opts = o
+	if runtime.GOOS == "windows" && (os.Getenv("KITTY_PID") == "" || os.Getenv("KITTY_WINDOW_ID") == "") {
+		// On Windows images are delivered over kitty's per-process bypass pipe
+		// (conhost strips the graphics APC from ordinary output), so icat only
+		// works inside kitty. Fail up front, before drawing anything.
+		return 1, fmt.Errorf("On Windows, icat only works when run inside the kitty terminal")
+	}
 	if err = parse_place(); err != nil {
 		return 1, err
 	}
@@ -194,7 +238,7 @@ func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 		if len(parts) != 4 {
 			return 1, fmt.Errorf("Invalid size specification: %s", opts.UseWindowSize)
 		}
-		screen_size = &unix.Winsize{}
+		screen_size = &tty.Winsize{}
 		var t uint64
 		if t, err = strconv.ParseUint(parts[0], 10, 16); err != nil || t < 1 {
 			return 1, fmt.Errorf("Invalid size specification: %s with error: %w", opts.UseWindowSize, err)
@@ -220,6 +264,13 @@ func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 		}
 	}
 
+	if (screen_size.Xpixel == 0 || screen_size.Ypixel == 0) && runtime.GOOS == "windows" {
+		// A Windows console reports only cell counts (no pixels), so ask the
+		// terminal directly. kitty answers CSI 14 t with CSI 4 ; height ; width t.
+		if w, h := query_pixel_size(); w > 0 && h > 0 {
+			screen_size.Xpixel, screen_size.Ypixel = w, h
+		}
+	}
 	if opts.PrintWindowSize {
 		fmt.Printf("%dx%d", screen_size.Xpixel, screen_size.Ypixel)
 		return 0, nil
@@ -282,7 +333,7 @@ func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 		}
 	}
 
-	if passthrough_mode == no_passthrough && (opts.TransferMode == "detect" || opts.DetectSupport) {
+	if passthrough_mode == no_passthrough && runtime.GOOS != "windows" && (opts.TransferMode == "detect" || opts.DetectSupport) {
 		memory, files, direct, err := DetectSupport(time.Duration(opts.DetectionTimeout * float64(time.Second)))
 		if err != nil {
 			return 1, err
@@ -302,8 +353,16 @@ func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 			transfer_by_file = unsupported
 		}
 	}
-	if passthrough_mode != no_passthrough {
-		// tmux doesn't allow responses from the terminal so we can't detect if memory or file based transferring is supported
+	if runtime.GOOS == "windows" {
+		// conhost cannot answer the graphics-support query, but kitty reads temp
+		// files directly. Use file transfer: only a small filename goes through
+		// conhost, instead of pushing the whole image in-band, which is slow and
+		// blocks for large images. (Shared memory is not available on Windows.)
+		transfer_by_memory = unsupported
+		transfer_by_file = supported
+	} else if passthrough_mode != no_passthrough {
+		// tmux does not allow responses from the terminal so we cannot detect
+		// memory/file transfer support. Fall back to direct (in-band) transfer.
 		transfer_by_memory = unsupported
 		transfer_by_file = unsupported
 	}
@@ -320,6 +379,13 @@ func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 	use_unicode_placeholder := opts.UnicodePlaceholder
 	if passthrough_mode != no_passthrough {
 		use_unicode_placeholder = true
+	}
+	if runtime.GOOS == "windows" && passthrough_mode == no_passthrough {
+		// conhost strips the graphics APC, so the transmit command is sent to kitty
+		// over a side-channel pipe (see send_graphics_to_kitty) and the image is
+		// placed with unicode placeholders, which are plain text and survive conhost.
+		use_unicode_placeholder = true
+		windows_gfx_bypass = true
 	}
 	base_id := uint32(opts.ImageId)
 	expecting_input_sequence_number := 0

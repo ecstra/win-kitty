@@ -32,6 +32,7 @@ from .constants import (
     appname,
     clear_handled_signals,
     config_dir,
+    is_windows,
     kitten_exe,
     unserialize_launch_flag,
     wakeup_io_loop,
@@ -169,7 +170,11 @@ class CwdRequest:
         if not window:
             return ''
         reported_cwd = path_from_osc7_url(window.screen.last_reported_cwd) if window.screen.last_reported_cwd else ''
-        if reported_cwd and not window.child_is_remote and (self.request_type is CwdRequestType.last_reported or window.at_prompt):
+        # On Windows the OSC-7 reported cwd is a Unix-style path (for example an
+        # MSYS2/Cygwin shell reports /home/user or /c/foo). Such a path is invalid
+        # as a Win32 working directory and makes CreateProcessW fail with
+        # ERROR_DIRECTORY, so prefer the process's real (PEB) cwd there instead.
+        if reported_cwd and not is_windows and not window.child_is_remote and (self.request_type is CwdRequestType.last_reported or window.at_prompt):
             return reported_cwd
         if self.request_type is CwdRequestType.root:
             return window.get_cwd_of_root_child() or ''
@@ -208,7 +213,9 @@ class CwdRequest:
                         env.pop(k, None)
                     set_env_in_cmdline(env, argv, clone=False)
                 return ''
-            if not window.child_is_remote and (self.request_type is CwdRequestType.last_reported or window.at_prompt):
+            if not is_windows and not window.child_is_remote and (self.request_type is CwdRequestType.last_reported or window.at_prompt):
+                # See cwd_of_child: the reported cwd is a Unix path on Windows and
+                # cannot be used as a Win32 working directory.
                 return reported_cwd
         return window.get_cwd_of_child(oldest=self.request_type is CwdRequestType.oldest) or ''
 
@@ -753,7 +760,10 @@ class Window:
         self.needs_attention = False
         self.ignore_focus_changes = self.initial_ignore_focus_changes
         self.override_title = override_title
-        self.default_title = os.path.basename(child.argv[0] or appname)
+        # On Windows the shell reports no useful title on its own (conhost sends
+        # the exe path, which is filtered in title_changed), so fall back to a
+        # neutral name until shell integration reports the folder.
+        self.default_title = 'New Tab' if is_windows else os.path.basename(child.argv[0] or appname)
         self.child_title = self.default_title
         self.title_stack: Deque[str] = deque(maxlen=10)
         self.user_vars: dict[str, str] = {}
@@ -1442,7 +1452,14 @@ class Window:
             update_ime_position_for_window(self.id, False, -1)
 
     def title_changed(self, new_title: memoryview | None, is_base64: bool = False) -> None:
-        self.child_title = process_title_from_child(new_title or memoryview(b''), is_base64, self.default_title)
+        title = process_title_from_child(new_title or memoryview(b''), is_base64, self.default_title)
+        if is_windows and title and os.path.isabs(title) and title.lower().endswith('.exe'):
+            # conhost sets the console title to the running exe's full path, which
+            # arrives here as an OSC title. A bare absolute path to an .exe is never
+            # a title a program sets deliberately, so ignore it and keep the default
+            # showing until the shell reports something real (its folder).
+            return
+        self.child_title = title
         self.call_watchers(self.watchers.on_title_change, {'title': self.child_title, 'from_child': True})
         if self.override_title is None:
             self.title_updated()
@@ -1480,9 +1497,20 @@ class Window:
             env['KITTY_CHILD_CMDLINE'] = ' '.join(map(shlex.quote, self.child.cmdline))
             subprocess.Popen(cb, env=env, cwd=self.child.foreground_cwd, preexec_fn=clear_handled_signals)
         if not self.is_active:
+            tab = self.tabref()
+            if is_windows and tab is not None:
+                # conhost (ConPTY) generates spurious bells that a POSIX pty does
+                # not -- e.g. the shell beeping on leftover mouse-tracking events
+                # after a full-screen kitten (whose mode-restore conhost mangles),
+                # or artifacts of the kitten's exit query-roundtrip. Do not raise a
+                # persistent attention indicator (tab bell + taskbar flash) for a
+                # bell while the user is already focused on this kitty window; only
+                # do so when kitty is in the background, where a real alert matters.
+                from .fast_data_types import current_focused_os_window_id
+                if current_focused_os_window_id() == tab.os_window_id:
+                    return
             changed = not self.needs_attention
             self.needs_attention = True
-            tab = self.tabref()
             if tab is not None:
                 if changed:
                     tab.relayout_borders()
@@ -1510,6 +1538,27 @@ class Window:
         pty_size = self.last_reported_pty_size
         if pty_size[0] > -1 and self.screen.in_band_resize_notification:
             self.screen.send_escape_code_to_child(ESC_CSI, f'48;{pty_size[0]};{pty_size[1]};{pty_size[3]};{pty_size[2]}t')
+
+    def windows_conpty_flush(self) -> None:
+        # A full-screen program running in this window's Windows pseudoconsole has
+        # just switched back to the main screen (exited). conhost withholds the
+        # shell's next output (its prompt) until it receives ConPTY input, so it
+        # does not repaint until the user presses a key. Send a harmless nudge a
+        # moment later so conhost treats it as input and flushes the held output.
+        # A bare Backspace bells in zsh (backward-delete-char on an empty prompt),
+        # which shows up as a spurious taskbar/tab notification, so send a space
+        # then a Backspace instead: a net-zero edit (insert a char, delete it)
+        # that never bells and works across shells. Only meaningful on Windows.
+        if getattr(self.child, 'pty_id', None) is None:
+            return
+        # This also applies to Cygwin pty bridge windows: a native full-screen
+        # program (like a kitten) runs there inside a Cygwin-managed hidden
+        # ConPTY, whose conhost withholds the shell's post-exit redraw the same
+        # way until input arrives.
+
+        def nudge(timer_id: int | None = None) -> None:
+            self.write_to_child(b' \x7f')
+        add_timer(nudge, 0.08, False)
 
     def color_control(self, code: int, value: str | bytes | memoryview = '') -> None:
         response = color_control(self.screen.color_profile, code, value)
@@ -2379,6 +2428,11 @@ class Window:
     @ac('cp', 'Paste the specified text into the current window. ANSI C escapes are decoded.')
     def paste(self, text: str) -> None:
         self.paste_with_actions(text)
+
+    @ac('cp', 'Select all text on the screen and in the scrollback')
+    def select_all(self) -> None:
+        self.screen.select_all()
+        self.refresh()
 
     @ac('cp', 'Copy the selected text from the active window to the clipboard')
     def copy_to_clipboard(self) -> None:

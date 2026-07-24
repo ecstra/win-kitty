@@ -5,15 +5,43 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 
 	"github.com/kovidgoyal/kitty/tools/cli"
+	"github.com/kovidgoyal/kitty/tools/tty"
 	"github.com/kovidgoyal/kitty/tools/utils"
 	"github.com/kovidgoyal/kitty/tools/utils/base85"
 )
 
 var _ = fmt.Print
+
+// ReadKittenInputData returns the JSON input payload kitty delivers to an
+// overlay kitten. On Windows the overlay kitten's single stdin pipe carries
+// keyboard input, so kitty writes the payload to a temp file named by
+// KITTY_STDIN_DATA_FILE instead (see boss.py run_kitten_with_metadata and
+// create_special_window_for_show_error); reading os.Stdin there would consume
+// keystrokes. Everywhere else the payload is piped to STDIN as usual. The bool
+// return is false when no input data is available (STDIN is a terminal and no
+// data file was provided).
+func ReadKittenInputData() (data []byte, ok bool, err error) {
+	if p := os.Getenv("KITTY_STDIN_DATA_FILE"); p != "" {
+		data, err = os.ReadFile(p)
+		os.Remove(p)
+		if err != nil {
+			return nil, false, err
+		}
+		return data, true, nil
+	}
+	if tty.IsTerminal(os.Stdin.Fd()) {
+		return nil, false, nil
+	}
+	if data, err = io.ReadAll(os.Stdin); err != nil {
+		return nil, false, err
+	}
+	return data, true, nil
+}
 
 var RunningAsUI = sync.OnceValue(func() bool {
 	defer func() { os.Unsetenv("KITTEN_RUNNING_AS_UI") }()

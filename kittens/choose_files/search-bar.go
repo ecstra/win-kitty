@@ -156,11 +156,25 @@ func (h *Handler) draw_search_text(available_width int) {
 	if right_ellipsis {
 		visible_width_total += wcswidth.Stringwidth("…")
 	}
-	h.lp.DrawSizedText(strings.Join(visible, "")+" ", loop.SizedText{Scale: 2})
-	h.lp.MoveCursorHorizontally(-2 * (visible_width_total - visible_width_before_cursor + 1))
+	scale := 2
+	if !h.lp.TextSizingSupported() {
+		scale = 1 // conhost cannot render OSC 66; DrawSizedText falls back to plain text
+	}
+	h.lp.DrawSizedText(strings.Join(visible, "")+" ", loop.SizedText{Scale: scale})
+	h.lp.MoveCursorHorizontally(-scale * (visible_width_total - visible_width_before_cursor + 1))
 }
 
 const SEARCH_BAR_HEIGHT = 4
+
+// search_bar_height is 4 to fit the 2x-scaled search text (two interior rows).
+// Where the text-sizing protocol is unavailable (Windows/conhost) the text is
+// plain 1x, so one interior row suffices and a 3-row box centers it.
+func (h *Handler) search_bar_height() int {
+	if h.lp.TextSizingSupported() {
+		return SEARCH_BAR_HEIGHT
+	}
+	return 3
+}
 
 func (h *Handler) draw_controls(y int) (max_width int) {
 	type entry struct {
@@ -208,7 +222,7 @@ func (h *Handler) draw_search_bar(y int) {
 	left_margin, right_margin := 0, h.draw_controls(y)
 	h.lp.MoveCursorTo(1+left_margin, 1+y)
 	available_width := h.screen_size.width - left_margin - right_margin
-	h.draw_frame(available_width, SEARCH_BAR_HEIGHT, false)
+	h.draw_frame(available_width, h.search_bar_height(), false)
 	for y1 := y; y1 < y+4; y1++ {
 		cr := h.state.mouse_state.AddCellRegion("search-bar", left_margin, y1, left_margin+available_width, y1)
 		cr.PointerShape = loop.TEXT_POINTER

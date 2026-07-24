@@ -48,6 +48,9 @@ func run_server(opts *ServerOptions) (err error) {
 
 func specialize_command(parent *cli.Command) {
 	parent.Run = func(cmd *cli.Command, args []string) (int, error) {
+		if err := cli.NotImplementedOnWindows("desktop-ui"); err != nil {
+			return 1, err
+		}
 		cmd.ShowHelp()
 		return 1, nil
 	}

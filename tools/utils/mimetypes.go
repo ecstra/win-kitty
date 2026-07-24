@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -102,7 +100,7 @@ func GuessMimeTypeWithFileSystemAccess(filename string) string {
 	s, err := os.Stat(filename)
 	if err == nil {
 		is_dir = s.IsDir()
-		if !is_dir && s.Mode().Perm()&0o111 != 0 && unix.Access(filename, unix.X_OK) == nil {
+		if !is_dir && s.Mode().Perm()&0o111 != 0 && Access(filename, AccessExec) == nil {
 			is_exe = true
 		}
 	}

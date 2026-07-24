@@ -9,15 +9,32 @@ import re
 import selectors
 import signal
 import sys
-import termios
 from collections.abc import Callable, Generator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from enum import Enum, IntFlag, auto
 from functools import partial
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
-from kitty.constants import is_macos
-from kitty.fast_data_types import FILE_TRANSFER_CODE, close_tty, normal_tty, open_tty, parse_input_from_terminal, raw_tty
+from kitty.constants import is_macos, is_windows
+from kitty.fast_data_types import FILE_TRANSFER_CODE, parse_input_from_terminal
+
+if TYPE_CHECKING:
+    # Keep the Windows console names visible to a type checker on every
+    # platform: the annotations below refer to them, and the import guarded by
+    # sys.platform is unreachable off Windows as far as the checker is
+    # concerned, which would leave them undefined.
+    from .loop_win32 import WinConsole, WinScreenSizeGetter
+
+if sys.platform == 'win32':
+    # Windows has no termios and no controlling-tty device. The console backend
+    # provides the raw-mode and size handling the Unix tty functions do.
+    from .loop_win32 import TCSADRAIN, TCSAFLUSH, TCSANOW, WinConsole, WinScreenSizeGetter
+    open_tty = close_tty = normal_tty = raw_tty = None
+else:
+    import termios
+
+    from kitty.fast_data_types import close_tty, normal_tty, open_tty, raw_tty
+    TCSANOW, TCSADRAIN, TCSAFLUSH = termios.TCSANOW, termios.TCSADRAIN, termios.TCSAFLUSH
 from kitty.key_encoding import ALT, CTRL, SHIFT, backspace_key, decode_key_event, enter_key
 from kitty.typing_compat import ImageManagerType, KeyEventType, Protocol
 from kitty.utils import ScreenSize, ScreenSizeGetter, screen_size_function, write_all
@@ -65,24 +82,38 @@ ftc_code = str(FILE_TRANSFER_CODE)
 class TermManager:
 
     def __init__(
-        self, optional_actions: int = termios.TCSANOW, use_alternate_screen: bool = True,
+        self, optional_actions: int = TCSANOW, use_alternate_screen: bool = True,
         mouse_tracking: MouseTracking = MouseTracking.none
     ) -> None:
         self.extra_finalize: str | None = None
         self.optional_actions = optional_actions
         self.use_alternate_screen = use_alternate_screen
         self.mouse_tracking = mouse_tracking
+        self.console: 'WinConsole | None' = None
+        self.tty_fd = -1
+
+    def _write(self, data: str | bytes) -> None:
+        if self.console is not None:
+            self.console.write(data)
+        else:
+            write_all(self.tty_fd, data)
 
     def set_state_for_loop(self, set_raw: bool = True) -> None:
         if set_raw:
-            raw_tty(self.tty_fd, self.original_termios)
-        write_all(self.tty_fd, init_state(self.use_alternate_screen, self.mouse_tracking))
+            if self.console is not None:
+                self.console.set_raw()
+            else:
+                raw_tty(self.tty_fd, self.original_termios)
+        self._write(init_state(self.use_alternate_screen, self.mouse_tracking))
 
     def reset_state_to_original(self) -> None:
-        normal_tty(self.tty_fd, self.original_termios)
+        if self.console is not None:
+            self.console.restore_modes()
+        else:
+            normal_tty(self.tty_fd, self.original_termios)
         if self.extra_finalize:
-            write_all(self.tty_fd, self.extra_finalize)
-        write_all(self.tty_fd, reset_state(self.use_alternate_screen))
+            self._write(self.extra_finalize)
+        self._write(reset_state(self.use_alternate_screen))
 
     @contextmanager
     def suspend(self) -> Generator['TermManager', None, None]:
@@ -91,15 +122,23 @@ class TermManager:
         self.set_state_for_loop()
 
     def __enter__(self) -> 'TermManager':
-        self.tty_fd, self.original_termios = open_tty(False, self.optional_actions)
+        if is_windows:
+            # WinConsole opens CONIN$/CONOUT$ and puts them in raw mode.
+            self.console = WinConsole()
+        else:
+            self.tty_fd, self.original_termios = open_tty(False, self.optional_actions)
         self.set_state_for_loop(set_raw=False)
         return self
 
     def __exit__(self, *a: object) -> None:
         with suppress(Exception):
             self.reset_state_to_original()
-            close_tty(self.tty_fd, self.original_termios)
-            del self.tty_fd, self.original_termios
+            if self.console is not None:
+                self.console.close()
+                self.console = None
+            else:
+                close_tty(self.tty_fd, self.original_termios)
+                del self.tty_fd, self.original_termios
 
 
 class MouseButton(IntFlag):
@@ -219,7 +258,7 @@ class Loop:
     def __init__(
         self,
         sanitize_bracketed_paste: str = sanitize_bracketed_paste,
-        optional_actions: int = termios.TCSADRAIN
+        optional_actions: int = TCSADRAIN
     ):
         if is_macos:
             # On macOS PTY devices are not supported by the KqueueSelector and
@@ -234,6 +273,7 @@ class Loop:
         self.return_code = 0
         self.overlay_ready_reported = False
         self.optional_actions = optional_actions
+        self.write_buf: list[bytes] = []
         self.read_buf = ''
         self.decoder = codecs.getincrementaldecoder('utf-8')('ignore')
         try:
@@ -403,7 +443,107 @@ class Loop:
             self.return_code = return_code
         self.asyncio_loop.stop()
 
+    def _win_feed(self, handler: Handler, bdata: bytes) -> None:
+        # Runs on the asyncio loop thread: same parse pipeline as _read_ready but
+        # fed bytes from the console reader thread rather than reading a fd.
+        data = self.decoder.decode(bdata)
+        if self.read_buf:
+            data = self.read_buf + data
+        self.read_buf = data
+        self.handler = handler
+        try:
+            self.read_buf = self.parse_input_from_terminal(self.read_buf, self.in_bracketed_paste)
+        except Exception:
+            self.read_buf = ''
+            raise
+        finally:
+            del self.handler
+
+    def _win_eof(self, handler: Handler) -> None:
+        handler.terminal_io_ended = True
+        self.quit(1)
+
+    def _loop_impl_windows(self, handler: Handler, term_manager: TermManager, image_manager: ImageManagerType | None = None) -> str | None:
+        # Windows asyncio cannot wait on a console handle, so a reader thread
+        # blocks on the console and hands bytes back through the loop.
+        import threading
+
+        from .loop_win32 import cancel_console_read
+        self.write_buf = []
+        console = term_manager.console
+        assert console is not None
+        tb: str | None = None
+        flush_scheduled = False
+
+        def flush() -> None:
+            # Coalesce a whole frame into one console write. Writing each fragment
+            # as it arrives let kitty render the half-cleared screen between them,
+            # which showed up as flicker on every keystroke.
+            nonlocal flush_scheduled
+            flush_scheduled = False
+            if not self.write_buf:
+                return
+            data = b''.join(self.write_buf)
+            self.write_buf = []
+            try:
+                console.write(data)
+            except Exception:
+                handler.terminal_io_ended = True
+                self.quit(1)
+                return
+            handler.on_writing_finished()
+
+        def schedule_write(data: bytes) -> None:
+            nonlocal flush_scheduled
+            self.write_buf.append(data)
+            if not flush_scheduled:
+                flush_scheduled = True
+                self.asyncio_loop.call_soon(flush)
+
+        def handle_exception(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+            nonlocal tb
+            loop.stop()
+            tb = context['message']
+            exc = context.get('exception')
+            if exc is not None:
+                import traceback
+                tb += '\n' + ''.join(traceback.format_exception(exc.__class__, exc, exc.__traceback__))
+
+        self.asyncio_loop.set_exception_handler(handle_exception)
+        handler._initialize(self._get_screen_size(), term_manager, schedule_write, self, debug, image_manager)
+
+        stop_reading = threading.Event()
+
+        def reader() -> None:
+            while not stop_reading.is_set():
+                data = console.read()
+                if stop_reading.is_set():
+                    return
+                try:
+                    if data is None:
+                        self.asyncio_loop.call_soon_threadsafe(self._win_eof, handler)
+                        return
+                    if data:
+                        self.asyncio_loop.call_soon_threadsafe(self._win_feed, handler, data)
+                except RuntimeError:
+                    return  # the loop was stopped during shutdown
+
+        with handler:
+            if handler.overlay_ready_report_needed:
+                handler.cmd.overlay_ready()
+            reader_thread = threading.Thread(target=reader, name='kitten-console-reader', daemon=True)
+            reader_thread.start()
+            self.asyncio_loop.run_forever()
+            # Unblock the reader's console read so the process can exit cleanly and
+            # kitty closes the overlay. A blocked read would otherwise hang exit.
+            stop_reading.set()
+            cancel_console_read(reader_thread)
+            reader_thread.join(timeout=1.0)
+        return tb
+
     def loop_impl(self, handler: Handler, term_manager: TermManager, image_manager: ImageManagerType | None = None) -> str | None:
+        if is_windows:
+            return self._loop_impl_windows(handler, term_manager, image_manager)
         self.write_buf = []
         tty_fd = term_manager.tty_fd
         tb = None
@@ -447,9 +587,16 @@ class Loop:
             handler.screen_size = self._get_screen_size()
             handler.on_resize(handler.screen_size)
 
+        # Windows asyncio has no add_signal_handler and there is no SIGWINCH; the
+        # console reports size on demand instead, so skip the signal manager.
         signal_manager = SignalManager(self.asyncio_loop, _on_sigwinch, handler.on_interrupt, handler.on_term, handler.on_hup)
-        with TermManager(self.optional_actions, handler.use_alternate_screen, handler.mouse_tracking) as term_manager, signal_manager:
-            self._get_screen_size: ScreenSizeGetter = screen_size_function(term_manager.tty_fd)
+        with TermManager(self.optional_actions, handler.use_alternate_screen, handler.mouse_tracking) as term_manager, (
+                nullcontext() if is_windows else signal_manager):
+            if is_windows:
+                assert term_manager.console is not None
+                self._get_screen_size = WinScreenSizeGetter(term_manager.console)  # ty: ignore[invalid-assignment]
+            else:
+                self._get_screen_size: ScreenSizeGetter = screen_size_function(term_manager.tty_fd)
             image_manager = None
             if handler.image_manager_class is not None:
                 image_manager = handler.image_manager_class(handler)

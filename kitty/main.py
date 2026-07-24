@@ -26,6 +26,7 @@ from .constants import (
     is_macos,
     is_quick_access_terminal_app,
     is_wayland,
+    is_windows,
     kitten_exe,
     kitty_exe,
     launched_by_launch_services,
@@ -104,7 +105,7 @@ def init_glfw_module(glfw_module: str = 'wayland', debug_keyboard: bool = False,
 
 
 def init_glfw(opts: Options, debug_keyboard: bool = False, debug_rendering: bool = False) -> str:
-    glfw_module = 'cocoa' if is_macos else ('wayland' if is_wayland(opts) else 'x11')
+    glfw_module = 'cocoa' if is_macos else ('win32' if is_windows else ('wayland' if is_wayland(opts) else 'x11'))
     init_glfw_module(glfw_module, debug_keyboard, debug_rendering, wayland_enable_ime=opts.wayland_enable_ime)
     return glfw_module
 
@@ -165,16 +166,20 @@ def get_icon128_path(base_path: str) -> str:
 
 def set_window_icon() -> None:
     custom_icon_path = get_custom_window_icon()[1]
-    is_x11 = not is_macos and not is_wayland()
+    is_x11 = not is_macos and not is_windows and not is_wayland()
+    # X11 and Windows want a rasterized icon set on the window. On Windows the
+    # custom frame draws no caption, so the window icon only affects the
+    # taskbar/alt-tab (the .exe also embeds it as a fallback).
+    wants_raster_icon = is_x11 or is_windows
     try:
         if custom_icon_path is not None:
             custom_icon128_path = get_icon128_path(custom_icon_path)
-            if is_x11 and safe_mtime(custom_icon128_path) is not None:
+            if wants_raster_icon and safe_mtime(custom_icon128_path) is not None:
                 set_default_window_icon(custom_icon128_path)
             else:
                 set_default_window_icon(custom_icon_path)
         else:
-            if is_x11:
+            if wants_raster_icon:
                 set_default_window_icon(get_icon128_path(logo_png_file))
     except ValueError as err:
         log_error(err)
@@ -304,6 +309,9 @@ def _run_app(opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (),
         window_state = (args.start_as if args.start_as and args.start_as != 'normal' else None) or (
             getattr(startup_sessions[0], 'os_window_state', None) if startup_sessions else None
         )
+        # Restore the maximized state from the previous session (like the size).
+        if window_state is None and opts.remember_window_size and cached_values.get('window-maximized'):
+            window_state = 'maximized'
         wstate = parse_os_window_state(window_state) if window_state is not None else None
 
         with startup_notification_handler(extra_callback=run_app.first_window_callback) as pre_show_callback:

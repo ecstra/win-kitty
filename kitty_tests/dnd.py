@@ -26,7 +26,7 @@ from kitty.fast_data_types import (
 )
 from kitty.machine_id import machine_id
 
-from . import BaseTest, parse_bytes
+from . import BaseTest, parse_bytes, skip_on_windows
 
 # ---- helpers ----------------------------------------------------------------
 
@@ -370,6 +370,7 @@ machine_id = partial(machine_id, 'tty-dnd-protocol-machine-id')
 
 # ---- test class -------------------------------------------------------------
 
+@skip_on_windows('drag and drop is not built here, kitty/dnd.c is replaced by wincompat/dnd_stub.c')
 class TestDnDProtocol(BaseTest):
 
     def _assert_no_output(self, capture: WriteCapture) -> None:

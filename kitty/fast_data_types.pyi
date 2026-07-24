@@ -1,3 +1,4 @@
+import sys
 import termios
 from typing import Any, Callable, Dict, Iterator, List, Literal, NewType, Optional, Sequence, Tuple, TypedDict, Union, overload
 
@@ -1331,6 +1332,9 @@ class Screen:
     def scroll(self, amt: int, upwards: bool) -> bool:
         pass
 
+    def select_all(self) -> None:
+        pass
+
     def scroll_to_absolute(self, amt: float) -> None:
         pass
 
@@ -1529,23 +1533,39 @@ def set_iutf8_fd(fd: int, on: bool) -> bool:
     pass
 
 
-def spawn(
-    exe: str,
-    cwd: str,
-    argv: Tuple[str, ...],
-    env: Tuple[str, ...],
-    master: int,
-    slave: int,
-    stdin_read_fd: int,
-    stdin_write_fd: int,
-    ready_read_fd: int,
-    ready_write_fd: int,
-    handled_signals: Tuple[int, ...],
-    kitten_exe: str,
-    forward_stdio: bool,
-    pass_fds: tuple[int, ...],
-) -> int:
-    pass
+# Windows spawns children into a pseudoconsole instead of forking, so it
+# exports a spawn of its own shape and an open_pty the other platforms have no
+# use for.
+if sys.platform == 'win32':
+    def open_pty(columns: int, lines: int, use_pty: bool, resize_with_escape: bool) -> Tuple[int, int, int]:
+        pass
+
+    def spawn(
+        pty_id: int,
+        exe: str,
+        cwd: str,
+        argv: Tuple[str, ...],
+        env: Tuple[str, ...],
+    ) -> int:
+        pass
+else:
+    def spawn(
+        exe: str,
+        cwd: str,
+        argv: Tuple[str, ...],
+        env: Tuple[str, ...],
+        master: int,
+        slave: int,
+        stdin_read_fd: int,
+        stdin_write_fd: int,
+        ready_read_fd: int,
+        ready_write_fd: int,
+        handled_signals: Tuple[int, ...],
+        kitten_exe: str,
+        forward_stdio: bool,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        pass
 
 
 def set_window_drag_overlay(os_window_id: int, tab_id: int, window_id: int, quadrant: int) -> None: ...

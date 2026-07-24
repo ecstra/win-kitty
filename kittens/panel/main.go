@@ -9,8 +9,6 @@ import (
 
 	"github.com/kovidgoyal/kitty/tools/cli"
 	"github.com/kovidgoyal/kitty/tools/utils"
-
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -38,7 +36,7 @@ func GetQuickAccessKittyExe() (kitty_exe string, err error) {
 	}
 	if runtime.GOOS == "darwin" {
 		q := filepath.Join(filepath.Dir(filepath.Dir(kitty_exe)), "kitty-quick-access.app", "Contents", "MacOS", "kitty-quick-access")
-		if err := unix.Access(q, unix.X_OK); err == nil {
+		if err := utils.Access(q, utils.AccessExec); err == nil {
 			kitty_exe = q
 		}
 	}
@@ -47,13 +45,16 @@ func GetQuickAccessKittyExe() (kitty_exe string, err error) {
 }
 
 func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
+	if err = cli.NotImplementedOnWindows("panel"); err != nil {
+		return 1, err
+	}
 	kitty_exe, err := GetQuickAccessKittyExe()
 	if err != nil {
 		return 1, err
 	}
 	argv := []string{kitty_exe, "+kitten", "panel"}
 	argv = append(argv, o.AsCommandLine()...)
-	err = unix.Exec(kitty_exe, append(argv, args...), os.Environ())
+	err = utils.Exec(kitty_exe, append(argv, args...), os.Environ())
 	rc = 1
 	return
 }

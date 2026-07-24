@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,12 @@ import (
 var _ = fmt.Print
 
 func TestThemeCollections(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The atomic write renames over the destination while the test still
+		// holds it open. Windows refuses that unless the original handle was
+		// opened with FILE_SHARE_DELETE. Recorded in WINDOWS_TODO.
+		t.Skip("cannot replace a file another handle holds open")
+	}
 	for fname, expected := range map[string]string{
 		"moose":    "Moose",
 		"mooseCat": "Moose Cat",

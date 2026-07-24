@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, DefaultDict, Optional, TypedDict
 
 import kitty.fast_data_types as fast_data_types
 
-from .constants import handled_signals, is_freebsd, is_macos, kitten_exe, kitty_base_dir, shell_path, terminfo_dir
+from .constants import handled_signals, is_freebsd, is_macos, is_windows, kitten_exe, kitty_base_dir, shell_integration_dir, shell_path, terminfo_dir
 from .types import run_once
 from .utils import cmdline_for_hold, log_error, resolved_shell, which
 
@@ -58,6 +58,13 @@ else:
                 raise ValueError(f'Failed to find cwd of process with pid: {pid}')
             ans = cp.stdout.decode('utf-8', 'replace').split()[1]
             return os.path.realpath(ans, strict=True)
+    elif is_windows:
+        from kitty.fast_data_types import cwd_of_process as _win_cwd
+
+        def cwd_of_process(pid: int) -> str:
+            # Reads the process PEB, so no /proc dependency. realpath resolves any
+            # substituted-drive or short-name components for a stable title.
+            return os.path.realpath(_win_cwd(pid), strict=True)
     else:
         def cwd_of_process(pid: int) -> str:
             # We use realpath instead of readlink to match macOS behavior where
@@ -222,6 +229,51 @@ def getpid() -> str:
     return str(os.getpid())
 
 
+def ensure_msys2_terminfo(shell_bin_dir: str) -> None:
+    '''The msys2 runtime only enables its ConPTY interop for native Windows
+    programs run from the shell (which is what delivers keyboard input to them
+    and gives them the correct terminal size) when it can find the terminfo
+    entry for $TERM (see term_has_pcon_cap in the msys2-runtime source). Install
+    kitty's terminfo into the msys2 tree if it is not there. Best effort.'''
+    root = os.path.dirname(os.path.dirname(shell_bin_dir))  # <root>/usr/bin -> <root>
+    dest_dir = os.path.join(root, 'usr', 'share', 'terminfo', '78')
+    dest = os.path.join(dest_dir, 'xterm-kitty')
+    if os.path.exists(dest):
+        return
+    import shutil
+    for src in (os.path.join(terminfo_dir, '78', 'xterm-kitty'), os.path.join(terminfo_dir, 'x', 'xterm-kitty')):
+        if os.path.exists(src):
+            with suppress(OSError):
+                os.makedirs(dest_dir, exist_ok=True)
+                shutil.copyfile(src, dest)
+            return
+
+
+def cygwin_pty_bridge_cmd(exe: str) -> list[str] | None:
+    '''If exe is a Cygwin/MSYS2 program and the pieces needed to run it on a real
+    Cygwin pty are available, return the command prefix for the pty bridge (see
+    shell-integration/msys2/pty-bridge.py), else None.'''
+    if os.environ.get('KITTY_NO_CYGWIN_PTY') == '1':
+        return None
+    d = os.path.dirname(os.path.abspath(exe))
+    if not (os.path.exists(os.path.join(d, 'msys-2.0.dll')) or os.path.exists(os.path.join(d, 'cygwin1.dll'))):
+        return None
+    python = os.path.join(d, 'python3.exe')
+    if not os.path.exists(python):
+        return None
+    bridge = os.path.join(shell_integration_dir, 'msys2', 'pty-bridge.py')
+    if not os.path.exists(bridge):
+        return None
+    ensure_msys2_terminfo(d)
+    # The python exe path is used by CreateProcessW (Windows form is fine), but
+    # the script path is opened by the Cygwin python itself, which uses POSIX
+    # path semantics: convert C:\x\y to /c/x/y.
+    bridge = bridge.replace('\\', '/')
+    if len(bridge) > 2 and bridge[1] == ':':
+        bridge = '/' + bridge[0].lower() + bridge[2:]
+    return [python.replace('\\', '/'), bridge]
+
+
 @run_once
 def base64_terminfo_data() -> str:
     return (b'b64:' + fast_data_types.base64_encode(fast_data_types.terminfo_data(), True)).decode('ascii')
@@ -337,6 +389,8 @@ class Child:
     def fork(self) -> int | None:
         if self.forked:
             return None
+        if is_windows:
+            return self._fork_windows()
         opts = fast_data_types.get_options()
         self.forked = True
         master, slave = openpty()
@@ -422,6 +476,71 @@ class Child:
                 log_error("Could not move child process into a systemd scope: " + str(err))
         return pid
 
+    def _fork_windows(self) -> int | None:
+        # Windows has no fork/openpty. Spawn the child through a ConPTY (see
+        # child.c). open_pty returns a readable fd carrying the child's output
+        # plus a writable fd for its input, and a pty id used to spawn/resize.
+        opts = fast_data_types.get_options()
+        self.forked = True
+        # get_final_env runs shell integration, which may append to self.argv (for
+        # example the PowerShell integration), so read argv only after it.
+        self.final_env, _ = self.get_final_env()
+        argv = list(self.argv) or list(resolved_shell(opts))
+        env = tuple(f'{k}={v}' for k, v in self.final_env.items())
+        exe = which(argv[0]) or argv[0]
+        self.final_exe = exe
+        self.final_argv0 = argv[0]
+        # Create the ConPTY at the real window size so the shell's first prompt
+        # is laid out correctly. Using a fixed 80x24 makes conhost/PSReadLine draw
+        # the initial prompt at the wrong width until the next resize (or `cls`).
+        cols, rows = 80, 24
+        try:
+            os_window_id = fast_data_types.current_os_window()
+            if os_window_id:
+                central = fast_data_types.viewport_for_window(os_window_id)[0]
+                cw, ch = fast_data_types.cell_size_for_window(os_window_id)
+                if cw > 0 and ch > 0 and central.width > 0 and central.height > 0:
+                    cols, rows = max(1, central.width // cw), max(1, central.height // ch)
+        except Exception:
+            pass
+        # Kittens are VT programs: run them over plain pipes, not a pseudoconsole,
+        # so their escape codes reach kitty untouched (no flicker) and kitty sees
+        # EOF when they exit (their window closes).
+        use_pty = self.final_env.get('KITTY_KITTEN_NO_PTY') != '1'
+        resize_with_escape = False
+        if use_pty and (bridge := cygwin_pty_bridge_cmd(exe)):
+            # A Cygwin/MSYS2 shell: run it on a real Cygwin pty via the bridge,
+            # over plain pipes, keeping conhost out of the data path entirely.
+            # conhost re-renders output on its own frame cadence, consuming the
+            # application's synchronized-update markers and splitting logical
+            # updates (like a zsh line-editor redraw) across frames, which shows
+            # up as cursor bouncing and flicker; the Cygwin pty passes the
+            # shell's escape codes through untouched (the mintty architecture).
+            argv = bridge + ['--rows', str(rows), '--cols', str(cols), '--'] + argv
+            exe = argv[0]
+            use_pty = False
+            resize_with_escape = True
+        self.uses_conpty = use_pty
+        read_fd, write_fd, pty_id = fast_data_types.open_pty(cols, rows, use_pty, resize_with_escape)  # ty: ignore[unresolved-attribute]
+        cwd = self.cwd or os.getcwd()
+        if not os.path.isdir(cwd):
+            # CreateProcessW fails with ERROR_DIRECTORY (WinError 267) when the cwd
+            # is not a valid Windows directory. This can happen if a Unix-style path
+            # leaks through (for example a POSIX cwd reported by an MSYS2/Cygwin
+            # shell). Fall back to a directory that always works.
+            cwd = os.path.expanduser('~')
+            if not os.path.isdir(cwd):
+                cwd = os.getcwd()
+        pid = fast_data_types.spawn(pty_id, exe, cwd, tuple(argv), env)  # ty: ignore[missing-argument,invalid-argument-type]
+        self.pid = pid
+        self.pty_id = pty_id
+        self.windows_write_fd = write_fd
+        self.child_fd = read_fd
+        self.terminal_ready_fd = -1  # ConPTY has no ready-signal pipe
+        with suppress(OSError):
+            os.set_blocking(read_fd, False)
+        return pid
+
     def __del__(self) -> None:
         fd = getattr(self, 'terminal_ready_fd', -1)
         if fd > -1:
@@ -429,7 +548,8 @@ class Child:
         self.terminal_ready_fd = -1
 
     def mark_terminal_ready(self) -> None:
-        os.close(self.terminal_ready_fd)
+        if self.terminal_ready_fd > -1:
+            os.close(self.terminal_ready_fd)
         self.terminal_ready_fd = -1
 
     def cmdline_of_pid(self, pid: int) -> list[str]:

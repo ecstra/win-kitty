@@ -13,8 +13,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/tty"
 	"github.com/kovidgoyal/kitty/tools/tui"
 	"github.com/kovidgoyal/kitty/tools/utils"
-
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -34,6 +32,9 @@ func update_self(version string) (err error) {
 		return err
 	}
 	if kitty.IsStandaloneBuild == "" {
+		if runtime.GOOS == "windows" {
+			return fmt.Errorf("update-self is not available in this source-built Windows port of kitty. Rebuild from your kitty source tree to update instead.")
+		}
 		return fmt.Errorf("This is not a standalone kitten executable. You must update all of kitty instead.")
 	}
 	rv := "v" + version
@@ -65,7 +66,7 @@ func update_self(version string) (err error) {
 		}
 	}
 	fmt.Print("Updated to: ")
-	return unix.Exec(exe, []string{"kitten", "--version"}, os.Environ())
+	return utils.Exec(exe, []string{"kitten", "--version"}, os.Environ())
 }
 
 func EntryPoint(root *cli.Command) *cli.Command {

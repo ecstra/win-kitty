@@ -7,11 +7,16 @@
 
 #include "data-types.h"
 #include "safe-wrappers.h"
+#include <errno.h>
+#include <string.h>
+
+#ifndef _WIN32
+/* ======================================================================
+ *  POSIX implementation (fork + pty slave)
+ * ==================================================================== */
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <errno.h>
-#include <string.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -206,6 +211,469 @@ static PyMethodDef module_methods[] = {
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
+bool
+init_child(PyObject *module) {
+    PyModule_AddIntMacro(module, CLD_KILLED);
+    PyModule_AddIntMacro(module, CLD_STOPPED);
+    PyModule_AddIntMacro(module, CLD_EXITED);
+    PyModule_AddIntMacro(module, CLD_CONTINUED);
+    if (PyModule_AddFunctions(module, module_methods) != 0) return false;
+    return true;
+}
+
+#else  /* _WIN32 */
+/* ======================================================================
+ *  Windows implementation (ConPTY: CreatePseudoConsole + CreateProcess)
+ *
+ *  There is no fork()/openpty() on Windows. A "pty" here is a pseudoconsole
+ *  plus two anonymous pipes; the parent-side pipe HANDLEs are bridged to CRT
+ *  int fds via _open_osfhandle so the rest of kitty can hold them as fds.
+ *  The Windows event loop (Stage 4) reads/writes those handles with overlapped
+ *  I/O; reaping waits on the stored process HANDLE.
+ * ==================================================================== */
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+
+typedef VOID* HPCON;
+#ifndef PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
+#define PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE 0x00020016
+#endif
+#ifndef PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+#define PROC_THREAD_ATTRIBUTE_HANDLE_LIST 0x00020002
+#endif
+#ifndef CREATE_NO_WINDOW
+#define CREATE_NO_WINDOW 0x08000000
+#endif
+#ifndef CLD_EXITED
+#define CLD_EXITED    1
+#define CLD_KILLED    2
+#define CLD_DUMPED    3
+#define CLD_STOPPED   5
+#define CLD_CONTINUED 6
+#endif
+typedef HRESULT (WINAPI *PFN_CreatePseudoConsole)(COORD, HANDLE, HANDLE, DWORD, HPCON*);
+typedef HRESULT (WINAPI *PFN_ResizePseudoConsole)(HPCON, COORD);
+typedef VOID    (WINAPI *PFN_ClosePseudoConsole)(HPCON);
+static PFN_CreatePseudoConsole pCreatePseudoConsole;
+static PFN_ResizePseudoConsole pResizePseudoConsole;
+static PFN_ClosePseudoConsole  pClosePseudoConsole;
+
+static bool
+load_conpty(void) {
+    if (pCreatePseudoConsole) return true;
+    HMODULE k = GetModuleHandleW(L"kernel32.dll");
+    pCreatePseudoConsole = (PFN_CreatePseudoConsole)(void*)GetProcAddress(k, "CreatePseudoConsole");
+    pResizePseudoConsole = (PFN_ResizePseudoConsole)(void*)GetProcAddress(k, "ResizePseudoConsole");
+    pClosePseudoConsole  = (PFN_ClosePseudoConsole)(void*)GetProcAddress(k, "ClosePseudoConsole");
+    return pCreatePseudoConsole != NULL;
+}
+
+#define MAX_PTYS 128
+typedef struct {
+    bool   in_use;
+    bool   resize_with_escape; /* pipe mode: on resize, write ESC[8;rows;colst to the child's stdin
+                                  (consumed by the Cygwin pty bridge, see shell-integration/msys2/pty-bridge.py) */
+    HPCON  hpc;          /* pseudoconsole, or NULL in pipe mode (kittens) */
+    HANDLE in_write;     /* parent writes child stdin here */
+    HANDLE out_read;     /* parent reads child stdout here */
+    HANDLE child_stdin;  /* pipe mode: child's stdin (inherited at spawn) */
+    HANDLE child_stdout; /* pipe mode: child's stdout (inherited at spawn) */
+    HANDLE process;      /* child process handle, for reaping */
+    HANDLE wait_handle;  /* RegisterWaitForSingleObject registration on process */
+    HANDLE job;          /* job object owning the child's whole process tree */
+    int    read_fd;      /* CRT fd wrapping out_read */
+    int    write_fd;     /* CRT fd wrapping in_write */
+} PtyEntry;
+static PtyEntry ptys[MAX_PTYS];
+
+static wchar_t*
+utf8_to_wide(const char *s) {
+    if (!s) return NULL;
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (n <= 0) return NULL;
+    wchar_t *w = calloc((size_t)n, sizeof(wchar_t));
+    if (w) MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+    return w;
+}
+
+/* Join argv into a single command line, quoting args that need it (simplified
+ * CommandLineToArgvW rules: wrap in quotes, double embedded quotes/backslashes
+ * before a closing quote). */
+static wchar_t*
+build_command_line(PyObject *argv_p) {
+    Py_ssize_t n = PyTuple_GET_SIZE(argv_p);
+    size_t cap = 256, len = 0;
+    wchar_t *buf = malloc(cap * sizeof(wchar_t));
+    if (!buf) return NULL;
+#define PUT(ch) do { if (len + 2 >= cap) { cap *= 2; wchar_t *nb = realloc(buf, cap * sizeof(wchar_t)); if (!nb) { free(buf); return NULL; } buf = nb; } buf[len++] = (ch); } while (0)
+    for (Py_ssize_t i = 0; i < n; i++) {
+        if (i) PUT(L' ');
+        const char *a8 = PyUnicode_AsUTF8(PyTuple_GET_ITEM(argv_p, i));
+        wchar_t *a = utf8_to_wide(a8 ? a8 : "");
+        if (!a) { free(buf); return NULL; }
+        bool need_quote = (a[0] == 0);
+        for (wchar_t *p = a; *p; p++) if (*p == L' ' || *p == L'\t' || *p == L'"') { need_quote = true; break; }
+        if (!need_quote) { for (wchar_t *p = a; *p; p++) PUT(*p); free(a); continue; }
+        PUT(L'"');
+        for (wchar_t *p = a; ; p++) {
+            unsigned backslashes = 0;
+            while (*p == L'\\') { backslashes++; p++; }
+            if (*p == 0) { for (unsigned b = 0; b < backslashes * 2; b++) PUT(L'\\'); break; }
+            if (*p == L'"') { for (unsigned b = 0; b < backslashes * 2 + 1; b++) PUT(L'\\'); PUT(L'"'); }
+            else { for (unsigned b = 0; b < backslashes; b++) PUT(L'\\'); PUT(*p); }
+        }
+        PUT(L'"');
+        free(a);
+    }
+    PUT(0);
+#undef PUT
+    return buf;
+}
+
+/* Build a CREATE_UNICODE_ENVIRONMENT block: "K=V\0K=V\0\0" */
+static wchar_t*
+build_env_block(PyObject *env_p) {
+    Py_ssize_t n = PyTuple_GET_SIZE(env_p);
+    size_t cap = 256, len = 0;
+    wchar_t *buf = malloc(cap * sizeof(wchar_t));
+    if (!buf) return NULL;
+    for (Py_ssize_t i = 0; i < n; i++) {
+        const char *e8 = PyUnicode_AsUTF8(PyTuple_GET_ITEM(env_p, i));
+        wchar_t *e = utf8_to_wide(e8 ? e8 : "");
+        if (!e) { free(buf); return NULL; }
+        size_t l = wcslen(e) + 1;  /* include NUL */
+        while (len + l + 1 >= cap) { cap *= 2; wchar_t *nb = realloc(buf, cap * sizeof(wchar_t)); if (!nb) { free(e); free(buf); return NULL; } buf = nb; }
+        memcpy(buf + len, e, l * sizeof(wchar_t));
+        len += l;
+        free(e);
+    }
+    buf[len] = 0;  /* final terminating NUL after the last entry */
+    return buf;
+}
+
+/* open_pty(cols, rows, use_pty=True, resize_with_escape=False) -> (read_fd, write_fd, pty_id)
+ *
+ * use_pty True gives a real pseudoconsole (for shells). use_pty False gives a
+ * plain pipe pair with no console (for kittens): the child is a VT program, so
+ * a pseudoconsole only gets in the way. Pipes send the child's escape codes to
+ * kitty untouched (the synchronized-update sequence survives, so no flicker) and
+ * give kitty EOF the moment the child exits, so its window closes.
+ * resize_with_escape (pipe mode only) makes resizes write ESC[8;rows;colst to the
+ * child's stdin, for children running behind the Cygwin pty bridge. */
+static PyObject*
+open_pty(PyObject *self UNUSED, PyObject *args) {
+    int cols = 80, rows = 24, use_pty = 1, resize_with_escape = 0;
+    if (!PyArg_ParseTuple(args, "ii|pp", &cols, &rows, &use_pty, &resize_with_escape)) return NULL;
+    if (use_pty && !load_conpty()) { PyErr_SetString(PyExc_RuntimeError, "ConPTY unavailable (needs Windows 10 1809+)"); return NULL; }
+    // Prepare the process, once, so ConPTY children attach to the pseudoconsole:
+    //  1. Detach any inherited console (kitty is a GUI app; a console would be
+    //     inherited by the child instead of the pty).
+    //  2. Mark our standard handles non-inheritable. When kitty is launched with
+    //     redirected stdio (files/pipes), those handles are inheritable and the
+    //     ConPTY child picks them up as its stdio instead of the pty, so the
+    //     child's real output bypasses us entirely. Clearing the inherit flag
+    //     forces the child onto the pseudoconsole.
+    static bool spawn_env_prepared = false;
+    if (!spawn_env_prepared) {
+        spawn_env_prepared = true;
+        if (GetConsoleWindow()) FreeConsole();
+        const DWORD std_ids[3] = { STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE };
+        for (int i = 0; i < 3; i++) {
+            HANDLE h = GetStdHandle(std_ids[i]);
+            if (h && h != INVALID_HANDLE_VALUE) SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+        }
+    }
+    int id = -1;
+    for (int i = 0; i < MAX_PTYS; i++) if (!ptys[i].in_use) { id = i; break; }
+    if (id < 0) { PyErr_SetString(PyExc_RuntimeError, "too many open ptys"); return NULL; }
+
+    HANDLE in_read = NULL, in_write = NULL, out_read = NULL, out_write = NULL;
+    HPCON hpc = NULL;
+    HANDLE child_stdin = NULL, child_stdout = NULL;
+    if (use_pty) {
+        if (!CreatePipe(&in_read, &in_write, NULL, 0) || !CreatePipe(&out_read, &out_write, NULL, 0)) {
+            PyErr_SetFromWindowsErr(0);
+            if (in_read) CloseHandle(in_read); if (in_write) CloseHandle(in_write);
+            if (out_read) CloseHandle(out_read); if (out_write) CloseHandle(out_write);
+            return NULL;
+        }
+        COORD size = { (SHORT)cols, (SHORT)rows };
+        HRESULT hr = pCreatePseudoConsole(size, in_read, out_write, 0, &hpc);
+        CloseHandle(in_read); CloseHandle(out_write);  /* owned by the console now */
+        if (FAILED(hr)) {
+            CloseHandle(in_write); CloseHandle(out_read);
+            PyErr_Format(PyExc_OSError, "CreatePseudoConsole failed: 0x%08lx", (unsigned long)hr);
+            return NULL;
+        }
+    } else {
+        /* Pipe mode: the child's ends must be inheritable, kitty's ends must not,
+         * so the child does not keep kitty's read/write handles alive (that would
+         * defeat the EOF-on-exit that closes the window). */
+        SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+        if (!CreatePipe(&in_read, &in_write, &sa, 0) || !CreatePipe(&out_read, &out_write, &sa, 0)) {
+            PyErr_SetFromWindowsErr(0);
+            if (in_read) CloseHandle(in_read); if (in_write) CloseHandle(in_write);
+            if (out_read) CloseHandle(out_read); if (out_write) CloseHandle(out_write);
+            return NULL;
+        }
+        SetHandleInformation(in_write, HANDLE_FLAG_INHERIT, 0);
+        SetHandleInformation(out_read, HANDLE_FLAG_INHERIT, 0);
+        child_stdin = in_read; child_stdout = out_write;  /* spawn passes these as the child stdio */
+    }
+    int read_fd  = _open_osfhandle((intptr_t)out_read, _O_RDONLY | _O_BINARY);
+    int write_fd = _open_osfhandle((intptr_t)in_write, _O_WRONLY | _O_BINARY);
+    ptys[id].in_use = true; ptys[id].hpc = hpc;
+    ptys[id].resize_with_escape = !use_pty && resize_with_escape;
+    ptys[id].in_write = in_write; ptys[id].out_read = out_read; ptys[id].process = NULL;
+    ptys[id].child_stdin = child_stdin; ptys[id].child_stdout = child_stdout;
+    ptys[id].read_fd = read_fd; ptys[id].write_fd = write_fd;
+    return Py_BuildValue("iii", read_fd, write_fd, id);
+}
+
+/* Fires on a thread-pool thread when a spawned child exits. Windows has no
+ * SIGCHLD, so this stands in for it. It wakes the child monitor's io_loop, which
+ * then reaps the child (see windows_pty_child_exited) and closes its window. */
+static VOID CALLBACK
+child_exit_callback(PVOID ctx UNUSED, BOOLEAN timed_out UNUSED) {
+    extern void windows_wakeup_child_monitor(void);
+    windows_wakeup_child_monitor();
+}
+
+/* Windows has no process group for a terminal to hang up, and TerminateProcess
+ * ends one process rather than a tree. child-monitor's hangup() therefore only
+ * ever reached kitty's direct child, which is enough for a ConPTY shell but not
+ * for one started through the Cygwin pty bridge: there the tree is kitty ->
+ * bridge python -> shell, and killing the bridge left the shell running. Worse,
+ * TerminateProcess gives the bridge no chance to run its own SIGTERM handler,
+ * so its "pass the hangup on to the shell" path never fired either.
+ *
+ * Every orphan holds a Cygwin pty and Cygwin has 128 of them, so closed windows
+ * accumulated until pty.fork() in the bridge began failing with "out of pty
+ * devices" and no msys shell would start at all.
+ *
+ * A job object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE says on Windows what
+ * SIGHUP to a process group says on Unix: when kitty lets go of the job, the
+ * child and everything it started go too. Closing the handle is what kills, so
+ * it holds even when kitty dies without running any cleanup of its own. */
+static HANDLE
+create_kill_on_close_job(void) {
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    if (!job) return NULL;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li;
+    ZeroMemory(&li, sizeof li);
+    li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li)) {
+        CloseHandle(job);
+        return NULL;
+    }
+    return job;
+}
+
+/* spawn(pty_id, exe, cwd, argv_tuple, env_tuple) -> pid */
+static PyObject*
+spawn(PyObject *self UNUSED, PyObject *args) {
+    int id; const char *exe, *cwd; PyObject *argv_p, *env_p;
+    if (!PyArg_ParseTuple(args, "issO!O!", &id, &exe, &cwd, &PyTuple_Type, &argv_p, &PyTuple_Type, &env_p)) return NULL;
+    if (id < 0 || id >= MAX_PTYS || !ptys[id].in_use) { PyErr_SetString(PyExc_ValueError, "invalid pty id"); return NULL; }
+
+    wchar_t *cmdline = build_command_line(argv_p);
+    wchar_t *envblock = build_env_block(env_p);
+    wchar_t *wcwd = utf8_to_wide(cwd);
+    wchar_t *wexe = (exe && exe[0]) ? utf8_to_wide(exe) : NULL;
+    if (!cmdline || !envblock) { free(cmdline); free(envblock); free(wcwd); free(wexe); return PyErr_NoMemory(); }
+
+    const bool pipe_mode = ptys[id].hpc == NULL;
+    STARTUPINFOEXW si; ZeroMemory(&si, sizeof si); si.StartupInfo.cb = sizeof si;
+    SIZE_T bytes = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &bytes);
+    si.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, bytes);
+    PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof pi);
+    HANDLE inherit_list[2] = { ptys[id].child_stdin, ptys[id].child_stdout };
+    BOOL ok = FALSE;
+    if (si.lpAttributeList && InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &bytes)) {
+        if (pipe_mode) {
+            // Kitten: hand the child exactly its two stdio pipe ends and nothing
+            // else. STARTF_USESTDHANDLES wires them as stdin/stdout, the handle
+            // list limits inheritance to just those, and CREATE_NO_WINDOW keeps
+            // the console-subsystem launcher from popping a console window.
+            if (UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit_list, sizeof inherit_list, NULL, NULL)) {
+                si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+                si.StartupInfo.hStdInput = ptys[id].child_stdin;
+                si.StartupInfo.hStdOutput = ptys[id].child_stdout;
+                si.StartupInfo.hStdError = ptys[id].child_stdout;
+                // CREATE_SUSPENDED so the child joins the job below before it
+                // runs, and so cannot start anything outside it in the meantime.
+                ok = CreateProcessW(wexe, cmdline, NULL, NULL, TRUE,
+                                    EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | CREATE_SUSPENDED,
+                                    envblock, wcwd, &si.StartupInfo, &pi);
+            }
+        } else if (UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, ptys[id].hpc, sizeof(HPCON), NULL, NULL)) {
+            // Windows propagates the parent's standard handles to a child when
+            // STARTF_USESTDHANDLES is not set, and this overrides the pseudoconsole:
+            // if kitty's stdio is redirected (files/pipes) the child writes there
+            // instead of the pty. Blank our std handles across the spawn so the
+            // pseudoconsole is the only stdio the child can attach to, then restore.
+            HANDLE saved[3] = { GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE) };
+            SetStdHandle(STD_INPUT_HANDLE, NULL);
+            SetStdHandle(STD_OUTPUT_HANDLE, NULL);
+            SetStdHandle(STD_ERROR_HANDLE, NULL);
+            ok = CreateProcessW(wexe, cmdline, NULL, NULL, FALSE,
+                                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
+                                envblock, wcwd, &si.StartupInfo, &pi);
+            SetStdHandle(STD_INPUT_HANDLE, saved[0]);
+            SetStdHandle(STD_OUTPUT_HANDLE, saved[1]);
+            SetStdHandle(STD_ERROR_HANDLE, saved[2]);
+        }
+    }
+    DWORD err = ok ? 0 : GetLastError();
+    if (si.lpAttributeList) { DeleteProcThreadAttributeList(si.lpAttributeList); HeapFree(GetProcessHeap(), 0, si.lpAttributeList); }
+    // The child now holds its stdio ends; drop ours so the pipe reports EOF when
+    // the child exits (this is how kitty learns a kitten window should close).
+    if (ptys[id].child_stdin) { CloseHandle(ptys[id].child_stdin); ptys[id].child_stdin = NULL; }
+    if (ptys[id].child_stdout) { CloseHandle(ptys[id].child_stdout); ptys[id].child_stdout = NULL; }
+    free(cmdline); free(envblock); free(wcwd); free(wexe);
+    if (!ok) { PyErr_SetFromWindowsErr((int)err); return NULL; }
+
+    /* Put the child in a job before letting it run, so anything it starts is in
+     * the job too. Resume whatever happens here: a child left suspended never
+     * runs at all, which is a worse failure than an un-jobbed one that leaks. */
+    ptys[id].job = create_kill_on_close_job();
+    if (ptys[id].job && !AssignProcessToJobObject(ptys[id].job, pi.hProcess)) {
+        CloseHandle(ptys[id].job);
+        ptys[id].job = NULL;
+    }
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    ptys[id].process = pi.hProcess;   /* kept for reaping */
+    /* ConPTY keeps the output pipe open after the child exits (no EOF), so kitty
+     * cannot learn a shell exited by watching the pipe. Register a one-shot wait
+     * on the process instead. The callback wakes the io_loop to reap it. */
+    ptys[id].wait_handle = NULL;
+    RegisterWaitForSingleObject(&ptys[id].wait_handle, pi.hProcess, child_exit_callback, NULL, INFINITE, WT_EXECUTEONLYONCE);
+    return PyLong_FromUnsignedLong(GetProcessId(pi.hProcess));
+}
+
+/* The child-monitor writes to a child using its single "fd", which on Windows is
+ * the pty's read side. Map it to the pty's write side (the ConPTY input pipe). */
+int
+windows_pty_write_fd_for(int read_fd) {
+    for (int i = 0; i < MAX_PTYS; i++) if (ptys[i].in_use && ptys[i].read_fd == read_fd) return ptys[i].write_fd;
+    return -1;
+}
+
+/* True if the child on the pty whose read side is read_fd has exited, filling in
+ * *status with its exit code. Uses the stored process HANDLE (not OpenProcess by
+ * pid) so a reused pid can never be mistaken for the still-live child. This is
+ * the Windows stand-in for waitpid(), called by the io_loop to reap children.
+ *
+ * Only ConPTY ptys (hpc != NULL) are reaped this way. A pseudoconsole keeps its
+ * output pipe open after the child exits, so there is no EOF to close a shell's
+ * window. Pipe-mode kittens are left alone. Their pipe does EOF on exit, and that
+ * path drains the child's final output (its result) before closing. Reaping them
+ * here would race ahead of that drain and lose the result. */
+bool
+windows_pty_child_exited(int read_fd, int *status) {
+    for (int i = 0; i < MAX_PTYS; i++) {
+        if (ptys[i].in_use && ptys[i].read_fd == read_fd) {
+            if (!ptys[i].process || !ptys[i].hpc) return false;
+            if (WaitForSingleObject(ptys[i].process, 0) != WAIT_OBJECT_0) return false;
+            DWORD code = 0; GetExitCodeProcess(ptys[i].process, &code);
+            if (status) *status = (int)(code & 0xff);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Release the pty whose read side is read_fd, when the child-monitor removes the
+ * child. Without this the entry leaks: its stale read_fd later shadows a child
+ * that reuses the fd number, so windows_pty_write_fd_for hands back a dead write
+ * fd and that child receives no input. Also closes the write (input) fd, which
+ * nothing else owns. The caller closes read_fd itself. */
+void
+windows_pty_close_for(int read_fd) {
+    for (int i = 0; i < MAX_PTYS; i++) {
+        if (ptys[i].in_use && ptys[i].read_fd == read_fd) {
+            /* Cancel the exit wait (waiting for any in-flight callback) before the
+             * process handle it watches is closed. */
+            if (ptys[i].wait_handle) UnregisterWaitEx(ptys[i].wait_handle, INVALID_HANDLE_VALUE);
+            if (pClosePseudoConsole && ptys[i].hpc) pClosePseudoConsole(ptys[i].hpc);
+            /* Dropping the job kills the child and everything it started. This
+             * is what stops a bridge-launched shell outliving its window and
+             * holding a Cygwin pty for the rest of the session. */
+            if (ptys[i].job) CloseHandle(ptys[i].job);
+            if (ptys[i].process) CloseHandle(ptys[i].process);
+            if (ptys[i].write_fd >= 0) _close(ptys[i].write_fd);
+            memset(&ptys[i], 0, sizeof(PtyEntry));
+            return;
+        }
+    }
+}
+
+/* Apply a resize to one pty entry: pseudoconsole resize in ConPTY mode, or the
+ * ESC[8;rows;colst control write consumed by the Cygwin pty bridge in pipe mode. */
+static void
+apply_pty_resize(PtyEntry *e, int cols, int rows) {
+    if (cols <= 0 || rows <= 0) return;
+    if (e->hpc) {
+        if (pResizePseudoConsole) {
+            COORD size = { (SHORT)cols, (SHORT)rows };
+            pResizePseudoConsole(e->hpc, size);
+        }
+    } else if (e->resize_with_escape && e->write_fd >= 0) {
+        char buf[32];
+        int n = snprintf(buf, sizeof buf, "\x1b[8;%d;%dt", rows, cols);
+        if (n > 0) _write(e->write_fd, buf, (unsigned)n);
+    }
+    /* plain pipe-mode kittens have nothing to resize */
+}
+
+/* Resize the pty whose read side is read_fd. Used by the child-monitor's
+ * TIOCSWINSZ path (there is no ioctl on Windows). */
+int
+windows_pty_resize_for(int read_fd, int cols, int rows) {
+    for (int i = 0; i < MAX_PTYS; i++) {
+        if (ptys[i].in_use && ptys[i].read_fd == read_fd) {
+            apply_pty_resize(&ptys[i], cols, rows);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* resize_pty(pty_id, cols, rows) */
+static PyObject*
+resize_pty(PyObject *self UNUSED, PyObject *args) {
+    int id, cols, rows;
+    if (!PyArg_ParseTuple(args, "iii", &id, &cols, &rows)) return NULL;
+    if (id < 0 || id >= MAX_PTYS || !ptys[id].in_use) { PyErr_SetString(PyExc_ValueError, "invalid pty id"); return NULL; }
+    apply_pty_resize(&ptys[id], cols, rows);
+    Py_RETURN_NONE;
+}
+
+/* close_pty(pty_id) */
+static PyObject*
+close_pty(PyObject *self UNUSED, PyObject *args) {
+    int id;
+    if (!PyArg_ParseTuple(args, "i", &id)) return NULL;
+    if (id < 0 || id >= MAX_PTYS || !ptys[id].in_use) Py_RETURN_NONE;
+    if (ptys[id].wait_handle) UnregisterWaitEx(ptys[id].wait_handle, INVALID_HANDLE_VALUE);
+    if (pClosePseudoConsole && ptys[id].hpc) pClosePseudoConsole(ptys[id].hpc);
+    if (ptys[id].process) CloseHandle(ptys[id].process);
+    /* read_fd/write_fd own out_read/in_write via _open_osfhandle; the fd owner
+     * closes them with _close(). */
+    memset(&ptys[id], 0, sizeof(PtyEntry));
+    Py_RETURN_NONE;
+}
+
+static PyMethodDef module_methods[] = {
+    METHODB(open_pty, METH_VARARGS),
+    METHODB(spawn, METH_VARARGS),
+    METHODB(resize_pty, METH_VARARGS),
+    METHODB(close_pty, METH_VARARGS),
+    {NULL, NULL, 0, NULL}        /* Sentinel */
+};
 
 bool
 init_child(PyObject *module) {
@@ -216,3 +684,5 @@ init_child(PyObject *module) {
     if (PyModule_AddFunctions(module, module_methods) != 0) return false;
     return true;
 }
+
+#endif  /* _WIN32 */

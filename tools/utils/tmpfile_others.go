@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !windows
 
 // License: GPLv3 Copyright: 2023, Kovid Goyal, <kovid at kovidgoyal.net>
 

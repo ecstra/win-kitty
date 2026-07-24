@@ -22,7 +22,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/fzf"
 	"github.com/kovidgoyal/kitty/tools/ignorefiles"
 	"github.com/kovidgoyal/kitty/tools/utils"
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -159,7 +158,7 @@ type sortable_dir_entry struct {
 	name     string
 	ftype    fs.FileMode
 	sort_key []byte
-	buf      [unix.NAME_MAX + 1]byte
+	buf      [255 + 1]byte
 }
 
 const SymlinkToDir = 1

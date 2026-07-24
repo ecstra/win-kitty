@@ -277,6 +277,47 @@ increment_bg_image_idx(size_t idx, int delta) {
     return global_state.background_images.count ? global_state.background_images.count - 1 : 0;
 }
 
+#ifdef _WIN32
+// With background_blur on, the acrylic material in glfw/win32_acrylic.c is the
+// background: it carries the tint, the opacity, the blur and the noise, and it
+// sits underneath the terminal in the composition tree. kitty must not paint
+// the default background as well, or the tint lands twice and the window reads
+// as solid. Returning zero here makes the default background cells fully
+// transparent so the material shows through. Cells with any other background
+// colour are unaffected, because the shader only applies this alpha to cells
+// matching a configured background colour.
+//
+// Without blur there is no material and kitty paints its own background, but
+// then Windows Terminal is still the comparison: it renders through WinUI's
+// AcrylicBrush, which never uses the configured opacity literally.
+// GetTintOpacityModifier (microsoft-ui-xaml AcrylicBrush.cpp) scales it by a
+// factor derived from the tint's HSV value -- 0.45 at white, 0.90 at mid grey,
+// 0.85 at black, interpolated between and cancelling out as saturation rises.
+// For a background as dark as #1e1e1e that is ~0.862, so WT's "80%" is really
+// ~69%. Without the same discount kitty is visibly the darker of the two at an
+// identical setting.
+static float
+platform_bg_alpha(float alpha) {
+    const color_type bg = OPT(background);
+    if (alpha < 1.f && OPT(background_blur) > 0) return 0.f;
+    const float r = ((bg >> 16) & 0xFF) / 255.f, g = ((bg >> 8) & 0xFF) / 255.f, b = (bg & 0xFF) / 255.f;
+    const float maxc = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    const float minc = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    const float v = maxc;                                          // HSV value
+    const float s = maxc == 0.f ? 0.f : (maxc - minc) / maxc;      // HSV saturation
+    const float mid_point = 0.5f, mid_point_max = 0.9f;
+    if (v == mid_point) return alpha * mid_point_max;
+    const float lowest_max = v > mid_point ? 0.45f : 0.85f;
+    const float max_deviation = v > mid_point ? 1.f - mid_point : mid_point;
+    float suppression = mid_point_max - lowest_max;
+    if (s > 0.f) { const float k = 1.f - s * 2.f; suppression *= k > 0.f ? k : 0.f; }
+    const float deviation = (v > mid_point ? v - mid_point : mid_point - v) / max_deviation;
+    return alpha * (mid_point_max - suppression * deviation);
+}
+#else
+#define platform_bg_alpha(x) (x)
+#endif
+
 OSWindow*
 add_os_window(void) {
     WITH_OS_WINDOW_REFS
@@ -285,7 +326,7 @@ add_os_window(void) {
     zero_at_ptr(ans);
     ans->id = ++global_state.os_window_id_counter;
     ans->tab_bar_render_data.vao_idx = create_cell_vao();
-    ans->background_opacity.alpha = OPT(background_opacity);
+    ans->background_opacity.alpha = platform_bg_alpha(OPT(background_opacity));
     ans->created_at = monotonic();
     END_WITH_OS_WINDOW_REFS
     return ans;
@@ -686,6 +727,23 @@ pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
             r->bottom = r->top - gl_size(r->px.bottom - r->px.top, osw->viewport_height);
             r->color = color; r->border_type = border_type; r->horizontal = horizontal;
         }
+#ifdef _WIN32
+        // Fill the custom-frame title-bar strip with the window background at the
+        // same opacity as the cells, so the title bar matches the body exactly.
+        if (!(OPT(hide_window_decorations) & 1)) {
+            long strip = pt_to_px_for_os_window(30.0, osw);  // ~40px title bar
+            if (strip > 0) {
+                BorderRect *r = br->rect_buf + br->num_border_rects;
+                r->px.left = 0; r->px.top = 0; r->px.right = osw->viewport_width; r->px.bottom = strip;
+                r->left = gl_pos_x(r->px.left, osw->viewport_width);
+                r->top = gl_pos_y(r->px.top, osw->viewport_height);
+                r->right = r->left + gl_size(r->px.right - r->px.left, osw->viewport_width);
+                r->bottom = r->top - gl_size(r->px.bottom - r->px.top, osw->viewport_height);
+                r->color = 0 /* default_bg */; r->border_type = 0; r->horizontal = 1;
+                br->num_border_rects++;
+            }
+        }
+#endif
     END_WITH_TAB
     Py_RETURN_NONE;
 }
@@ -766,6 +824,19 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
         central->left = 0; central->top = 0; central->right = os_window->viewport_width;
         central->bottom = os_window->viewport_height;
     }
+#ifdef _WIN32
+    // Reserve a title-bar strip at the very top for the win32 custom frame. The
+    // strip shows the acrylic window background and hosts the caption buttons;
+    // the terminal (and a top tab bar) sit below it. ~36 logical px = 27pt.
+    if (!(OPT(hide_window_decorations) & 1)) {
+        long strip = pt_to_px_for_os_window(30.0, os_window);  // ~40px title bar
+        if (strip > (long)os_window->viewport_height) strip = os_window->viewport_height;
+        if (tab_bar->bottom > tab_bar->top && OPT(tab_bar_edge) == TOP_EDGE) {
+            tab_bar->top += strip; tab_bar->bottom += strip;
+        }
+        central->top = MIN(central->top + strip, central->bottom);
+    }
+#endif
 }
 
 void
@@ -1150,7 +1221,7 @@ PYWRAP1(change_background_opacity) {
     float opacity;
     PA("Kf", &os_window_id, &opacity);
     WITH_OS_WINDOW(os_window_id)
-        os_window->background_opacity.alpha = opacity;
+        os_window->background_opacity.alpha = platform_bg_alpha(opacity);
         if (!os_window->redraw_count) os_window->redraw_count++;
         set_os_window_chrome(os_window);  // on macOS titlebar opacity can depend on background_opacity
         Py_RETURN_TRUE;
@@ -1365,7 +1436,7 @@ PYWRAP0(apply_options_update) {
     for (size_t o = 0; o < global_state.num_os_windows; o++) {
         OSWindow *os_window = global_state.os_windows + o;
         get_platform_dependent_config_values(os_window->handle);
-        os_window->background_opacity.alpha = OPT(background_opacity);
+        os_window->background_opacity.alpha = platform_bg_alpha(OPT(background_opacity));
         set_os_window_chrome(os_window);
         if (!os_window->redraw_count) os_window->redraw_count++;
         for (size_t t = 0; t < os_window->num_tabs; t++) {

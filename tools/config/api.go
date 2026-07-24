@@ -22,7 +22,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/utils"
 
 	"github.com/shirou/gopsutil/v4/process"
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -79,7 +78,10 @@ func geninclude(path string) (string, error) {
 	cmd := exec.Command(path)
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "KITTY_OS="+kitty_os())
-	if strings.HasSuffix(path, ".py") && unix.Access(path, unix.X_OK) != nil {
+	// Windows has no execute bit for Access to report on, so it answers that a
+	// .py is runnable and exec.Command on the path itself then fails unless the
+	// extension happens to be registered. Always route it to an interpreter.
+	if strings.HasSuffix(path, ".py") && (runtime.GOOS == "windows" || utils.Access(path, utils.AccessExec) != nil) {
 		if utils.KittyExe() == "" || strings.HasPrefix(path, ":") {
 			cmd = exec.Command("python", path)
 		} else {
@@ -356,7 +358,8 @@ func is_kitty_gui_cmdline(exe string, cmd ...string) bool {
 	if len(cmd) == 0 {
 		return false
 	}
-	if filepath.Base(exe) != "kitty" {
+	// On Windows the launcher is kitty.exe; strip the suffix so it matches too.
+	if strings.TrimSuffix(filepath.Base(exe), ".exe") != "kitty" {
 		return false
 	}
 	if len(cmd) == 1 {
@@ -442,7 +445,7 @@ func ReloadConfigInKitty(in_parent_only bool) error {
 			if p, err := process.NewProcess(int32(pid)); err == nil {
 				if exe, eerr := p.Exe(); eerr == nil {
 					if c, err := p.CmdlineSlice(); err == nil && is_kitty_gui_cmdline(exe, c...) {
-						return p.SendSignal(unix.SIGUSR1)
+						return send_reload_signal(p)
 					}
 				}
 			}
@@ -461,7 +464,7 @@ func ReloadConfigInKitty(in_parent_only bool) error {
 					if p, err := process.NewProcess(int32(pid)); err == nil {
 						if cmdline, err := p.CmdlineSlice(); err == nil {
 							if exe, err := p.Exe(); err == nil && is_kitty_gui_cmdline(exe, cmdline...) {
-								_ = p.SendSignal(unix.SIGUSR1)
+								_ = send_reload_signal(p)
 							}
 						}
 					}
@@ -482,7 +485,7 @@ func ReadKittyConfig(line_handler func(key, val string) error, override_effectiv
 	}
 	if _, err := strconv.Atoi(kp); err == nil && kitty_conf_path == "" {
 		effective_config_path := filepath.Join(utils.CacheDir(), "effective-config", kp)
-		if unix.Access(effective_config_path, unix.R_OK) == nil {
+		if utils.Access(effective_config_path, utils.AccessRead) == nil {
 			kitty_conf_path = effective_config_path
 		}
 	}

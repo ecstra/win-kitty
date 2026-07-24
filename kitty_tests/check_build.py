@@ -139,11 +139,16 @@ class TestBuild(BaseTest):
             self.assertIn('dictation forwarding probe passed', cp.stdout)
 
     def test_glfw_modules(self) -> None:
-        from kitty.constants import glfw_path, is_macos
+        from kitty.constants import glfw_path, is_macos, is_windows
         linux_backends = ['x11']
         if not self.is_ci:
             linux_backends.append('wayland')
-        modules = ['cocoa'] if is_macos else linux_backends
+        if is_macos:
+            modules = ['cocoa']
+        elif is_windows:
+            modules = ['win32']
+        else:
+            modules = linux_backends
         for name in modules:
             path = glfw_path(name)
             self.assertTrue(os.path.isfile(path), f'{path} is not a file')
@@ -157,7 +162,7 @@ class TestBuild(BaseTest):
         self.assertGreater(len(names), 8)
 
     def test_filesystem_locations(self) -> None:
-        from kitty.constants import fonts_dir, local_docs, logo_png_file, shell_integration_dir, terminfo_dir
+        from kitty.constants import fonts_dir, is_windows, local_docs, logo_png_file, shell_integration_dir, terminfo_dir
         zsh = os.path.join(shell_integration_dir, 'zsh')
         self.assertTrue(os.path.isdir(terminfo_dir), f'Terminfo dir: {terminfo_dir}')
         self.assertTrue(os.path.exists(logo_png_file), f'Logo file: {logo_png_file}')
@@ -166,6 +171,11 @@ class TestBuild(BaseTest):
         self.assertTrue(os.path.exists(nsfm), f'Logo file: {nsfm}')
 
         def is_executable(x):
+            if is_windows:
+                # Windows has no execute permission bit. What these two files
+                # need is to exist and be readable, since the ssh kitten copies
+                # them to the remote host, where the mode is set on arrival.
+                return os.access(x, os.R_OK)
             mode = os.stat(x).st_mode
             q = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
             return mode & q == q

@@ -316,9 +316,19 @@ set_command_failed_response(const char *code, const char *fmt, ...) {
 static bool
 mmap_img_file(GraphicsManager *self, int fd, size_t sz, off_t offset) {
     if (!sz) {
+#ifdef _WIN32
+        // fstat() reports st_size == 0 for these fds on Windows (they are opened
+        // with O_NONBLOCK), so ask the OS for the size directly, otherwise the image
+        // would map as zero bytes and fail to decode.
+        LARGE_INTEGER fsz;
+        HANDLE fh = (HANDLE)_get_osfhandle(fd);
+        if (fh == INVALID_HANDLE_VALUE || !GetFileSizeEx(fh, &fsz)) ABRT(EBADF, "Failed to get size of image file fd: %d", fd);
+        sz = (size_t)fsz.QuadPart;
+#else
         struct stat s;
         if (fstat(fd, &s) != 0) ABRT(EBADF, "Failed to fstat() the fd: %d file with error: [%d] %s", fd, errno, strerror(errno));
         sz = s.st_size;
+#endif
     }
     void *addr = mmap(0, sz, PROT_READ, MAP_SHARED, fd, offset);
     if (addr == MAP_FAILED) ABRT(EBADF, "Failed to map image file fd: %d at offset: %zd with size: %zu with error: [%d] %s", fd, offset, sz, errno, strerror(errno));
@@ -463,7 +473,7 @@ png_from_file_pointer(FILE *fp, const char *path_for_error_messages, uint8_t** d
 
 bool
 png_path_to_bitmap(const char* path, uint8_t** data, unsigned int* width, unsigned int* height, size_t* sz) {
-    FILE* fp = fopen(path, "r");
+    FILE* fp = fopen(path, "rb");  // binary: text mode corrupts PNG bytes on Windows
     if (fp == NULL) {
         log_error("The PNG image: %s could not be opened with error: %s", path, strerror(errno));
         return false;

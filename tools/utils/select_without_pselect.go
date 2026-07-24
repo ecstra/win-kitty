@@ -1,6 +1,6 @@
 // License: GPLv3 Copyright: 2022, Kovid Goyal, <kovid at kovidgoyal.net>
 
-//go:build !linux
+//go:build !linux && !windows
 
 package utils
 

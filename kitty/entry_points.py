@@ -118,6 +118,14 @@ namespaced_entry_points['open'] = open_urls
 namespaced_entry_points['kitten'] = run_kitten
 namespaced_entry_points['shebang'] = shebang
 
+if 'win32' in sys.platform:
+    # kitty +icat only execs `kitten icat`, and on Windows a kitten refuses to
+    # run outside kitty, so this is a dead end that still shows up in the list
+    # of choices when someone mistypes an entry point. Inside kitty the way to
+    # reach it is `kitten icat`, which is what the docs say everywhere.
+    entry_points.pop('icat', None)
+    namespaced_entry_points.pop('icat', None)
+
 
 def setup_openssl_environment(ext_dir: str) -> None:
     # Use our bundled CA certificates instead of the system ones, since

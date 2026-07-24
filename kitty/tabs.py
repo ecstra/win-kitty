@@ -444,6 +444,9 @@ class Tab:  # {{{
         self.mark_tab_bar_dirty()
         self.relayout_borders()
         self.current_layout.update_visibility(self.windows)
+        tm = self.tab_manager_ref()
+        if tm is not None and tm.active_tab is self:
+            get_boss().sync_tab_bar_and_chrome_bg(tm)
 
     def mark_tab_bar_dirty(self) -> None:
         tm = self.tab_manager_ref()
@@ -1306,6 +1309,10 @@ class TabManager:  # {{{
         else:
             self._active_tab_idx = idx
         set_active_tab(self.os_window_id, idx)
+        # Re-sync the strip/titlebar background to the newly active tab's window (they
+        # follow the terminal background), so a theme previewed in another tab does not
+        # linger after switching away from it.
+        get_boss().sync_tab_bar_and_chrome_bg(self)
 
     def layout_tab_bar(self) -> None:
         # set tab_bar_should_be_visible so that tab_bar.layout() gets correct dimensions
@@ -1637,7 +1644,7 @@ class TabManager:  # {{{
                         next_active_tab = left_tabs[max(0, min(idx_before_removal, len(left_tabs) - 1))]
                     else:
                         next_active_tab = self.tabs[max(0, min(self.active_tab_idx, len(self.tabs) - 1))]
-                self._set_active_tab(self.tabs.index(next_active_tab), store_in_history=False)
+                self._set_active_tab(self.tabs.index(next_active_tab), store_in_history=False)  # ty: ignore[invalid-argument-type]
         else:
             if len(self.tabs):
                 if active_tab_before_removal is None:

@@ -22,8 +22,31 @@ from functools import lru_cache, partial
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, Union, cast
 
-from glfw import glfw
-from glfw.glfw import ISA, BinaryArch, Command, CompileKey, CompilerType
+
+def ensure_utf8_mode() -> None:
+    """Restart the build in UTF-8 mode on Windows.
+
+    Windows still defaults to a legacy code page for text files, cp1252 on a
+    typical install, while everything this build reads is UTF-8: the docs, the
+    option definitions, the shell integration scripts. Reading any of them fails
+    outright, before a single file is compiled. Annotating every open() would be
+    a large change and an easy one to forget to extend, and UTF-8 mode cannot be
+    turned on once the interpreter has started, so start again with it set.
+    PYTHONUTF8 goes into the environment too, so the Python subprocesses the
+    build spawns inherit it rather than each needing the flag of its own.
+    """
+    if sys.platform != 'win32' or sys.flags.utf8_mode:
+        return
+    env = dict(os.environ)
+    env['PYTHONUTF8'] = '1'
+    cmd = [sys.executable, '-X', 'utf8', os.path.abspath(__file__)] + sys.argv[1:]
+    raise SystemExit(subprocess.run(cmd, env=env).returncode)
+
+
+ensure_utf8_mode()
+
+from glfw import glfw  # noqa: E402
+from glfw.glfw import ISA, BinaryArch, Command, CompileKey, CompilerType  # noqa: E402
 
 src_base = os.path.dirname(os.path.abspath(__file__))
 setattr(sys, 'running_from_setup', True)
@@ -182,6 +205,7 @@ class Options:
     debug: bool = False
     verbose: int = 0
     sanitize: bool = False
+    portable: bool = False
     prefix: str = './linux-package'
     dir_for_static_binaries: str = 'build/static'
     skip_code_generation: bool = False
@@ -425,6 +449,9 @@ def get_binary_arch(path: str) -> BinaryArch:
         bits = {0xfeedface: 32, 0xfeedfacf: 64}[s]
         cpu_type &= 0xff
         isa = {0x7: ISA.AMD64, 0xc: ISA.ARM64}[cpu_type]
+    elif sig[:2] == b'MZ':  # Windows PE/COFF (local port patch: assume host x86-64)
+        bits = 64
+        isa = ISA.AMD64
     else:
         raise SystemExit(f'Unknown binary format with signature: {sig[:4]!r}')
     return BinaryArch(bits=bits, isa=isa)
@@ -521,6 +548,8 @@ def init_env(
         cppflags.append('-DDEBUG_{}'.format(el.upper().replace('-', '_')))
     has_copy_file_range = test_compile(cc, src='#define _GNU_SOURCE 1\n#include <unistd.h>\nint main() { copy_file_range(1, NULL, 2, NULL, 0, 0); return 0; }')
     werror = '' if ignore_compiler_warnings else '-pedantic-errors -Werror'
+    if is_windows:
+        werror = ''
     sanitize_flag = ' '.join(sanitize_args)
     env_cflags = shlex.split(os.environ.get('CFLAGS', ''))
     env_cppflags = shlex.split(os.environ.get('CPPFLAGS', ''))
@@ -633,6 +662,11 @@ def init_env(
 def kitty_env(args: Options) -> Env:
     ans = env.copy()
     cflags = ans.cflags
+    if is_windows:
+        cflags.append('-mno-ms-bitfields')
+        cflags.extend(('-include', 'kitty/wincompat/win_prelude.h'))
+        cflags.append('-Ikitty/wincompat')
+        ans.cppflags.append('-DBASE64_STATIC_DEFINE')  # base64 is linked statically, not as a DLL
     cflags.append('-pthread')
     cppflags = ans.cppflags
     # We add 4000 to the primary version because vim turns on SGR mouse mode
@@ -668,6 +702,11 @@ def kitty_env(args: Options) -> Env:
         # Apple deprecated OpenGL in Mojave (10.14) silence the endless
         # warnings about it
         cppflags.append('-DGL_SILENCE_DEPRECATION')
+    elif is_windows:
+        platform_libs = []
+        for dep in ('cairo', 'fontconfig', 'freetype2'):
+            cflags.extend(pkg_config(dep, '--cflags-only-I'))
+            platform_libs.extend(pkg_config(dep, '--libs'))
     else:
         cflags.extend(pkg_config('cairo-fc', '--cflags-only-I'))
         platform_libs = []
@@ -675,12 +714,14 @@ def kitty_env(args: Options) -> Env:
     cflags.extend(pkg_config('harfbuzz', '--cflags-only-I'))
     platform_libs.extend(pkg_config('harfbuzz', '--libs'))
     pylib = get_python_flags(args, cflags)
-    gl_libs = ['-framework', 'OpenGL'] if is_macos else pkg_config('gl', '--libs')
+    gl_libs = ['-framework', 'OpenGL'] if is_macos else (['-lopengl32'] if is_windows else pkg_config('gl', '--libs'))
     libpng = pkg_config('libpng', '--libs')
     lcms2 = pkg_config('lcms2', '--libs')
     ans.ldpaths += pylib + platform_libs + gl_libs + libpng + lcms2 + libcrypto_ldflags + xxhash[1]
     if is_macos:
         ans.ldpaths.extend('-framework Cocoa'.split())
+    elif is_windows:
+        ans.ldpaths += '-lgdi32 -luser32 -ldwmapi -lws2_32 -lshell32 -limm32 -ladvapi32'.split()
     elif not is_openbsd:
         ans.ldpaths += ['-lrt']
         if '-ldl' not in ans.ldpaths:
@@ -703,11 +744,15 @@ def run_tool(cmd: Union[str, List[str]], desc: Optional[str] = None) -> None:
         # On Windows, it's generally safer to pass a single string to Popen with shell=True
         # for commands that might involve shell built-ins or complex paths.
         if isinstance(cmd, list):
-            wcmd_to_execute = shlex.join(cmd)
+            # Popen applies correct Windows quoting to an argv list. shell=True with
+            # shlex.join emits POSIX single quotes that cmd.exe keeps literally.
+            wcmd_to_execute = subprocess.list2cmdline(cmd)
+            print(desc or wcmd_to_execute)
+            p = subprocess.Popen(cmd)
         else:
             wcmd_to_execute = cmd
-        print(desc or wcmd_to_execute)
-        p = subprocess.Popen(wcmd_to_execute, shell=True)
+            print(desc or wcmd_to_execute)
+            p = subprocess.Popen(cmd, shell=True)
     else:
         # On Unix-like systems, passing a list is generally preferred for security and clarity.
         if isinstance(cmd, str):
@@ -776,20 +821,37 @@ def base64_defines(isa: ISA) -> List[str]:
 
 
 def get_source_specific_defines(env: Env, src: str) -> Tuple[str, List[str], Optional[List[str]]]:
-    if src == 'kitty/vt-parser-dump.c':
+    # Match on a forward slash key. find_c_files builds these paths with
+    # os.path.join, so on Windows they arrive as kitty\data-types.c and matched
+    # none of the literals below, which are all written with forward slashes.
+    # Every define here was therefore dropped silently on Windows: data-types.c
+    # lost WRAPPED_KITTENS and fell back to the "" in wincompat/win_prelude.h,
+    # which left wrapped_kitten_names() empty and sent every kitten down the
+    # Python path instead of running kitten.exe; screen.c lost its version
+    # numbers; fast-file-copy.c lost HAS_COPY_FILE_RANGE. The one case that did
+    # work, vt-parser-dump.c, only did so because it is appended as a hardcoded
+    # forward slash literal rather than through os.path.join.
+    key = src.replace(os.sep, '/')
+    if key == 'kitty/vt-parser-dump.c':
         return 'kitty/vt-parser.c', [], ['DUMP_COMMANDS']
-    if src == 'kitty/data-types.c':
+    if key == 'kitty/data-types.c':
         if not env.vcs_rev:
             env.vcs_rev = get_vcs_rev()
         return src, [], [f'KITTY_VCS_REV="{env.vcs_rev}"', f'WRAPPED_KITTENS="{wrapped_kittens()}"']
-    if src.startswith('3rdparty/base64/'):
+    if key.startswith('3rdparty/base64/'):
+        if is_windows:
+            # base64's own _xgetbv clashes with the mingw intrinsic pulled in by the
+            # force-included prelude. Disable its SIMD; the scalar codec is correct.
+            return src, ['3rdparty/base64',], [
+                'HAVE_AVX512=0', 'HAVE_AVX2=0', 'HAVE_AVX=0', 'HAVE_SSE42=0',
+                'HAVE_SSE41=0', 'HAVE_SSSE3=0', 'HAVE_SSE3=0', 'HAVE_NEON32=0', 'HAVE_NEON64=0']
         return src, ['3rdparty/base64',], base64_defines(env.binary_arch.isa)
-    if src == 'kitty/screen.c':
+    if key == 'kitty/screen.c':
         return src, [], [f'PRIMARY_VERSION={env.primary_version}', f'SECONDARY_VERSION={env.secondary_version}', f'XT_VERSION="{env.xt_version}"']
-    if src == 'kitty/fast-file-copy.c':
+    if key == 'kitty/fast-file-copy.c':
         return src, [], (['HAS_COPY_FILE_RANGE'] if env.has_copy_file_range else None)
     try:
-        return src, [], env.library_paths[src]
+        return src, [], env.library_paths[key]
     except KeyError:
         return src, [], None
 
@@ -876,6 +938,21 @@ def parallel_run(items: List[Command]) -> None:
         nonlocal failed
         if not workers:
             return
+        if is_windows:
+            # os.wait() is POSIX only; drive completion off the Popen objects.
+            while True:
+                for pid, (compile_cmd, w) in list(workers.items()):
+                    rc = w.poll() if w is not None else 0
+                    if rc is None:
+                        continue
+                    workers.pop(pid, None)
+                    if rc != 0:
+                        if failed is None:
+                            failed = compile_cmd
+                    elif compile_cmd.on_success is not None:
+                        compile_cmd.on_success()
+                    return
+                time.sleep(0.005)
         pid, s = os.wait()
         compile_cmd, w = workers.pop(pid, (None, None))
         if compile_cmd is None:
@@ -973,7 +1050,7 @@ def compile_c_extension(
 ) -> None:
     prefix = os.path.basename(module)
     objects = [
-        os.path.join(build_dir, f'{prefix}-{src.replace("/", "-")}.o')
+        os.path.join(build_dir, f'{prefix}-{src.replace(os.sep, "-").replace("/", "-")}.o')
         for src in sources
     ]
 
@@ -985,7 +1062,7 @@ def compile_c_extension(
             cppflags.extend(map(define, defines))
         cflags = get_source_specific_cflags(kenv, src)
         cmd = kenv.cc + ['-MMD'] + cppflags + [f'-I{x}' for x in include_paths] + cflags
-        cmd += ['-c', src] + ['-o', dest]
+        cmd += ['-c', src.replace(os.sep, '/')] + ['-o', dest]
         key = CompileKey(original_src, os.path.basename(dest))
         desc = f'Compiling {emphasis(desc_prefix + src)} ...'
         compilation_database.add_command(desc, cmd, partial(newer, dest, *dependecies_for(src, dest, headers)), key=key, keyfile=src)
@@ -1002,7 +1079,7 @@ def compile_c_extension(
     cmd = kenv.cc + linker_cflags + kenv.ldflags + objects + kenv.ldpaths + ['-o', dest]
 
     def on_success() -> None:
-        os.rename(dest, real_dest)
+        os.replace(dest, real_dest)  # os.rename won't overwrite an existing target on Windows
 
     compilation_database.add_command(desc, cmd, partial(newer, real_dest, *objects), on_success=on_success, key=LinkKey(f'{module}.so'))
     if is_macos and build_dsym:
@@ -1020,6 +1097,8 @@ def find_c_files() -> Tuple[List[str], List[str]]:
     } if is_macos else {
         'core_text.m', 'cocoa_window.m', 'macos_process_info.c'
     }
+    if is_windows:
+        exclude |= {'systemd.c', 'simd-string-128.c', 'simd-string-256.c'}
     for x in sorted(os.listdir(d)):
         ext = os.path.splitext(x)[1]
         if ext in ('.c', '.m') and os.path.basename(x) not in exclude:
@@ -1027,6 +1106,11 @@ def find_c_files() -> Tuple[List[str], List[str]]:
         elif ext == '.h':
             headers.append(os.path.join('kitty', x))
     ans.append('kitty/vt-parser-dump.c')
+    if is_windows:
+        ans.append('kitty/wincompat/wincompat.c')
+        ans.append('kitty/wincompat/dnd_stub.c')
+        ans.append('kitty/wincompat/simd_scalar.c')
+        ans.append('kitty/wincompat/win_process_info.c')
 
     # ringbuf
     ans.append('3rdparty/ringbuf/ringbuf.c')
@@ -1039,7 +1123,7 @@ def find_c_files() -> Tuple[List[str], List[str]]:
 
 
 def compile_glfw(compilation_database: CompilationDatabase, build_dsym: bool = False) -> None:
-    modules = 'cocoa' if is_macos else 'x11 wayland'
+    modules = 'cocoa' if is_macos else ('win32' if is_windows else 'x11 wayland')
     for module in modules.split():
         try:
             genv = glfw.init_env(env, pkg_config, pkg_version, at_least_version, test_compile, module)
@@ -1066,10 +1150,16 @@ def compile_glfw(compilation_database: CompilationDatabase, build_dsym: bool = F
 def kittens_env(args: Options) -> Env:
     kenv = env.copy()
     cflags = kenv.cflags
+    if is_windows:
+        cflags.append('-mno-ms-bitfields')
+        cflags.extend(('-include', 'kitty/wincompat/win_prelude.h'))
+        cflags.append('-Ikitty/wincompat')
     cflags.append('-pthread')
     cflags.append('-Ikitty')
     pylib = get_python_flags(args, cflags)
     kenv.ldpaths += pylib
+    if is_windows:
+        kenv.ldpaths += '-lws2_32 -ladvapi32'.split()
     return kenv
 
 
@@ -1221,6 +1311,20 @@ def build(args: Options, native_optimizations: bool = True, call_init: bool = Tr
     add_builtin_fonts(args)
 
 
+def copy_extensions_to_pyd() -> None:
+    # The build emits Unix .so names and Windows only imports .pyd, so the
+    # freshly linked extensions have to be copied before anything imports them.
+    # This runs as part of the build because the steps that follow it do import
+    # them: generating the Go files runs kitty itself. Without it a clean
+    # checkout fails there, and a tree carrying extensions from an earlier
+    # build quietly uses those instead of what was just built.
+    import shutil
+    for mod in ('kitty/fast_data_types', 'kitty/glfw-win32', 'kittens/transfer/rsync'):
+        src = os.path.join(src_base, f'{mod}.so')
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(src_base, f'{mod}.pyd'))
+
+
 def safe_makedirs(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
@@ -1235,6 +1339,14 @@ def update_go_generated_files(args: Options, kitty_exe: str) -> None:
 
     env = os.environ.copy()
     env['ASAN_OPTIONS'] = 'detect_leaks=0'
+    if is_windows:
+        # Callers build this from appname, and subprocess applies neither
+        # PATHEXT nor cwd resolution to an explicit executable: CreateProcess
+        # rejects a *relative* path spelled with forward slashes, which is what
+        # the hard-coded 'kitty/launcher' launcher_dir produces. Absolute it.
+        if not kitty_exe.lower().endswith('.exe'):
+            kitty_exe += '.exe'
+        kitty_exe = os.path.abspath(kitty_exe)
     cp = subprocess.run([kitty_exe, '+launch', os.path.join(src_base, 'gen/go_code.py')], stdout=subprocess.DEVNULL, env=env)
     if cp.returncode != 0:
         if os.environ.get('CI') == 'true' and cp.returncode < 0 and shutil.which('coredumpctl'):
@@ -1299,7 +1411,7 @@ def build_static_kittens(
         ld_flags.append('-s')
         ld_flags.append('-w')
     cmd += ['-ldflags', ' '.join(binary_data_flags + ld_flags)]
-    dest = os.path.join(destination_dir or launcher_dir, 'kitten')
+    dest = os.path.join(destination_dir or launcher_dir, 'kitten.exe' if is_windows else 'kitten')
     if for_platform:
         dest += f'-{for_platform[0]}-{for_platform[1]}'
     src = os.path.abspath('tools/cmd')
@@ -1370,7 +1482,11 @@ def read_bool_options(path: str = 'kitty/cli.py') -> Tuple[str, ...]:
 
 def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 'source') -> str:
     cflags = ['-Wall']
-    if not args.ignore_compiler_warnings:
+    if is_windows:
+        cflags.append('-mno-ms-bitfields')
+        cflags.extend(('-include', 'kitty/wincompat/win_prelude.h'))
+        cflags.append('-Ikitty/wincompat')
+    if not args.ignore_compiler_warnings and not is_windows:
         cflags.extend(('-pedantic-errors', '-Werror'))
     if c_std:
         cflags.append(c_std)
@@ -1402,18 +1518,24 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
         cppflags.append(f'-DSET_PYTHON_HOME="{ph}"')
         if not is_macos:
             ldflags += ['-Wl,--disable-new-dtags', f'-Wl,-rpath,$ORIGIN/../../{ph}/lib']
+    elif bundle_type == 'windows-dist':
+        # A relocatable Windows install tree that mirrors the source layout,
+        # with the python stdlib bundled at <install root>/pylib/lib/pythonX.Y
+        # (see packaging/windows/make-dist.sh).
+        cppflags.append('-DFROM_SOURCE')
+        cppflags.append('-DSET_PYTHON_HOME="pylib"')
     if bundle_type.startswith('macos-'):
         klp = '../Resources/kitty'
     elif bundle_type.startswith('linux-'):
         klp = '../{}/kitty'.format(args.libdir_name.strip('/'))
-    elif bundle_type == 'source':
+    elif bundle_type in ('source', 'windows-dist'):
         klp = os.path.relpath('.', launcher_dir)
     elif bundle_type == 'develop':
         # make the kitty executable relocatable
         klp = src_base
     else:
         raise SystemExit(f'Unknown bundle type: {bundle_type}')
-    cppflags.append(f'-DKITTY_LIB_PATH="{klp}"')
+    cppflags.append(f'-DKITTY_LIB_PATH="{klp.replace(os.sep, "/")}"')
     pylib = get_python_flags(args, cflags, for_main_executable=True)
     cppflags += shlex.split(os.environ.get('CPPFLAGS', ''))
     cflags += shlex.split(os.environ.get('CFLAGS', ''))
@@ -1432,23 +1554,53 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
     objects = []
     headers = glob.glob('kitty/launcher/*.h')
     cppflags.append('-DKITTY_VERSION="' + '.'.join(map(str, version)) + '"')
-    for src in ('kitty/launcher/main.c', 'kitty/launcher/single-instance.c', 'kitty/launcher/cmdline.c'):
+    launcher_sources = ['kitty/launcher/main.c', 'kitty/launcher/single-instance.c', 'kitty/launcher/cmdline.c']
+    if is_windows:
+        launcher_sources.append('kitty/wincompat/wincompat.c')
+    for src in launcher_sources:
         obj = os.path.join(build_dir, src.replace('/', '-').replace('.c', '.o'))
         objects.append(obj)
         cmd = env.cc + cppflags + cflags + ['-c', src, '-o', obj]
         key = CompileKey(src, os.path.basename(obj))
         args.compilation_database.add_command(
             f'Compiling {emphasis(src)} ...', cmd, partial(newer, obj, src, *dependecies_for(src, obj, headers)), key=key, keyfile=src)
-    dest = kitty_exe = os.path.join(launcher_dir, 'kitty')
+    if is_windows:
+        # Embed the kitty.ico resource so the .exe (and thus taskbar/alt-tab)
+        # carries the kitty icon, leaving the title bar itself icon-free.
+        rc = 'kitty/launcher/kitty.rc'
+        rc_obj = os.path.join(build_dir, 'kitty-launcher-kitty-rc.o')
+        objects.append(rc_obj)
+        rc_cmd = ['windres', rc, '-O', 'coff', '-o', rc_obj]
+        args.compilation_database.add_command(
+            f'Compiling {emphasis(rc)} ...', rc_cmd,
+            partial(newer, rc_obj, rc, 'kitty/launcher/kitty.ico'), key=CompileKey(rc, os.path.basename(rc_obj)), keyfile=rc)
+    dest = kitty_exe = os.path.join(launcher_dir, 'kitty.exe' if is_windows else 'kitty')
     link_targets.append(os.path.abspath(dest))
     desc = f'Linking {emphasis("launcher")} ...'
-    cmd = env.cc + ldflags + objects + libs + pylib + ['-o', dest]
+    win_libs = '-lws2_32 -ladvapi32 -luser32 -lshell32'.split() if is_windows else []
+    # A GUI terminal must be a GUI-subsystem binary. As a console-subsystem
+    # executable, Windows allocates a console for kitty and the ConPTY child
+    # attaches to it instead of staying headless inside the pseudoconsole.
+    win_subsystem = ['-mwindows'] if is_windows else []
+    cmd = env.cc + ldflags + objects + libs + pylib + win_libs + win_subsystem + ['-o', dest]
     args.compilation_database.add_command(desc, cmd, partial(newer, dest, *objects), key=LinkKey('kitty'))
+    if is_windows:
+        # A console-subsystem twin of the launcher. GUI-subsystem kitty.exe cannot
+        # attach to the pseudoconsole it is spawned into, so a Python kitten run
+        # through it has no console and no stdio. This console build attaches to
+        # the pty, giving kittens the console I/O their TUI loop needs.
+        console_dest = os.path.join(launcher_dir, 'kitty-console.exe')
+        link_targets.append(os.path.abspath(console_dest))
+        ccmd = env.cc + ldflags + objects + libs + pylib + win_libs + ['-o', console_dest]
+        args.compilation_database.add_command(
+            f'Linking {emphasis("console launcher")} ...', ccmd, partial(newer, console_dest, *objects), key=LinkKey('kitty-console'))
     if args.build_dsym and is_macos:
         desc = f'Linking dSYM {emphasis("launcher")} ...'
         dsym = f'{dest}.dSYM/Contents/Resources/DWARF/{os.path.basename(dest)}'
         args.compilation_database.add_command(desc, ['dsymutil', dest], partial(newer, dsym, dest), key=LinkKey(dsym), is_post_link=True)
     args.compilation_database.build_all()
+    if is_windows:
+        copy_extensions_to_pyd()
     return kitty_exe
 
 
@@ -2010,6 +2162,7 @@ def option_parser() -> argparse.ArgumentParser:  # {{{
                  'linux-freeze',
                  'macos-freeze',
                  'build-launcher',
+                 'build-windows-dist-launcher',
                  'build-frozen-launcher',
                  'build-frozen-tools',
                  'clean',
@@ -2036,6 +2189,13 @@ def option_parser() -> argparse.ArgumentParser:  # {{{
         default=Options.sanitize,
         action='store_true',
         help='Turn on sanitization to detect memory access errors and undefined behavior. This is a big performance hit.'
+    )
+    p.add_argument(
+        '--portable',
+        default=Options.portable,
+        action='store_true',
+        help='Build without -march=native, so the result runs on any CPU of the same architecture rather than only'
+        ' on the machine that built it. Use this for anything you intend to distribute.'
     )
     p.add_argument(
         '--prefix',
@@ -2291,7 +2451,7 @@ def do_build(args: Options) -> None:
     with CompilationDatabase(args.incremental) as cdb:
         args.compilation_database = cdb
         if args.action == 'build':
-            build(args)
+            build(args, native_optimizations=not args.portable)
             if is_macos:
                 create_minimal_macos_bundle(args, launcher_dir)
             else:
@@ -2307,6 +2467,9 @@ def do_build(args: Options) -> None:
             init_env_from_args(args, False)
             build_launcher(args, launcher_dir=launcher_dir)
             build_static_kittens(args, launcher_dir=launcher_dir)
+        elif args.action == 'build-windows-dist-launcher':
+            init_env_from_args(args, False)
+            build_launcher(args, launcher_dir=launcher_dir, bundle_type='windows-dist')
         elif args.action == 'build-frozen-launcher':
             init_env_from_args(args, False)
             bundle_type = ('macos' if is_macos else 'linux') + '-freeze'

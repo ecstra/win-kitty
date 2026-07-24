@@ -8,11 +8,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/emmansun/base64"
-	"golang.org/x/sys/unix"
+	"syscall"
 
 	"github.com/kovidgoyal/go-parallel"
 	"github.com/kovidgoyal/kitty"
@@ -56,7 +57,7 @@ type Loop struct {
 	seen_inband_resize                     bool
 	escape_code_parser                     wcswidth.EscapeCodeParser
 	keep_going                             bool
-	death_signal                           unix.Signal
+	death_signal                           syscall.Signal
 	exit_code                              int
 	timers, timers_temp                    []*timer
 	timer_id_counter, write_msg_id_counter IdType
@@ -146,6 +147,16 @@ type Loop struct {
 }
 
 func New(options ...func(self *Loop)) (*Loop, error) {
+	if runtime.GOOS == "windows" && os.Getenv("KITTY_WINDOW_ID") == "" {
+		// Full-screen kitten UIs need faithful VT and mouse handling, which
+		// other Windows terminals (running the kitten through their ConPTY)
+		// mangle: garbled mouse reports typed into the UI, broken raw mode and
+		// so on. Simple non-UI tools (clipboard, @) use
+		// NewForSimpleInteraction and keep working everywhere. Exit outright:
+		// not every kitten checks the error before using the loop.
+		fmt.Fprintln(os.Stderr, "This kitten needs to run inside the kitty terminal. It cannot be used from other terminals on Windows")
+		os.Exit(1)
+	}
 	l := new_loop()
 	for _, f := range options {
 		f(l)
@@ -157,14 +168,15 @@ func New(options ...func(self *Loop)) (*Loop, error) {
 // resize/focus notifications, mouse tracking, alternate screen etc. Useful
 // for special purpose kittens such as icat/clipboard/@ etc.
 func NewForSimpleInteraction() (*Loop, error) {
-	lp, err := New(
+	lp := new_loop()
+	for _, f := range []func(self *Loop){
 		NoAlternateScreen, NoRestoreColors, NoMouseTracking, NoInBandResizeNotifications,
 		NoFocusTracking, NoKeyboardStateChange, NoRoundtripToTerminalOnExit,
-	)
-	if err == nil {
-		lp.terminal_options.color_scheme_change_notification = false
+	} {
+		f(lp)
 	}
-	return lp, err
+	lp.terminal_options.color_scheme_change_notification = false
+	return lp, nil
 }
 
 func (self *Loop) AddTimer(interval time.Duration, repeats bool, callback TimerCallback) (IdType, error) {
@@ -638,7 +650,22 @@ func (self *Loop) RecoverFromPanicInGoRoutine() {
 	}
 }
 
+// TextSizingSupported reports whether DrawSizedText actually scales text. It does
+// not under a Windows pseudoconsole: conhost (ConPTY) re-renders the child's
+// output and does not understand the OSC 66 text-sizing protocol, so scaled text
+// overflows and the cursor is left misplaced. Callers that position the cursor
+// around sized text should use a scale of 1 when this returns false.
+func (self *Loop) TextSizingSupported() bool {
+	return runtime.GOOS != "windows"
+}
+
 func (self *Loop) DrawSizedText(text string, spec SizedText) {
+	if !self.TextSizingSupported() {
+		// conhost cannot render OSC 66; draw plain text so kitty and conhost agree
+		// on the layout. Callers adjust their cursor math via TextSizingSupported.
+		self.QueueWriteString(text)
+		return
+	}
 	b := strings.Builder{}
 	b.Grow(len(text) + 24)
 	b.WriteString("\x1b]66;")

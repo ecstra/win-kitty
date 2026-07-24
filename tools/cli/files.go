@@ -10,8 +10,6 @@ import (
 	"slices"
 	"strings"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/kovidgoyal/kitty/tools/utils"
 )
 
@@ -30,6 +28,28 @@ type FileEntry struct {
 	Name, CompletionCandidate, Abspath string
 	Mode                               os.FileMode
 	IsDir, IsSymlink, IsEmptyDir       bool
+}
+
+// Windows accepts both / and \ in a path, and both turn up in practice: kitty's
+// own config is written with forward slashes and the shells used here produce
+// either. Recognising only os.PathSeparator meant a prefix such as ./t was read
+// as having no directory part at all, and completed nothing.
+
+func is_path_separator(c byte) bool {
+	return c == '/' || (os.PathSeparator != '/' && c == byte(os.PathSeparator))
+}
+
+func has_path_separator_suffix(s string) bool {
+	return s != "" && is_path_separator(s[len(s)-1])
+}
+
+func last_path_separator_index(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if is_path_separator(s[i]) {
+			return i
+		}
+	}
+	return -1
 }
 
 func CompleteFiles(prefix string, callback func(*FileEntry), cwd string) error {
@@ -60,11 +80,11 @@ func CompleteFiles(prefix string, callback func(*FileEntry), cwd string) error {
 		base_dir = cwd
 		joinable_prefix = ""
 	default:
-		if strings.HasSuffix(prefix, utils.Sep) {
+		if has_path_separator_suffix(prefix) {
 			base_dir = location
 			joinable_prefix = prefix
 		} else {
-			idx := strings.LastIndex(prefix, utils.Sep)
+			idx := last_path_separator_index(prefix)
 			if idx > 0 {
 				joinable_prefix = prefix[:idx+1]
 				base_dir = filepath.Dir(location)
@@ -124,7 +144,7 @@ func CompleteExecutablesInPath(prefix string, paths ...string) []string {
 		entries, err := os.ReadDir(dir)
 		if err == nil {
 			for _, e := range entries {
-				if strings.HasPrefix(e.Name(), prefix) && !e.IsDir() && unix.Access(filepath.Join(dir, e.Name()), unix.X_OK) == nil {
+				if strings.HasPrefix(e.Name(), prefix) && !e.IsDir() && utils.Access(filepath.Join(dir, e.Name()), utils.AccessExec) == nil {
 					ans = append(ans, e.Name())
 				}
 			}
@@ -288,13 +308,13 @@ func CompleteExecutableFirstArg(completions *Completions, word string, arg_num i
 				entries, err := os.ReadDir(entry.Abspath)
 				if err == nil {
 					for _, x := range entries {
-						if x.IsDir() || unix.Access(filepath.Join(entry.Abspath, x.Name()), unix.X_OK) == nil {
+						if x.IsDir() || utils.Access(filepath.Join(entry.Abspath, x.Name()), utils.AccessExec) == nil {
 							mg.AddMatch(entry.CompletionCandidate)
 							break
 						}
 					}
 				}
-			} else if unix.Access(entry.Abspath, unix.X_OK) == nil {
+			} else if utils.Access(entry.Abspath, utils.AccessExec) == nil {
 				mg.AddMatch(entry.CompletionCandidate)
 			}
 		}, "")

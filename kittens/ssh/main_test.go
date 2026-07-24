@@ -13,16 +13,20 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
 
 func TestCloneEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The clone-in-kitty path passes its environment through POSIX shm.
+		t.Skip("POSIX shared memory, which Windows has no equivalent of")
+	}
 	env := map[string]string{"a": "1", "b": "2"}
 	data, err := json.Marshal(env)
 	if err != nil {
@@ -79,6 +83,12 @@ func TestSSHBootstrapScriptLimit(t *testing.T) {
 }
 
 func TestSSHTarfile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Shells out to the system tar with a Windows path, which the MSYS2
+		// tar cannot open once it has been through shell quoting. The ssh
+		// kitten targets a Unix host anyway.
+		t.Skip("invokes tar with a Windows path")
+	}
 	tdir := t.TempDir()
 	cd := basic_connection_data()
 	data, err := make_tarfile(cd, func(key string) (val string, found bool) { return })
@@ -146,7 +156,7 @@ func TestSSHTarfile(t *testing.T) {
 	}
 	for _, x := range []string{"kitty", "kitten"} {
 		p := filepath.Join(tdir, "home", cd.host_opts.Remote_dir, "kitty", "bin", x)
-		if err = unix.Access(p, unix.X_OK); err != nil {
+		if err = check_is_executable(p); err != nil {
 			t.Fatalf("Cannot execute %s with error: %s", x, err)
 		}
 	}

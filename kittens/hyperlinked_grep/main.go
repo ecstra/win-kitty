@@ -17,8 +17,6 @@ import (
 
 	"github.com/kovidgoyal/kitty/tools/cli"
 	"github.com/kovidgoyal/kitty/tools/utils"
-
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -297,7 +295,7 @@ func main(_ *cli.Command, _ *Options, args []string) (rc int, err error) {
 	}
 	if delegate_to_rg {
 		sanitized_args = append([]string{"rg"}, sanitized_args...)
-		err = unix.Exec(RgExe(), sanitized_args, os.Environ())
+		err = utils.Exec(RgExe(), sanitized_args, os.Environ())
 		if err != nil {
 			err = fmt.Errorf("Failed to execute rg: %w", err)
 			rc = 1

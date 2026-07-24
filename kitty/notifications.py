@@ -12,7 +12,7 @@ from itertools import count
 from typing import Any, NamedTuple, Set
 from weakref import ReferenceType, ref
 
-from .constants import cache_dir, config_dir, is_macos, logo_png_file, standard_icon_names, standard_sound_names, supports_window_occlusion
+from .constants import cache_dir, config_dir, is_macos, is_windows, logo_png_file, standard_icon_names, standard_sound_names, supports_window_occlusion
 from .fast_data_types import (
     ESC_OSC,
     StreamingBase64Decoder,
@@ -793,6 +793,83 @@ class FreeDesktopIntegration(DesktopIntegration):
         return desktop_notification_id
 
 
+class WindowsIntegration(DesktopIntegration):
+
+    supports_close_events: bool = False
+    supports_buttons: bool = False
+    supports_sound: bool = True
+    supports_sound_names: str = ''
+    supports_timeout_natively: bool = True
+
+    # A stable AppUserModelID we register for kitty so toasts are attributed to
+    # "kitty" with the kitty icon, instead of borrowing PowerShell's identity.
+    app_user_model_id: str = 'net.kovidgoyal.kitty'
+
+    def initialize(self) -> None:
+        self.notification_id_counter = 0
+        self.register_app_user_model_id()
+
+    def register_app_user_model_id(self) -> None:
+        # Register a per-user AppUserModelID so that toasts show the kitty name and
+        # icon. This maps the AUMID to a DisplayName and IconUri under
+        # HKCU\Software\Classes\AppUserModelId, which is the documented way for a
+        # desktop app without a Start-menu shortcut to brand its notifications. It
+        # is user-scoped and non-destructive; a full installer would do this too.
+        try:
+            import winreg
+            key_path = r'Software\Classes\AppUserModelId\\' + self.app_user_model_id
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:  # ty: ignore[unresolved-attribute]
+                winreg.SetValueEx(key, 'DisplayName', 0, winreg.REG_SZ, 'kitty')  # ty: ignore[unresolved-attribute]
+                if os.path.exists(logo_png_file):
+                    winreg.SetValueEx(key, 'IconUri', 0, winreg.REG_SZ, logo_png_file)  # ty: ignore[unresolved-attribute]
+        except Exception as e:
+            log_error(f'Failed to register kitty AppUserModelID for notifications: {e}')
+
+    def query_live_notifications(self, channel_id: int, identifier: str) -> None:
+        # We cannot enumerate live Windows toasts, so report none.
+        self.notification_manager.send_live_response(channel_id, identifier, ())
+
+    def close_notification(self, desktop_notification_id: int) -> bool:
+        return False
+
+    def notify(self, nc: NotificationCommand, existing_desktop_notification_id: int | None) -> int:
+        import base64
+        import subprocess
+        title = nc.title or nc.application_name or 'kitty'
+        body = nc.body or ''
+        # Show a WinRT toast via PowerShell. This is a real modern toast (no tray
+        # icon, no conhost involved). Title/body are passed as base64 in env vars to
+        # avoid any quoting/injection issues, and it is shown under kitty's own
+        # registered AppUserModelID (see register_app_user_model_id) so it carries
+        # the kitty name and icon.
+        script = (
+            "$ErrorActionPreference='Stop';"
+            "$t=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:KITTY_NOTIFY_TITLE));"
+            "$b=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:KITTY_NOTIFY_BODY));"
+            "[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];"
+            "$x=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
+            "$e=$x.GetElementsByTagName('text');"
+            "[void]$e.Item(0).AppendChild($x.CreateTextNode($t));"
+            "[void]$e.Item(1).AppendChild($x.CreateTextNode($b));"
+            "$toast=[Windows.UI.Notifications.ToastNotification]::new($x);"
+            "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($env:KITTY_NOTIFY_AUMID).Show($toast);"
+        )
+        env = dict(os.environ)
+        env['KITTY_NOTIFY_TITLE'] = base64.standard_b64encode(title.encode('utf-8')).decode('ascii')
+        env['KITTY_NOTIFY_BODY'] = base64.standard_b64encode(body.encode('utf-8')).decode('ascii')
+        env['KITTY_NOTIFY_AUMID'] = self.app_user_model_id
+        try:
+            subprocess.Popen(
+                ('powershell.exe', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script),
+                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=0x08000000, close_fds=True,  # CREATE_NO_WINDOW: no console flash
+            )
+        except Exception as e:
+            log_error(f'Failed to show Windows toast notification: {e}')
+        self.notification_id_counter += 1
+        return self.notification_id_counter
+
+
 class UIState(NamedTuple):
     has_keyboard_focus: bool
     is_visible: bool
@@ -853,7 +930,7 @@ class NotificationManager:
 
     def __init__(
         self,
-        desktop_integration: MacOSIntegration | FreeDesktopIntegration | None = None,
+        desktop_integration: 'MacOSIntegration | FreeDesktopIntegration | WindowsIntegration | None' = None,
         channel: Channel = Channel(),
         log: Log = Log(),
         debug: bool = False,
@@ -862,7 +939,7 @@ class NotificationManager:
         global debug_desktop_integration
         debug_desktop_integration = debug
         if desktop_integration is None:
-            self.desktop_integration = MacOSIntegration(self) if is_macos else FreeDesktopIntegration(self)
+            self.desktop_integration = MacOSIntegration(self) if is_macos else (WindowsIntegration(self) if is_windows else FreeDesktopIntegration(self))
         else:
             self.desktop_integration = desktop_integration
         self.channel = channel

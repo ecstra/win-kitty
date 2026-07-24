@@ -126,7 +126,8 @@ def go_options_for_seq(seq: 'OptionSpecSeq') -> Iterator[GoOption]:
 
 
 def surround(x: str, start: int, end: int) -> str:
-    if sys.stdout.isatty():
+    # sys.stdout is None in a GUI process with no console (Windows), so guard it.
+    if sys.stdout is not None and sys.stdout.isatty():
         x = f'\033[{start}m{x}\033[{end}m'
     return x
 
@@ -316,7 +317,18 @@ def version(add_rev: bool = False) -> str:
     if add_rev:
         if getattr(fast_data_types, 'KITTY_VCS_REV', ''):
             rev = f' ({fast_data_types.KITTY_VCS_REV[:10]})'
-    return '{} {}{} created by {}'.format(italic(appname), green(str_version), rev, title('Kovid Goyal'))
+    ans = '{} {}{} created by {}'.format(italic(appname), green(str_version), rev, title('Kovid Goyal'))
+    from .constants import is_windows
+    if is_windows:
+        def sgr(x: str, start: str, end: str) -> str:
+            if sys.stdout is not None and sys.stdout.isatty():
+                return f'\033[{start}m{x}\033[{end}m'
+            return x
+        # orange name (#fd971f) to match the cursor, dim brackets, cyan email
+        credit = (italic('Windows native port by ') + sgr('ecstra', '38;2;253;151;31', '39') +
+                  ' ' + sgr('<', '2', '22') + cyan('gotham47g@gmail.com') + sgr('>', '2', '22'))
+        ans += '\n' + credit
+    return ans
 
 
 def wrap(text: str, limit: int = 80) -> Iterator[str]:

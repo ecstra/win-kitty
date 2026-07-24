@@ -108,6 +108,16 @@ func GetChoices(o *Options) (response string, err error) {
 			response_on_accept = first_choice
 		}
 	}
+	// Ordered list of choice letters, so arrow keys can move the highlighted
+	// default between them.
+	ordered_letters := make([]string, 0, max(2, len(choice_order)))
+	if o.Type == "yesno" {
+		ordered_letters = append(ordered_letters, "y", "n")
+	} else {
+		for _, c := range choice_order {
+			ordered_letters = append(ordered_letters, c.letter)
+		}
+	}
 	message := o.Message
 	hidden_text_start_pos := -1
 	hidden_text_end_pos := -1
@@ -398,6 +408,21 @@ func GetChoices(o *Options) (response string, err error) {
 		return nil
 	}
 
+	move_selection := func(delta int) {
+		if len(ordered_letters) < 2 {
+			return
+		}
+		cur := 0
+		for i, l := range ordered_letters {
+			if l == response_on_accept {
+				cur = i
+				break
+			}
+		}
+		response_on_accept = ordered_letters[(cur+delta+len(ordered_letters))%len(ordered_letters)]
+		_ = draw_screen()
+	}
+
 	lp.OnKeyEvent = func(ev *loop.KeyEvent) error {
 		if ev.MatchesPressOrRepeat("esc") || ev.MatchesPressOrRepeat("ctrl+c") {
 			ev.Handled = true
@@ -406,6 +431,12 @@ func GetChoices(o *Options) (response string, err error) {
 			ev.Handled = true
 			response = response_on_accept
 			lp.Quit(0)
+		} else if ev.MatchesPressOrRepeat("left") || ev.MatchesPressOrRepeat("up") || ev.MatchesPressOrRepeat("shift+tab") {
+			ev.Handled = true
+			move_selection(-1)
+		} else if ev.MatchesPressOrRepeat("right") || ev.MatchesPressOrRepeat("down") || ev.MatchesPressOrRepeat("tab") {
+			ev.Handled = true
+			move_selection(1)
 		}
 		return nil
 	}

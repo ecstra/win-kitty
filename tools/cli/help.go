@@ -7,12 +7,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/kovidgoyal/kitty"
 	"github.com/kovidgoyal/kitty/tools/cli/markup"
@@ -30,7 +29,21 @@ func ShowError(err error) {
 }
 
 func (self *Command) version_string(formatter *markup.Context) string {
-	return fmt.Sprintln(formatter.Italic(self.CommandStringForUsage()), formatter.Opt(kitty.VersionString), "created by", formatter.Title("Kovid Goyal"))
+	ans := fmt.Sprintln(formatter.Italic(self.CommandStringForUsage()), formatter.Opt(kitty.VersionString), "created by", formatter.Title("Kovid Goyal"))
+	if runtime.GOOS == "windows" {
+		// Orange (#fd971f) name to match the cursor. Emit truecolor in the
+		// SEMICOLON form (38;2;...) not the colon form (38:2:...) the style
+		// formatter produces -- conhost (ConPTY) mangles colon-form truecolor,
+		// so the color would be dropped and the name render white.
+		name := "ecstra"
+		if formatter.EscapeCodesAllowed() {
+			name = "\x1b[1;38;2;253;151;31mecstra\x1b[22;39m"
+		}
+		credit := formatter.Italic("Windows native port by ") + name +
+			" " + formatter.Dim("<") + formatter.Cyan("gotham47g@gmail.com") + formatter.Dim(">")
+		ans += fmt.Sprintln(credit)
+	}
+	return ans
 }
 
 func (self *Command) ShowVersion() {
@@ -223,15 +236,7 @@ func (self *Command) ShowHelpWithCommandString(cs string) {
 	formatter := markup.New(tty.IsTerminal(os.Stdout.Fd()))
 	screen_width := 80
 	if formatter.EscapeCodesAllowed() {
-		var sz *unix.Winsize
-		var tty_size_err error
-		for {
-			sz, tty_size_err = unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)
-			if tty_size_err != unix.EINTR {
-				break
-			}
-		}
-		if tty_size_err == nil && sz.Col < 80 {
+		if sz, tty_size_err := tty.GetSize(int(os.Stdout.Fd())); tty_size_err == nil && sz.Col < 80 {
 			screen_width = int(sz.Col)
 		}
 	}
