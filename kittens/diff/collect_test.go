@@ -42,13 +42,23 @@ func TestDiffCollectWalk(t *testing.T) {
 	if err := walk(tdir, []string{"*~", "#*#", "b"}, names, pmap, map[string]string{}); err != nil {
 		t.Fatal(err)
 	}
+	// walk builds relative paths with the platform separator; the expectations
+	// are POSIX style. It is the set of names that is under test.
+	got_names := names.AsSlice()
+	for i, n := range got_names {
+		got_names[i] = filepath.ToSlash(n)
+	}
 	if diff := cmp.Diff(
 		utils.Sort(expected_names.AsSlice(), strings.Compare),
-		utils.Sort(names.AsSlice(), strings.Compare),
+		utils.Sort(got_names, strings.Compare),
 	); diff != "" {
 		t.Fatal(diff)
 	}
-	if diff := cmp.Diff(expected_pmap, pmap); diff != "" {
+	got_pmap := make(map[string]string, len(pmap))
+	for k, v := range pmap {
+		got_pmap[filepath.ToSlash(k)] = v
+	}
+	if diff := cmp.Diff(expected_pmap, got_pmap); diff != "" {
 		t.Fatal(diff)
 	}
 }

@@ -4,6 +4,7 @@ package utils
 
 import (
 	"fmt"
+	"runtime"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -12,6 +13,12 @@ import (
 var _ = fmt.Print
 
 func TestGettingLoginShell(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// There is no /etc/passwd to read. get_shell_from_kitty_conf already
+		// handles the failure, falling back to default_shell(), which returns
+		// COMSPEC here, so nothing in kitty depends on this succeeding.
+		t.Skip("no /etc/passwd on Windows")
+	}
 	entries, err := parse_dscl_data([]byte(all_users_plist))
 	if err != nil {
 		t.Fatal(err)
