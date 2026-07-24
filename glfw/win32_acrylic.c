@@ -952,6 +952,7 @@ static bool bindBackBuffer(_GLFWacrylicWin32 *a) {
     return true;
 }
 
+
 static HRESULT createCompositionTree(_GLFWacrylicWin32 *a, HWND hwnd) {
     HSTRING classId = NULL;
     IInspectable *compositorInspectable = NULL;
@@ -993,6 +994,15 @@ static HRESULT createCompositionTree(_GLFWacrylicWin32 *a, HWND hwnd) {
 
     CHECK(compositorInterop->lpVtbl->CreateCompositionSurfaceForSwapChain(compositorInterop, (IUnknown *)a->swapChain, &swapChainSurface));
     CHECK(a->compositor->lpVtbl->CreateSurfaceBrushWithSurface(a->compositor, swapChainSurface, &swapChainBrush));
+    // Draw the swapchain one to one, top left, never scaled. The swapchain
+    // buffer and the visual are on different clocks: a live resize leaves them
+    // disagreeing by a frame, and the default Fill stretch turns that into the
+    // content pulsing bigger and smaller. With no stretch a stale frame simply
+    // does not reach the new edge (the acrylic shows through there for one
+    // frame) instead of being scaled.
+    CHECK(swapChainBrush->lpVtbl->put_Stretch(swapChainBrush, COMPOSITIONSTRETCH_NONE));
+    CHECK(swapChainBrush->lpVtbl->put_HorizontalAlignmentRatio(swapChainBrush, 0.0f));
+    CHECK(swapChainBrush->lpVtbl->put_VerticalAlignmentRatio(swapChainBrush, 0.0f));
     CHECK(swapChainBrush->lpVtbl->QueryInterface(swapChainBrush, &kIID_CompositionBrush, (void **)&swapChainBrushBase));
 
     fill.X = 1.0f; fill.Y = 1.0f;
@@ -1007,6 +1017,9 @@ static HRESULT createCompositionTree(_GLFWacrylicWin32 *a, HWND hwnd) {
     CHECK(a->acrylicVisual->lpVtbl->QueryInterface(a->acrylicVisual, &kIID_Visual2, (void **)&acrylicVisual2));
     CHECK(acrylicVisual2->lpVtbl->put_RelativeSizeAdjustment(acrylicVisual2, fill));
 
+    // Tracks the window, so it is always exactly the window size with no commit
+    // lag of its own. The stretch-none brush above is what keeps the swapchain
+    // from being scaled when its buffer briefly lags this size during a resize.
     CHECK(a->compositor->lpVtbl->CreateSpriteVisual(a->compositor, &contentVisual));
     CHECK(contentVisual->lpVtbl->put_Brush(contentVisual, swapChainBrushBase));
     CHECK(contentVisual->lpVtbl->QueryInterface(contentVisual, &kIID_Visual, (void **)&contentVisualBase));
@@ -1081,8 +1094,11 @@ bool _glfwWin32AcrylicCreate(_GLFWwindow *window) {
     swapDesc.BufferCount = 2;
     swapDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     swapDesc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
-    if (FAILED(IDXGIFactory2_CreateSwapChainForComposition(dxgiFactory, (IUnknown *)a->d3dDevice,
-                                                           &swapDesc, NULL, &a->swapChain))) goto fail;
+    {
+        HRESULT hr = IDXGIFactory2_CreateSwapChainForComposition(dxgiFactory, (IUnknown *)a->d3dDevice,
+                                                                 &swapDesc, NULL, &a->swapChain);
+        if (FAILED(hr)) { ADBG("CreateSwapChainForComposition failed: 0x%08x", (unsigned)hr); goto fail; }
+    }
 
     if (FAILED(createCompositionTree(a, window->win32.handle))) goto fail;
 
