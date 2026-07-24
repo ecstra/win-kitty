@@ -262,7 +262,11 @@ def listen_on(spec: str, robust_atexit: Atexit) -> tuple[int, str]:
     family, address, socket_path = parse_address_spec(spec)
     s = socket.socket(family)
     s.bind(address)
-    if family == socket.AF_UNIX and socket_path:
+    # socket_path is set only for a non-abstract unix: address, so it already
+    # implies the family. Testing socket.AF_UNIX as well would be redundant, and
+    # it is an AttributeError on Windows, where CPython does not build it -- that
+    # was raising for tcp: addresses too, which need no AF_UNIX at all.
+    if socket_path:
         robust_atexit.unlink(socket_path)
     s.listen()
     if isinstance(address, tuple):  # tcp socket
@@ -458,8 +462,11 @@ class Boss:
         if args.listen_on and self.allow_remote_control in ('y', 'socket', 'socket-only', 'password'):
             try:
                 listen_fd, self.listening_on = listen_on(args.listen_on, self.atexit)
-            except Exception:
-                self.misc_config_errors.append(f'Invalid listen_on={args.listen_on}, ignoring')
+            except Exception as err:
+                # Carry the reason. Without it every failure reads the same, and
+                # the ones worth telling apart -- an address already in use, a
+                # family this Python cannot build -- are the ones lost.
+                self.misc_config_errors.append(f'Invalid listen_on={args.listen_on}, ignoring. {err}')
                 log_error(self.misc_config_errors[-1])
         self.child_monitor: ChildMonitor = ChildMonitor(
             self.on_child_death,

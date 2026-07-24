@@ -389,6 +389,13 @@ def parse_address_spec(spec: str) -> tuple[AddressFamily, tuple[str, int] | str,
     socket_path = None
     address: str | tuple[str, int] = ''
     if protocol == 'unix':
+        if not hasattr(socket, 'AF_UNIX'):
+            # Windows has had AF_UNIX since build 17063, but CPython does not
+            # build it (python/cpython#77589), so the socket cannot be created
+            # even though the platform would carry it. tcp: needs none of this.
+            raise ValueError(
+                f'Cannot listen on {spec}: this Python was built without socket.AF_UNIX.'
+                ' Use a tcp: address instead, for example tcp:127.0.0.1:0')
         family = socket.AF_UNIX
         address = rest
         if address.startswith('@') and len(address) > 1:

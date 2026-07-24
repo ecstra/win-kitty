@@ -674,7 +674,15 @@ parse_input(ChildMonitor *self) {
             Message *msg = msgs + i;
             PyObject *resp = NULL;
             if (msg->data) {
-                resp = PyObject_CallMethod(global_state.boss, "peer_message_received", "y#KO", msg->data, (int)msg->sz, msg->peer_id, msg->is_remote_control_peer ? Py_True : Py_False);
+                // The length must be passed as Py_ssize_t: PY_SSIZE_T_CLEAN is
+                // set, so y# reads eight bytes here. Passing an int is harmless
+                // on the SysV ABI, where this argument still lands in a register
+                // and the write to its low half zeroes the top. Win64 passes only
+                // four arguments in registers, so this one is the first on the
+                // stack, and four bytes of stale stack were being read as the top
+                // half of the length. The result was a nonsense size and a
+                // MemoryError instead of a remote control command.
+                resp = PyObject_CallMethod(global_state.boss, "peer_message_received", "y#KO", msg->data, (Py_ssize_t)msg->sz, msg->peer_id, msg->is_remote_control_peer ? Py_True : Py_False);
                 free(msg->data);
                 if (!resp) PyErr_Print();
             }

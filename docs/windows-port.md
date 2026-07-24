@@ -48,7 +48,15 @@ Close any running kitty first. The source tree keeps its own development build a
 
 Known missing, and confirmed so.
 
-- Remote control. `kitty @`, the `listen_on` option, and everything built on the control socket. kitty uses a Unix domain socket for it, and the Python build here has no `socket.AF_UNIX`, so the socket cannot be created at all.
+- Remote control over a Unix socket, meaning `listen_on unix:...` and nothing
+  else. Windows itself has carried AF_UNIX since build 17063, so this is not a
+  platform limit: CPython does not build the family on Windows
+  ([python/cpython#77589](https://github.com/python/cpython/issues/77589), open
+  since 2018), so `socket.socket(socket.AF_UNIX)` cannot be constructed. Passing
+  family 1 by number gets as far as a socket object and then fails on
+  `bind(): bad family`, because the address marshalling is compiled out too.
+  `listen_on unix:` now says this rather than reporting a vague parse error.
+  Remote control itself works, over `tcp:`. See below.
 - Four kittens. dnd, panel, quick-access-terminal, and desktop-ui are marked `(not supported on Windows)` in the `kitten` command list and print a clear message if you run one anyway.
 - Dragging content out of a kitty window. Dropping onto a window works, the other direction does not.
 - The `kitty +something` entry points from another terminal. They reach the window binary and print nothing. Inside kitty they work as normal. `kitty +icat` is removed on Windows, since it only forwards to `kitten icat`, which will not run outside kitty anyway.
@@ -62,7 +70,47 @@ Not tested, so treat as unknown rather than working.
 
 - The ssh kitten, the file transfer kitten, and anything else that expects a Unix host environment.
 - Sessions, watchers, and startup scripts.
-- Anything that depends on remote control, which cannot work today.
+
+## Remote control
+
+`kitty @` works on Windows over a TCP address. Put this in kitty.conf:
+
+    allow_remote_control yes
+    listen_on tcp:127.0.0.1:0
+
+A port of 0 asks the OS for a free one, which is what kitty does with a `tcp:`
+address from the config file anyway. The resolved address goes into
+`KITTY_LISTEN_ON` for every child, so `kitten @ ls` inside a kitty window needs
+no `--to`. From outside, pass the port kitty resolved.
+
+Most of this was already in place. `parse_address_spec` and `expand_listen_on`
+have always handled `tcp:` and `tcp6:`, the client in `remote_control.py` is
+written against whatever family it is handed, the Go side resolves `tcp:`
+through `utils.ParseSocketAddress`, and the accept loop lives in C in
+`talk_loop`, where wincompat's `poll()` already routes socket descriptors to
+`WSAPoll` rather than treating them as pipes. Two things were in the way.
+
+The first stopped the listener existing at all: `boss.listen_on` tested
+`socket.AF_UNIX` for every address family rather than only for `unix:`, so a
+`tcp:` address raised `AttributeError` on Windows before it could bind, and the
+caller reported that as a vague "Invalid listen_on, ignoring".
+
+The second stopped any command being understood, and was visible only as a bare
+`MemoryError` on stderr. `peer_message_received` is called with a `y#` format,
+whose length argument is a `Py_ssize_t`, and the length was being cast to `int`.
+On the SysV ABI that argument still lands in a register and writing its low half
+zeroes the top, so the bug is invisible on Linux and macOS. Win64 passes only
+four arguments in registers, which puts this one first on the stack, where four
+bytes of stale stack were read as the top half of the length. Every remote
+control command therefore arrived with a nonsense size.
+
+One difference from Unix worth knowing. A Unix socket is a filesystem object and
+carries its permissions, and kitty additionally checks the peer's uid. A loopback
+TCP port has neither: any process on the machine that can reach the port can
+drive kitty. Set `remote_control_password` if that matters for your setup. The
+Windows equivalent of a Unix socket's ACL is a named pipe, which kitty already
+uses for the graphics bypass, and that is the shape a stricter transport would
+take if one is wanted later.
 
 ## Shells
 

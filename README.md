@@ -50,7 +50,7 @@ kitty-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 
 ## What is missing
 
-* **Remote control:** `kitty @` and the `listen_on` option. kitty drives it over a Unix domain socket, and Windows Python has no `socket.AF_UNIX`.
+* **Remote control over a Unix socket:** `listen_on unix:...`. Windows has carried AF_UNIX since build 17063, but CPython does not build it ([python/cpython#77589](https://github.com/python/cpython/issues/77589)), so the socket cannot be created. `kitty @` itself works over `listen_on tcp:...`.
 * **Four kittens:** dnd, panel, quick-access-terminal and desktop-ui. They are marked in the `kitten` command list and refuse cleanly.
 * **Dragging content out** of a window. Dropping onto one works.
 * **Some console invocations:** the `kitty +something` entry points and the full `kitty --help` list when run from another terminal.
