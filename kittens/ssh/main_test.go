@@ -17,7 +17,6 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -146,7 +145,7 @@ func TestSSHTarfile(t *testing.T) {
 	}
 	for _, x := range []string{"kitty", "kitten"} {
 		p := filepath.Join(tdir, "home", cd.host_opts.Remote_dir, "kitty", "bin", x)
-		if err = unix.Access(p, unix.X_OK); err != nil {
+		if err = check_is_executable(p); err != nil {
 			t.Fatalf("Cannot execute %s with error: %s", x, err)
 		}
 	}
