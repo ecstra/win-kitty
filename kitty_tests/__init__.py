@@ -27,6 +27,24 @@ from kitty.utils import read_screen_size
 from kitty.window import da1, decode_cmdline, process_remote_print, process_title_from_child
 
 
+is_windows = sys.platform == 'win32'
+
+
+def skip_on_windows(reason: str):
+    """Skip a test or test class that cannot pass on Windows.
+
+    Used only where the thing under test is genuinely absent here, either
+    because the subsystem is not built (drag and drop compiles to
+    kitty/wincompat/dnd_stub.c) or because the test is written against POSIX
+    semantics that Windows has no equivalent for (process groups, signals a
+    process can ignore, fork, mkfifo, POSIX shared memory, select on a pipe).
+    Every use states which, so a skip is never mistaken for something that
+    merely has not been looked at.
+    """
+    import unittest
+    return unittest.skipIf(is_windows, f'Not supported on Windows: {reason}')
+
+
 def parse_bytes(screen, data, dump_callback=None):
     data = memoryview(data)
     while data:

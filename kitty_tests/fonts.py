@@ -28,7 +28,7 @@ from kitty.fonts.common import FontSpec, all_fonts_map, face_from_descriptor, ge
 from kitty.fonts.render import coalesce_symbol_maps, create_face, render_string, setup_for_testing, shape_string
 from kitty.options.types import Options
 
-from . import BaseTest, draw_multicell
+from . import BaseTest, draw_multicell, skip_on_windows
 
 
 def parse_font_spec(spec):
@@ -42,6 +42,7 @@ def testing_font_data(name):
 
 class Selection(BaseTest):
 
+    @skip_on_windows('asserts PostScript names of the font builds shipped on Linux and macOS')
     def test_font_selection(self):
         self.set_options({'font_features': {'LiberationMono': (ParsedFontFeature('-dlig'),)}})
         opts = Options()
