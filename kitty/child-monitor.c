@@ -1556,6 +1556,9 @@ process_global_state(void *data) {
         input_read = true;
     }
     if (parse_input(self)) input_read = true;
+    // After parsing, so every pointer shape sequence read this tick collapses
+    // into a single change, and before rendering, so it lands on this frame.
+    apply_pending_mouse_pointer_shape();
     render(now, input_read);
 #ifdef __APPLE__
     if (has_cocoa_pending_actions) {
