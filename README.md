@@ -27,6 +27,8 @@ Built for Windows 11, which is where all of it is developed and tested. The acry
 >
 > This was built so I could use kitty as my daily terminal on Windows, and in this state it does that for me. That is the whole promise. It is young and it has bugs, the features below are the ones used enough to trust, and anything off that path is likely to be rough. I may add features, port more of upstream, or fix more bugs in my free time. I am not committing to any of it, and there is no roadmap.
 
+<img alt="image" src="https://github.com/user-attachments/assets/cf5382f5-386d-4832-a0e9-f172f1f70252" />
+
 ## Features
 
 * **Genuine Windows acrylic, taken straight from how Windows Terminal does it:** not a blur approximation. It follows the same WinUI `AcrylicBrush` recipe, the real noise texture, the blurred backdrop, the luminosity and tint blends, assembled here as a composition effect graph. Because kitty owns that graph instead of asking DWM for a backdrop, the material keeps its blur and transparency when the window loses focus, which is exactly where DWM's own version gives up and goes flat. `background_opacity` is scaled to match, so a number means the same thing it means in Windows Terminal. Measured against Terminal on the same wallpaper it lands within half a percent.
