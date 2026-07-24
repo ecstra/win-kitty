@@ -20,21 +20,23 @@ kitty is a fast, GPU based terminal. This fork runs it natively on Windows, with
 
 Windows console programs run through the pseudoconsole API. MSYS2 and Cygwin shells run on a real Cygwin pty instead, which is what keeps zsh from bouncing and flickering the way it does through conhost. Everything is drawn with OpenGL, the same rendering path kitty uses on every other platform.
 
-**Windows 11 only.** The acrylic and the rounded title bar are built on composition features that Windows 10 does not have. Nothing in the build or the installer stops you trying it on Windows 10, but it is neither targeted nor tested there, so treat it as unsupported.
+Built for Windows 11, which is where all of it is developed and tested. The acrylic and the rounded title bar lean on composition features Windows 10 does not have, so those will not look right there, but nothing blocks you from installing it and the terminal itself should still run. Try it if you like. There is no support for Windows 10 and no plan to add any.
 
 > [!IMPORTANT]
 > This is a fork of [kitty](https://github.com/kovidgoyal/kitty), and none of the Windows work is upstream. Report anything about this build [here](https://github.com/ecstra/win-kitty/issues) rather than on the upstream tracker, since upstream cannot act on it.
 >
-> The port is young and has plenty of bugs. Daily use works and the features below have been used enough to trust, but anything off that path is likely to be rough.
+> This was built so I could use kitty as my daily terminal on Windows, and in this state it does that for me. That is the whole promise. It is young and it has bugs, the features below are the ones used enough to trust, and anything off that path is likely to be rough. I may add features, port more of upstream, or fix more bugs in my free time. I am not committing to any of it, and there is no roadmap.
 
 ## Features
 
-* **Real Windows 11 acrylic:** the same material Windows Terminal uses, built here from the composition effect graph rather than asked of DWM, which is why it keeps its blur and transparency when the window loses focus. `background_opacity` is scaled so the same number means what it means in Windows Terminal.
-* **A title bar kitty draws itself:** the caption shares the terminal background, with rounded corners and its own minimize, maximize and close buttons.
-* **Any shell:** pwsh, Windows PowerShell and cmd through a pseudoconsole, and zsh, bash and the rest of MSYS2 or Cygwin on a genuine pty. Shell integration for each. A fresh install opens pwsh.
-* **Kittens:** icat, hints, unicode_input, diff, themes, choose-files and the confirmation prompts, all working inside kitty.
+* **Genuine Windows acrylic, taken straight from how Windows Terminal does it:** not a blur approximation. It follows the same WinUI `AcrylicBrush` recipe, the real noise texture, the blurred backdrop, the luminosity and tint blends, assembled here as a composition effect graph. Because kitty owns that graph instead of asking DWM for a backdrop, the material keeps its blur and transparency when the window loses focus, which is exactly where DWM's own version gives up and goes flat. `background_opacity` is scaled to match, so a number means the same thing it means in Windows Terminal. Measured against Terminal on the same wallpaper it lands within half a percent.
+* **A title bar kitty draws itself:** the caption shares the terminal background, with rounded corners and its own minimize, maximize and close buttons, so the whole window is one surface instead of kitty wearing a grey Windows hat.
+* **Any shell, each on the right plumbing:** pwsh, Windows PowerShell and cmd run on a pseudoconsole. MSYS2 and Cygwin shells run on a real Cygwin pty through a bridge written for this port, which keeps conhost out of the data path entirely. That is what stops zsh bouncing and flickering the way it does in every terminal that pipes it through ConPTY. Shell integration for each.
+* **Images in the terminal:** icat and the graphics protocol work. conhost eats the escape sequences that carry image data, so the port routes them around it through a private named pipe and places the image with unicode placeholders.
+* **Kittens:** icat, hints, unicode_input, diff, themes, choose-files, ask and the confirmation prompts, all running as the real Go kittens inside kitty.
+* **Remote control:** `kitty @` works over `listen_on tcp:`, so scripting kitty from outside works the same as it does elsewhere.
 * **Native toasts:** desktop notifications are real Windows notifications, attributed to kitty.
-* **Explorer integration:** an **Open in kitty** entry in both the modern Windows 11 menu and the classic one.
+* **Explorer integration:** an **Open in kitty** entry in the main Windows 11 menu, which needs a signed MSIX package rather than a registry key, and in the classic menu too.
 * **Snappy input:** the port asks Windows for a 1 ms timer resolution, which is where most of the typing latency was hiding, and renders at your monitor's real refresh rate rather than an assumed 60 Hz.
 * **The rest of kitty:** tabs and OS windows, scrollback, mouse selection, the Windows clipboard, ligatures and fonts, per monitor DPI scaling, config reloading, and dropping files onto a window.
 
@@ -52,11 +54,11 @@ kitty-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 
 ## Configuration
 
-kitty reads its config from `%USERPROFILE%\.config\kitty\kitty.conf`, so for a
-user called `themy` that is:
+kitty reads its config from `%USERPROFILE%\.config\kitty\kitty.conf`, which
+expands to:
 
 ```
-C:\Users\themy\.config\kitty\kitty.conf
+C:\Users\<user>\.config\kitty\kitty.conf
 ```
 
 Note that this is `.config` in your home folder, the same place kitty uses on
