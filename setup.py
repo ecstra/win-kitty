@@ -821,13 +821,24 @@ def base64_defines(isa: ISA) -> List[str]:
 
 
 def get_source_specific_defines(env: Env, src: str) -> Tuple[str, List[str], Optional[List[str]]]:
-    if src == 'kitty/vt-parser-dump.c':
+    # Match on a forward slash key. find_c_files builds these paths with
+    # os.path.join, so on Windows they arrive as kitty\data-types.c and matched
+    # none of the literals below, which are all written with forward slashes.
+    # Every define here was therefore dropped silently on Windows: data-types.c
+    # lost WRAPPED_KITTENS and fell back to the "" in wincompat/win_prelude.h,
+    # which left wrapped_kitten_names() empty and sent every kitten down the
+    # Python path instead of running kitten.exe; screen.c lost its version
+    # numbers; fast-file-copy.c lost HAS_COPY_FILE_RANGE. The one case that did
+    # work, vt-parser-dump.c, only did so because it is appended as a hardcoded
+    # forward slash literal rather than through os.path.join.
+    key = src.replace(os.sep, '/')
+    if key == 'kitty/vt-parser-dump.c':
         return 'kitty/vt-parser.c', [], ['DUMP_COMMANDS']
-    if src == 'kitty/data-types.c':
+    if key == 'kitty/data-types.c':
         if not env.vcs_rev:
             env.vcs_rev = get_vcs_rev()
         return src, [], [f'KITTY_VCS_REV="{env.vcs_rev}"', f'WRAPPED_KITTENS="{wrapped_kittens()}"']
-    if src.startswith('3rdparty/base64/'):
+    if key.startswith('3rdparty/base64/'):
         if is_windows:
             # base64's own _xgetbv clashes with the mingw intrinsic pulled in by the
             # force-included prelude. Disable its SIMD; the scalar codec is correct.
@@ -835,12 +846,12 @@ def get_source_specific_defines(env: Env, src: str) -> Tuple[str, List[str], Opt
                 'HAVE_AVX512=0', 'HAVE_AVX2=0', 'HAVE_AVX=0', 'HAVE_SSE42=0',
                 'HAVE_SSE41=0', 'HAVE_SSSE3=0', 'HAVE_SSE3=0', 'HAVE_NEON32=0', 'HAVE_NEON64=0']
         return src, ['3rdparty/base64',], base64_defines(env.binary_arch.isa)
-    if src == 'kitty/screen.c':
+    if key == 'kitty/screen.c':
         return src, [], [f'PRIMARY_VERSION={env.primary_version}', f'SECONDARY_VERSION={env.secondary_version}', f'XT_VERSION="{env.xt_version}"']
-    if src == 'kitty/fast-file-copy.c':
+    if key == 'kitty/fast-file-copy.c':
         return src, [], (['HAS_COPY_FILE_RANGE'] if env.has_copy_file_range else None)
     try:
-        return src, [], env.library_paths[src]
+        return src, [], env.library_paths[key]
     except KeyError:
         return src, [], None
 
