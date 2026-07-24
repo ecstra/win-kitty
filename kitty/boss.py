@@ -2454,7 +2454,23 @@ class Boss:
                 cmd = [kitten_host_exe(), '+runpy', 'from kittens.runner import main; main()']
                 env['PYTHONWARNINGS'] = 'ignore'
             remote_control_fd = -1
-            if end_kitten.allow_remote_control:
+            if end_kitten.allow_remote_control and is_windows:
+                # Handing a kitten its own remote control socket needs three
+                # things that do not work here yet. A Windows socket is a kernel
+                # handle rather than a CRT descriptor, so os.dup and
+                # os.set_inheritable in add_fd_based_remote_control both fail on
+                # it with EBADF. The child's inherit list in child.c is exactly
+                # its two stdio pipes, so the socket would not reach it anyway.
+                # And the kitten would pick it up with socket.fromfd(...,
+                # AF_UNIX), which CPython does not build on Windows.
+                #
+                # The EBADF propagated out of here and stopped the kitten being
+                # created at all, which is why ctrl+shift+e and ctrl+shift+u
+                # opened nothing while kittens that ask for no remote control
+                # were fine. Run it without, which is what every other kitten
+                # here already does. See WINDOWS_TODO.
+                log_error(f'Running the {kitten} kitten without remote control: not supported on Windows yet')
+            elif end_kitten.allow_remote_control:
                 remote_control_passwords: dict[str, Sequence[str]] | None = None
                 initial_data = b''
                 if end_kitten.remote_control_password:
@@ -2999,7 +3015,15 @@ class Boss:
         def doit(activation_token: str = '') -> None:
             nonlocal env
             pass_fds: list[int] = []
-            if allow_remote_control:
+            if allow_remote_control and is_windows:
+                # Same limitation as in run_kitten_with_metadata: a socket here is
+                # a kernel handle, not a CRT descriptor, so it cannot be dup'd or
+                # marked inheritable through the os module, and the child's
+                # inherit list would exclude it regardless. The EBADF stopped the
+                # process launching at all, which is what happened once the hints
+                # kitten had picked a URL and went to open it. See WINDOWS_TODO.
+                log_error('Launching a background process without remote control: not supported on Windows yet')
+            elif allow_remote_control:
                 remote = self.add_fd_based_remote_control(remote_control_passwords)
                 pass_fds.append(remote.fileno())
                 add_env('KITTY_LISTEN_ON', f'fd:{remote.fileno()}')
