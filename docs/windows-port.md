@@ -4,6 +4,13 @@ This is a native Windows build of kitty. It runs on Windows directly, with no WS
 
 For how the pieces work, read [windows-internals.md](windows-internals.md). For why they are built that way, read [decisions.md](decisions.md).
 
+## Requirements
+
+Windows 11. The acrylic and the rounded title bar are built on composition
+features Windows 10 does not have. Nothing in the build or the installer checks
+the version, so it will start on Windows 10, but it is neither targeted nor
+tested there and the chrome will not look right.
+
 ## Status
 
 This is a young port and it has plenty of bugs. Daily use works, and the parts listed under "What works" have been used enough to trust, but anything off that path is likely to be rough or broken. Expect to hit things nobody has hit yet.
@@ -17,7 +24,7 @@ Run `dist/kitty-setup.exe`. It asks for administrator rights, because it install
 The installer offers three optional tasks.
 
 - Add kitty to your PATH: puts `<install>\bin` on the system PATH so `kitty` and `kitten` work in any terminal.
-- Add "Open in kitty" to the Explorer right click menu: appears in the main menu on Windows 11 and in the classic menu on Windows 10.
+- Add "Open in kitty" to the Explorer right click menu: appears in the main Windows 11 menu, and under "Show more options" as well. Both are installed because Windows 11 reads the two from different places, see [windows-internals.md](windows-internals.md).
 - Create a desktop shortcut: off by default.
 
 A Start menu entry is always created. To install without any prompts, run it with the silent flags.
@@ -140,6 +147,21 @@ define into an empty list rather than a compile error.
 Only `vt-parser-dump.c` escaped, because it is appended as a hardcoded forward
 slash literal rather than through `os.path.join`, which is why `--dump-commands`
 worked while everything around it did not.
+
+## Configuration
+
+kitty reads `%USERPROFILE%\.config\kitty\kitty.conf`, which for a user called
+`themy` is `C:\Users\themy\.config\kitty\kitty.conf`. That is `.config` in the
+home folder, the same place kitty uses on Linux, rather than `%APPDATA%`. The
+launcher resolves it in `get_config_dir` in `kitty/launcher/utils.h`, which
+checks `XDG_CONFIG_HOME` first and then `~/.config`. Setting
+`KITTY_CONFIG_DIRECTORY` overrides both.
+
+The folder is not created for you. A working config, commented for the options
+where Windows differs, is in `example/.config/kitty`. Copy `kitty.conf` and the
+`kitty-themes` folder next to it into your own `.config\kitty`.
+
+Config reloading works, so edits show up without a restart.
 
 ## Shells
 
