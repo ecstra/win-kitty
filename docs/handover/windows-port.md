@@ -1,6 +1,6 @@
 # Kitty native Windows port, handover
 
-Goal is running kitty on native Windows without WSL. This note records the state so the next session can continue without rebuilding context. All work is at `C:\InfinityX\Projects\kitty`. No git operations were done.
+Goal is running kitty on native Windows without WSL. This note records the state so the next session can continue without rebuilding context. No git operations were done.
 
 ## What works and is verified
 

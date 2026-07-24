@@ -34,7 +34,7 @@ class Atexit(BaseTest):
         def r(action='close'):
             # repr() the path rather than interpolating it bare: this source is
             # exec'd, and a Windows path puts backslashes in a string literal,
-            # where C:\\InfinityX\\... reads as the escape \\I and is a SyntaxError.
+            # where C:\\Users\\... reads as the escape \\U and is a SyntaxError.
             p = subprocess.Popen([kitty_exe(), '+runpy', f'''\
 import subprocess
 p = subprocess.Popen([{kitten_exe()!r}, '__atexit__'])

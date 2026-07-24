@@ -150,8 +150,8 @@ worked while everything around it did not.
 
 ## Configuration
 
-kitty reads `%USERPROFILE%\.config\kitty\kitty.conf`, which for a user called
-`themy` is `C:\Users\themy\.config\kitty\kitty.conf`. That is `.config` in the
+kitty reads `%USERPROFILE%\.config\kitty\kitty.conf`, which expands to
+`C:\Users\<user>\.config\kitty\kitty.conf`. That is `.config` in the
 home folder, the same place kitty uses on Linux, rather than `%APPDATA%`. The
 launcher resolves it in `get_config_dir` in `kitty/launcher/utils.h`, which
 checks `XDG_CONFIG_HOME` first and then `~/.config`. Setting
