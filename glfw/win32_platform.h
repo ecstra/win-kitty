@@ -43,6 +43,7 @@ typedef struct _GLFWwindowWin32 {
     bool    customFrame;      // reclaim the caption for an acrylic custom title bar
     HWND    captionButtons;   // layered overlay hosting min/max/close
     void*   dropTarget;       // IDropTarget* registered for OLE drag-and-drop (drop-in)
+    void*   acrylic;          // _GLFWacrylicWin32* composition tree, NULL when off
 } _GLFWwindowWin32;
 
 // Per-monitor Win32 state.

@@ -278,21 +278,28 @@ increment_bg_image_idx(size_t idx, int delta) {
 }
 
 #ifdef _WIN32
-// Windows composites the terminal's own alpha over the DWM acrylic backdrop,
-// so background_opacity lands on screen directly. Windows Terminal does not
-// work that way: it renders through WinUI's AcrylicBrush, which never uses the
-// configured opacity literally. GetTintOpacityModifier (microsoft-ui-xaml
-// AcrylicBrush.cpp) scales it by a factor derived from the tint's HSV value --
-// 0.45 at white, 0.90 at mid grey, 0.85 at black, interpolated between and
-// cancelling out as saturation rises. For a background as dark as #1e1e1e that
-// is ~0.862, so WT's "80%" is really ~69%.
+// With background_blur on, the acrylic material in glfw/win32_acrylic.c is the
+// background: it carries the tint, the opacity, the blur and the noise, and it
+// sits underneath the terminal in the composition tree. kitty must not paint
+// the default background as well, or the tint lands twice and the window reads
+// as solid. Returning zero here makes the default background cells fully
+// transparent so the material shows through. Cells with any other background
+// colour are unaffected, because the shader only applies this alpha to cells
+// matching a configured background colour.
 //
-// Without the same discount kitty is visibly the darker of the two at an
-// identical setting. Applying it here keeps background_opacity meaning what
-// Windows Terminal means by the same number.
+// Without blur there is no material and kitty paints its own background, but
+// then Windows Terminal is still the comparison: it renders through WinUI's
+// AcrylicBrush, which never uses the configured opacity literally.
+// GetTintOpacityModifier (microsoft-ui-xaml AcrylicBrush.cpp) scales it by a
+// factor derived from the tint's HSV value -- 0.45 at white, 0.90 at mid grey,
+// 0.85 at black, interpolated between and cancelling out as saturation rises.
+// For a background as dark as #1e1e1e that is ~0.862, so WT's "80%" is really
+// ~69%. Without the same discount kitty is visibly the darker of the two at an
+// identical setting.
 static float
 platform_bg_alpha(float alpha) {
     const color_type bg = OPT(background);
+    if (alpha < 1.f && OPT(background_blur) > 0) return 0.f;
     const float r = ((bg >> 16) & 0xFF) / 255.f, g = ((bg >> 8) & 0xFF) / 255.f, b = (bg & 0xFF) / 255.f;
     const float maxc = r > g ? (r > b ? r : b) : (g > b ? g : b);
     const float minc = r < g ? (r < b ? r : b) : (g < b ? g : b);

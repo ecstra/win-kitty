@@ -6,6 +6,8 @@
 
 #include <stdlib.h>
 
+#include "win32_acrylic.h"
+
 // WGL_ARB_pixel_format / WGL_ARB_create_context tokens used below.
 #define WGL_DRAW_TO_WINDOW_ARB 0x2001
 #define WGL_SUPPORT_OPENGL_ARB 0x2010
@@ -46,7 +48,11 @@ static void swapBuffersWGL(_GLFWwindow* window) {
     // DwmFlush() instead (the strategy upstream GLFW uses): the present goes
     // out right away and we wait at most one composition pass.
     if (window->context.wgl.interval > 0) DwmFlush();
-    SwapBuffers(window->context.wgl.dc);
+    // With acrylic the window has no redirection surface, so SwapBuffers has
+    // nowhere to present. The frame was drawn straight into the composition
+    // swapchain instead, and that is what gets presented.
+    if (_glfwWin32AcrylicActive(window)) _glfwWin32AcrylicPresent(window);
+    else SwapBuffers(window->context.wgl.dc);
 }
 
 static void swapIntervalWGL(int interval) {
