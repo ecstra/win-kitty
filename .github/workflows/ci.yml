@@ -20,8 +20,6 @@ on:
             - 'docs/**'
             - 'LICENSE'
     workflow_dispatch:
-    release:
-        types: [published]
 
 permissions:
     contents: read
@@ -107,16 +105,13 @@ jobs:
                   export PYVER="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
                   ./packaging/windows/make-installer.sh
 
+            # Every run leaves the installer as a build artifact, which is how you
+            # get a build to try. Releases are made by hand: nothing here writes
+            # to one, so publishing a release does not trigger a build and no
+            # asset is attached without someone deciding to.
             - name: Upload installer
               uses: actions/upload-artifact@v4
               with:
                   name: kitty-setup
                   path: dist/kitty-setup.exe
                   if-no-files-found: error
-
-            - name: Attach installer to the release
-              if: github.event_name == 'release'
-              shell: bash
-              env:
-                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              run: gh release upload "${{ github.event.release.tag_name }}" dist/kitty-setup.exe --clobber
