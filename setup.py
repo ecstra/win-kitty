@@ -43,7 +43,33 @@ def ensure_utf8_mode() -> None:
     raise SystemExit(subprocess.run(cmd, env=env).returncode)
 
 
+def ensure_mingw_python() -> None:
+    """Fail early, and say why, when the build is run by the wrong Python.
+
+    The extension links against the interpreter running the build, so it has to
+    be the MSYS2 mingw one. A native Windows Python gets a long way in before
+    dying on sys.abiflags, which is POSIX only, and the traceback then points at
+    linker flag assembly rather than at the interpreter being wrong.
+    """
+    if sys.platform != 'win32':
+        return
+    import sysconfig
+    platform = sysconfig.get_platform()
+    if platform.startswith('mingw'):
+        return
+    raise SystemExit(
+        '\nThis build needs the MSYS2 mingw64 Python, not a native Windows one.\n\n'
+        f'  running : {sys.executable}\n'
+        f'            platform {platform}, no sys.abiflags\n'
+        '  needs   : C:\\msys64\\mingw64\\bin\\python.exe\n'
+        '            platform mingw_*\n\n'
+        'Run it from an MSYS2 MINGW64 shell, or name that interpreter directly.\n'
+        'Note that "py" is the Windows Python Launcher and always picks the native one.\n'
+    )
+
+
 ensure_utf8_mode()
+ensure_mingw_python()
 
 from glfw import glfw  # noqa: E402
 from glfw.glfw import ISA, BinaryArch, Command, CompileKey, CompilerType  # noqa: E402
@@ -245,6 +271,43 @@ def error(text: str) -> str:
     if sys.stdout.isatty():
         text = f'\033[91m{text}\033[39m'
     return text
+
+
+def dim(text: str) -> str:
+    if sys.stdout.isatty():
+        text = f'\033[90m{text}\033[39m'
+    return text
+
+
+def heading(text: str) -> str:
+    if sys.stdout.isatty():
+        text = f'\033[1;36m{text}\033[0m'
+    return text
+
+
+_phase_started_at = 0.0
+
+
+def phase(name: str) -> None:
+    """Announce a build step, and time the one before it.
+
+    The per file progress line overwrites itself, so a build that is stuck looks
+    the same as one that is nearly done. Naming each step and timing it tells
+    those apart without turning the output into a log.
+    """
+    global _phase_started_at
+    now = time.monotonic()
+    if _phase_started_at:
+        print(dim(f'    {now - _phase_started_at:.1f}s'), flush=True)
+    _phase_started_at = now
+    print(heading(f'==> {name}'), flush=True)
+
+
+def end_phases() -> None:
+    global _phase_started_at
+    if _phase_started_at:
+        print(dim(f'    {time.monotonic() - _phase_started_at:.1f}s'), flush=True)
+    _phase_started_at = 0.0
 
 
 def pkg_config(pkg: str, *args: str, extra_pc_dir: str = '', fatal: bool = True) -> List[str]:
@@ -965,6 +1028,8 @@ def parallel_run(items: List[Command]) -> None:
 
     printed = False
     isatty = sys.stdout.isatty()
+    w_num = len(str(total))
+    batch_started_at = time.monotonic()
     while items and failed is None:
         while len(workers) < num_workers and items:
             compile_cmd = items.pop()
@@ -972,7 +1037,11 @@ def parallel_run(items: List[Command]) -> None:
             if verbose:
                 print(' '.join(compile_cmd.cmd))
             elif isatty:
-                print(f'\r\x1b[K[{num}/{total}] {compile_cmd.desc}', end='')  # ]]
+                # Counts padded to the same width so the line does not jitter as
+                # the numbers grow, which is most of what makes it hard to read.
+                # flush because the phase headings are flushed: without it this
+                # line sits in the buffer and surfaces under the wrong heading.
+                print(f'\r\x1b[K{dim(f"[{num:>{w_num}}/{total}]")} {compile_cmd.desc}', end='', flush=True)  # ]]
             else:
                 print(f'[{num}/{total}] {compile_cmd.desc}', flush=True)
             printed = True
@@ -982,9 +1051,13 @@ def parallel_run(items: List[Command]) -> None:
     while len(workers):
         wait()
     if not verbose and printed:
-        print(' done')
+        elapsed = time.monotonic() - batch_started_at
+        if failed:
+            print(f'\r\x1b[K{error("failed")} after {elapsed:.1f}s')  # ]]
+        else:
+            print(f'\r\x1b[K{emphasis("ok")} {total} in {elapsed:.1f}s')  # ]]
     if failed:
-        print(failed.desc)
+        print(error(f'Failed: {failed.desc}'))
         run_tool(list(failed.cmd))
 
 
@@ -1298,16 +1371,25 @@ def build(args: Options, native_optimizations: bool = True, call_init: bool = Tr
     if call_init:
         init_env_from_args(args, native_optimizations)
 
+    phase('Generating headers')
     sources, headers = find_c_files()
     headers.append(build_ref_map(args.skip_code_generation))
     headers.append(build_cli_parser_specs(args.skip_code_generation))
     headers.append(build_uniforms_header(args.skip_code_generation))
+
+    phase('Building kitty/fast_data_types')
     compile_c_extension(
         kitty_env(args), 'kitty/fast_data_types', args.compilation_database, sources, headers,
         build_dsym=args.build_dsym,
     )
+
+    phase('Building glfw')
     compile_glfw(args.compilation_database, args.build_dsym)
+
+    phase('Building kittens')
     compile_kittens(args)
+
+    phase('Bundling fonts')
     add_builtin_fonts(args)
 
 
@@ -1395,7 +1477,10 @@ def build_static_kittens(
     if args.skip_building_kitten:
         print('Skipping building of the kitten binary because of a command line option. Build is incomplete', file=sys.stderr)
         return ''
-    cmd = go + ['build', '-v']
+    # -v makes go name every package it touches, about seventy lines that scroll
+    # the rest of the build off screen and say nothing a timing does not. Keep it
+    # behind --verbose, the same place the full compiler commands live.
+    cmd = go + ['build'] + (['-v'] if verbose else [])
     vcs_rev = args.vcs_rev or get_vcs_rev()
     ld_flags: List[str] = []
     with open('go.mod') as f:
@@ -2453,10 +2538,14 @@ def do_build(args: Options) -> None:
         if args.action == 'build':
             build(args, native_optimizations=not args.portable)
             if is_macos:
+                phase('Bundling for macOS')
                 create_minimal_macos_bundle(args, launcher_dir)
             else:
+                phase('Building the launcher')
                 build_launcher(args, launcher_dir=launcher_dir)
+                phase('Building the Go kittens')
                 build_static_kittens(args, launcher_dir=launcher_dir)
+            end_phases()
         elif args.action == 'develop':
             build(args)
             build_launcher(args, launcher_dir=launcher_dir, bundle_type='develop')
