@@ -463,16 +463,19 @@ class TestGraphics(BaseTest):
             # Stands in for NamedTemporaryFile where the handle must not stay open.
             def __init__(self, name): self.name = name
             def close(self):
-                with suppress(OSError): os.unlink(self.name)
+                with suppress(OSError):
+                    os.unlink(self.name)
 
         def load_temp(prefix='tty-graphics-protocol-'):
             if is_windows:
                 fd, name = tempfile.mkstemp(prefix=prefix)
                 os.close(fd)
-                with open(name, 'wb') as w: w.write(random_data)
+                with open(name, 'wb') as w:
+                    w.write(random_data)
                 sl(name, s=1024, v=8, t='f', expecting_data=random_data)
                 self.assertTrue(os.path.exists(name))
-                with open(name, 'wb') as w: w.write(compressed_random_data)
+                with open(name, 'wb') as w:
+                    w.write(compressed_random_data)
                 sl(name, s=1024, v=8, t='t', o='z', expecting_data=random_data)
                 return ClosedTempFile(name)
             f = tempfile.NamedTemporaryFile(prefix=prefix)

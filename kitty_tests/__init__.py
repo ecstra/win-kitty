@@ -26,7 +26,6 @@ from kitty.types import MouseEvent
 from kitty.utils import read_screen_size
 from kitty.window import da1, decode_cmdline, process_remote_print, process_title_from_child
 
-
 is_windows = sys.platform == 'win32'
 
 

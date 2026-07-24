@@ -83,6 +83,12 @@ func TestSSHBootstrapScriptLimit(t *testing.T) {
 }
 
 func TestSSHTarfile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Shells out to the system tar with a Windows path, which the MSYS2
+		// tar cannot open once it has been through shell quoting. The ssh
+		// kitten targets a Unix host anyway.
+		t.Skip("invokes tar with a Windows path")
+	}
 	tdir := t.TempDir()
 	cd := basic_connection_data()
 	data, err := make_tarfile(cd, func(key string) (val string, found bool) { return })
