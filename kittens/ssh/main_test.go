@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -22,6 +23,10 @@ import (
 var _ = fmt.Print
 
 func TestCloneEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The clone-in-kitty path passes its environment through POSIX shm.
+		t.Skip("POSIX shared memory, which Windows has no equivalent of")
+	}
 	env := map[string]string{"a": "1", "b": "2"}
 	data, err := json.Marshal(env)
 	if err != nil {

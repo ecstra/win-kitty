@@ -78,7 +78,10 @@ func geninclude(path string) (string, error) {
 	cmd := exec.Command(path)
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "KITTY_OS="+kitty_os())
-	if strings.HasSuffix(path, ".py") && utils.Access(path, utils.AccessExec) != nil {
+	// Windows has no execute bit for Access to report on, so it answers that a
+	// .py is runnable and exec.Command on the path itself then fails unless the
+	// extension happens to be registered. Always route it to an interpreter.
+	if strings.HasSuffix(path, ".py") && (runtime.GOOS == "windows" || utils.Access(path, utils.AccessExec) != nil) {
 		if utils.KittyExe() == "" || strings.HasPrefix(path, ":") {
 			cmd = exec.Command("python", path)
 		} else {

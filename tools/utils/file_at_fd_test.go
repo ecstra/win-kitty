@@ -298,7 +298,10 @@ func TestReadLinkAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadLinkAt abs: %v", err)
 	}
-	if abs != "/absolute/path" {
+	// ToSlash: Windows normalises separators when it stores a reparse point, so
+	// the target comes back with backslashes. What is being tested is that the
+	// target round-trips, not which separator the filesystem chose to keep.
+	if filepath.ToSlash(abs) != "/absolute/path" {
 		t.Errorf("abs link: got %q, want %q", abs, "/absolute/path")
 	}
 
@@ -306,7 +309,7 @@ func TestReadLinkAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadLinkAt rel: %v", err)
 	}
-	if rel != "relative/path" {
+	if filepath.ToSlash(rel) != "relative/path" {
 		t.Errorf("rel link: got %q, want %q", rel, "relative/path")
 	}
 
@@ -533,7 +536,7 @@ func TestCopyFolderContents_NoHardlinks_NoFollowSymlinks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("readlink %s: %v", s.path, err)
 		}
-		if got != s.want {
+		if filepath.ToSlash(got) != s.want {
 			t.Errorf("symlink %s: got target %q, want %q", s.path, got, s.want)
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -37,6 +38,9 @@ func TestCompleteFiles(t *testing.T) {
 		if expected == nil {
 			expected = make([]string, 0)
 		}
+		for i, x := range expected {
+			expected[i] = filepath.ToSlash(x)
+		}
 		sort.Strings(expected)
 		actual := make([]string, 0, len(expected))
 		CompleteFiles(prefix, func(entry *FileEntry) {
@@ -45,6 +49,12 @@ func TestCompleteFiles(t *testing.T) {
 				t.Fatalf("Abspath does not exist: %#v", entry.Abspath)
 			}
 		}, "")
+		// A directory candidate is suffixed with the platform separator, so
+		// normalise: the expectations are written POSIX style and what matters
+		// is which entries came back.
+		for i, a := range actual {
+			actual[i] = filepath.ToSlash(a)
+		}
 		sort.Strings(actual)
 		if !reflect.DeepEqual(expected, actual) {
 			t.Fatalf("Did not get expected completion candidates for prefix: %#v\nExpected: %#v\nActual:   %#v", prefix, expected, actual)
@@ -58,10 +68,15 @@ func TestCompleteFiles(t *testing.T) {
 				e[i] = x
 			} else {
 				e[i] = filepath.Join(tdir, x)
-				if strings.HasSuffix(x, utils.Sep) {
-					e[i] += utils.Sep
+				// The expectations are written POSIX style, so test for that
+				// suffix rather than the platform one, which never matches on
+				// Windows and silently drops the trailing separator that marks
+				// a directory candidate.
+				if strings.HasSuffix(x, "/") {
+					e[i] += "/"
 				}
 			}
+			e[i] = filepath.ToSlash(e[i])
 		}
 		test_candidates(prefix, e...)
 	}
@@ -92,6 +107,12 @@ func TestCompleteFiles(t *testing.T) {
 }
 
 func TestCompleteExecutables(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The fixture separates runnable from not by the execute bit. Windows
+		// decides by extension through PATHEXT, so every file in PATH looks
+		// runnable and the negative cases all come back. Recorded in WINDOWS_TODO.
+		t.Skip("executables are identified by the POSIX execute bit here")
+	}
 	tdir := t.TempDir()
 	create := func(base string, name string, mode os.FileMode) {
 		f, _ := os.OpenFile(filepath.Join(tdir, base, name), os.O_CREATE, mode)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"golang.org/x/sys/windows"
 )
@@ -32,7 +33,24 @@ func OpenAt(dirFile *os.File, name string) (*os.File, error) {
 }
 
 func OpenDirAt(dirFile *os.File, name string) (*os.File, error) {
-	return os.Open(join(dirFile, name))
+	f, err := os.Open(join(dirFile, name))
+	if err != nil {
+		return nil, err
+	}
+	// The POSIX implementation passes O_DIRECTORY and lets the kernel reject
+	// anything that is not a directory. Windows has no such flag and opens a
+	// regular file quite happily, so check afterwards, and close on the way out
+	// rather than leaking the handle to a file the caller never receives.
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !info.IsDir() {
+		f.Close()
+		return nil, &os.PathError{Op: "open", Path: f.Name(), Err: syscall.ENOTDIR}
+	}
+	return f, nil
 }
 
 func SymlinkAt(dirFile *os.File, name, target string) error {

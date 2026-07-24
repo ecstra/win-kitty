@@ -93,6 +93,12 @@ func TestGetParentDirs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			result := get_parent_dirs(tc.input)
+			// The cases are written with POSIX separators. filepath.Dir returns the
+			// platform form, so normalise before comparing: what is under test is
+			// which directories come back, not which separator they use.
+			for i, r := range result {
+				result[i] = filepath.ToSlash(r)
+			}
 			sort.Strings(result)
 			sort.Strings(tc.expect)
 			if tc.expect == nil {
@@ -166,6 +172,12 @@ func TestGetUniqueDirectories(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			result := get_unique_directories(tc.input)
+			// The cases are written with POSIX separators. filepath.Dir returns the
+			// platform form, so normalise before comparing: what is under test is
+			// which directories come back, not which separator they use.
+			for i, r := range result {
+				result[i] = filepath.ToSlash(r)
+			}
 			sort.Strings(result)
 			sort.Strings(tc.expect)
 			if diff := cmp.Diff(tc.expect, result); diff != "" {
