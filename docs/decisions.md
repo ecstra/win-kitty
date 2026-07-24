@@ -110,3 +110,9 @@ Closing a maximized window used to save the full screen size, so the next launch
 ## No close confirmation by default
 
 Windows terminals close without a prompt. The default also mattered while the confirmation kitten was broken, because it left an empty config unable to close at all. The kitten works now, and the default stays 0 to match how Windows terminals behave. A user who wants a prompt can set `confirm_os_window_close`.
+
+## Ctrl+click opens a link, alongside upstream's Ctrl+Shift+click
+
+Windows Terminal and the GNOME terminals open a link on Ctrl+click, so that is the binding a Windows user tries first. Upstream binds Ctrl+Shift+click instead, which is left in place, as is the plain click. The two are added rather than swapped, because they use different triggers and nothing else was bound to Ctrl+click.
+
+The press is discarded in grabbed mode, mirroring what upstream does for Ctrl+Shift. The release is what opens the URL, so a program holding the mouse must not also receive the press, or it acts on the click as well.

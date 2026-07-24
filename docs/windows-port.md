@@ -198,6 +198,7 @@ An empty config gets these built in. An explicit setting in kitty.conf still win
 - `window_padding_width 1 10 10 10`: a small top padding, because the title bar strip already spaces the top, and normal padding on the other three sides.
 - `placement_strategy top-left`: the grid sits just under the title bar instead of floating in the centre.
 - `confirm_os_window_close 0`: closing a window does not prompt, which is how Windows terminals behave.
+- `mouse_map ctrl+left` opens the link under the cursor, matching Windows Terminal and the GNOME terminals. Upstream's `ctrl+shift+left` and plain click still work.
 
 ## Building from source
 

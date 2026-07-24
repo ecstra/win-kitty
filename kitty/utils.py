@@ -252,7 +252,17 @@ def command_for_open(program: str | list[str] = 'default') -> list[str]:
         from .conf.utils import to_cmdline
         program = to_cmdline(program)
     if program == ['default']:
-        cmd = ['open'] if is_macos else ['xdg-open']
+        if is_macos:
+            cmd = ['open']
+        elif is_windows:
+            # There is no xdg-open here. rundll32 hands the URL to the shell's
+            # protocol handler, the same route ShellExecute takes, so it opens
+            # in whatever the user set as default. Unlike `cmd /c start` it is a
+            # direct exec, so an & in a query string stays part of the URL
+            # instead of being read as a command separator.
+            cmd = ['rundll32.exe', 'url.dll,FileProtocolHandler']
+        else:
+            cmd = ['xdg-open']
     else:
         cmd = program
     return cmd
@@ -271,6 +281,15 @@ def open_cmd(cmd: Iterable[str] | list[str], arg: None | Iterable[str] | str = N
     if extra_env:
         env = os.environ.copy()
         env.update(extra_env)
+    if is_windows:
+        # preexec_fn raises ValueError on Windows before the process is even
+        # created, so opening anything failed here regardless of the command.
+        # There are no inherited signal handlers to reset, so there is nothing
+        # for it to do. CREATE_NO_WINDOW keeps a console based handler from
+        # flashing a window on its way past.
+        return subprocess.Popen(
+            tuple(cmd), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd or None,
+            env=env, creationflags=subprocess.CREATE_NO_WINDOW)  # ty: ignore[unresolved-attribute]
     return subprocess.Popen(
         tuple(cmd), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd or None,
         preexec_fn=clear_handled_signals, env=env)
