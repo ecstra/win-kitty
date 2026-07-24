@@ -2,21 +2,37 @@
 
 Why some of the Windows choices are the way they are. Read this for the reasoning behind a choice. The code and the other docs say what the system does.
 
-## Real acrylic via the DWM system backdrop
+## Real acrylic via a composition effect graph
 
-The port uses DWMWA_SYSTEMBACKDROP_TYPE set to DWMSBT_TRANSIENTWINDOW, the genuine Windows 11 acrylic material, the same one Windows Terminal shows. It is requested untinted, so kitty's own `background_opacity` stays in charge of the colour as it does on every other platform. Handing the tint to DWM instead blends it with DWM's own maths and a saturation boost, which reads darker and warmer than the configured colour.
+The material is built as a Windows.UI.Composition effect graph, the same recipe WinUI's AcrylicBrush uses and therefore the same one Windows Terminal shows. A host backdrop brush feeds a luminosity blend that flattens contrast, a colour blend then lays the tint over it, and the noise texture WinUI ships is composited on top at two percent. Measured against Terminal over the same wallpaper the two match to a fraction of a percent in brightness, and their blur spread agrees to within a few percent.
 
-This reverses an earlier decision. The port previously used the accent policy, ACCENT_ENABLE_ACRYLICBLURBEHIND, which on Windows 11 24H2 renders a plain Gaussian blur no matter what tint alpha it is given, and which tapered off over the outermost 64 pixels because the blur kernel cannot sample past the window boundary.
+This replaces the DWM system backdrop the port used before, DWMWA_SYSTEMBACKDROP_TYPE set to DWMSBT_TRANSIENTWINDOW. That is also real acrylic, but DWM renders it with maths of its own that cannot be matched to Terminal, and it needed two workarounds the effect graph does not. It went opaque on focus loss unless WM_NCACTIVATE reported the frame active unconditionally, and it showed a stale cropped piece of wallpaper after every maximize unless the attribute was toggled off and on to force a resample. Neither is needed now.
 
-The system backdrop had been rejected because it goes opaque the moment the window is deactivated. That turns out to be avoidable in four lines. The swap keys off the frame active state, and that state is nothing more than the wParam DefWindowProc receives in WM_NCACTIVATE. Reporting active unconditionally keeps the material, and keeps the per pixel alpha that DWM otherwise also drops on deactivation. There is no cosmetic cost, because kitty draws its own caption and nothing keys off the DWM active look.
+The recipe is reproduced through IGraphicsEffectD2D1Interop, a small COM object the file implements by hand rather than pulling in Win2D. Two details are load bearing. The flood colours go across straight and the composition engine premultiplies them, so premultiplying them again reads far too dark. And the two blend modes are passed by their raw D2D values, 22 and 23, because the WinUI enum names for Colour and Luminosity are swapped upstream, so the value that reads as Colour means luminosity here. Correcting them turns the window greyscale.
 
-Two claims in the earlier reasoning were wrong and are worth recording. Neither a composition render path nor package identity is required. The backdrop composes with an ordinary OpenGL redirection surface, and this port has no DirectComposition surface for it to conflict with. Windows Terminal does reach acrylic another way, through DesktopAcrylicController in a composition tree, but that is one way to solve it rather than the only one. The conclusion that real acrylic had to wait for the packaging phase was therefore wrong. It needed a message handler.
+The effect graph runs against mingw, which is the port's toolchain. Its headers carry only a fraction of the composition interfaces and none of the D2D effect class ids, so the file declares the five interfaces and five class ids it needs. Direct2D has no C bindings at all, but its enums and property indices compile as C and that is all the graph uses from it. Nothing calls into D2D and nothing links against d2d1.
 
-DwmExtendFrameIntoClientArea is still not used to expose the material, for the reason in the empty region section below.
+## The window has no redirection surface
+
+A composition tree always draws above the window's redirection surface, so an acrylic sprite on an ordinary window would cover the terminal. The window takes WS_EX_NOREDIRECTIONBITMAP so it has no such surface, and every pixel comes from the composition tree instead: the acrylic underneath, the OpenGL output above it in a composition swapchain. This is the shape Windows Terminal uses, and for the same reason.
+
+OpenGL reaches the swapchain through WGL_NV_DX_interop2, an extension AMD and NVIDIA ship and Intel does not reliably. The swapchain back buffer is registered with GL once and left bound as a framebuffer, and kitty renders through bind_framebuffer_for_output, which rebinds framebuffer 0 every frame, so the renderer is untouched. Each present blits framebuffer 0 into the back buffer, flipping Y because OpenGL puts the origin at the bottom left and a DXGI texture puts it at the top left. When the interop extension is missing the window falls back to glass, transparent with no material.
+
+Windows.UI.Composition also refuses to activate on a thread with no DispatcherQueue, and reports that as a bare access denied from RoActivateInstance. One queue is made for the thread and never released, because releasing it when a window closes leaves the next window unable to make another.
+
+## The swapchain content is never scaled
+
+The content surface brush is CompositionStretch.None, top left aligned. The swapchain buffer and the composition visual sit on different clocks, so a live resize leaves them disagreeing by a frame, and the default Fill stretch turned that into the terminal content pulsing larger and smaller for the length of the drag. With no stretch a stale frame simply does not reach the new edge, and the acrylic shows through there for the one frame before kitty repaints. DXGI_SCALING_NONE on the swapchain would have been the other lever, but a composition swapchain rejects it with DXGI_ERROR_INVALID_CALL.
+
+The swapchain also queues at most one frame, through IDXGIDevice1 SetMaximumFrameLatency. The default is three, and during a resize both the size events and the repaint timer present rapidly, so the compositor showed frames a few behind. While the prompt reflowed that read as the cursor jittering between recent positions.
+
+## The live resize repaint uses a multimedia timer
+
+SetTimer raises any interval below USER_TIMER_MINIMUM, ten milliseconds, up to that floor, and WM_TIMER coalescing pulls it lower, so a repaint driven by it was pinned near eighty frames a second on a faster panel. DwmFlush and the composition swapchain present were both measured at the full refresh rate, so the timer was the only thing in the way. The repaint runs off timeSetEvent at one refresh period instead, which fires below the ten millisecond floor on its own thread and posts a message the modal resize loop pumps, coalesced so a slow frame never backs the queue up. SetTimer stays as the fallback when winmm is unavailable.
 
 ## Matching the Windows Terminal tint strength
 
-`background_opacity` is scaled by the same factor WinUI applies before it reaches the window. Terminal renders acrylic through the AcrylicBrush, whose GetTintOpacityModifier never applies the configured opacity literally, so the same number means something different in the two terminals. Without the discount kitty is visibly the darker of the two at an identical setting. The alternative was to leave the number literal and be honest about it, which is defensible, but a user comparing the two side by side reads the difference as a bug in the port rather than as a difference in what the number means.
+Terminal renders acrylic through the AcrylicBrush, whose GetTintOpacityModifier never applies the configured opacity literally. It scales the opacity by a factor derived from the tint's brightness, about 0.86 for a background as dark as the default, so its eighty percent is really nearer sixty nine. The same modifier lives in the effect graph here, so with blur on the material carries the same discounted tint and kitty paints no background of its own. platform_bg_alpha returns zero on that path so the default cells stay transparent and the material shows through. With blur off there is no material, kitty paints its own background, and platform_bg_alpha applies the same modifier so the number still means what Terminal means by it. Without the discount kitty is visibly the darker of the two at an identical setting.
 
 ## Running MSYS2 and Cygwin shells on a Cygwin pty
 
@@ -71,13 +87,13 @@ Classic registry verbs under HKLM are enough on Windows 10, and Windows 11 shows
 
 Custom frame apps on Windows keep WS_CAPTION so the window still snaps, maximizes with an animation, and shows a taskbar menu, then hide the frame by handling WM_NCCALCSIZE. Dropping WS_CAPTION was tried. It did not stop DWM from painting a caption in the glass transparency mode, so it gained nothing and put the normal window behaviour at risk.
 
-## Caption buttons as a child window
+## Caption buttons follow the redirection surface
 
-They began as a top level popup, which DWM cannot animate in step with the parent, so they jumped to the maximized position while the window was still animating. A WS_CHILD layered window moves as one surface with the parent, which removes the desync.
+They are a WS_CHILD layered window in every mode except acrylic. A child composites into its parent's redirection surface and moves as one surface with it, so DWM animates it in step through minimize and maximize where a top level popup jumps ahead to the final position. The acrylic path removes the redirection surface, so a child there has nowhere to draw and the buttons vanish. On that path they are an owned popup, which carries its own surface. The popup cannot desync from the parent animation because the acrylic path disables those animations anyway, with DWMWA_TRANSITIONS_FORCEDISABLED, since they are DWM scaling a snapshot the material cannot follow.
 
-## Blur behind with an empty region for no blur transparency
+## Blur behind with an empty region, for the glass mode
 
-Two other approaches failed first. DwmExtendFrameIntoClientArea, the sheet of glass trick, makes DWM paint its own caption over the custom one. Turning off DWM non client rendering to hide that caption forces the classic Windows 98 frame in every mode. DwmEnableBlurBehindWindow with an empty blur region gives per pixel transparency without touching the frame, so neither problem shows up.
+Transparent with blur off still uses DwmEnableBlurBehindWindow with an empty blur region, which gives per pixel alpha with no blur of its own and without extending the window frame. A plain Win32 window is opaque whatever the framebuffer alpha is, so it is still needed there. The blur mode does not use it, because that path has no redirection surface and takes its transparency from the composition tree. Two other approaches failed first. DwmExtendFrameIntoClientArea, the sheet of glass trick, makes DWM paint its own caption over the custom one. Turning off DWM non client rendering to hide that caption forces the classic Windows 98 frame in every mode.
 
 ## The maximized size is not saved as the window size
 
