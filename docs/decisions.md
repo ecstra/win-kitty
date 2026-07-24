@@ -40,6 +40,14 @@ These shells run through a bridge on a real Cygwin pty rather than on a pseudoco
 
 Running the shell on a Cygwin pty and passing the bytes over plain pipes is the architecture mintty uses, and it makes those artifacts disappear. The cost is a second process and a dependency on the MSYS2 Python, so the bridge is used only when every piece it needs is present and `KITTY_NO_CYGWIN_PTY=1` turns it off.
 
+## The bridge drops stale mouse motion
+
+Writing to the cygwin pty master blocks until the child drains it, and it does that even with O_NONBLOCK set, which cygwin ignores for this write. So a child that consumes input slowly stalls the input pump, and every stall lets more input pile up, which makes the next write block longer again. Measured with the mouse-demo kitten, a single write grew from 118ms to 2.6 seconds as the backlog went from 15 mouse reports to 241, and the window appeared to hang every few mouse movements. Only msys and cygwin shells show it, because only they go through the bridge.
+
+Buffering the overflow was tried first and changed nothing, since the block is in the write itself rather than in a retry loop around it. What works is not sending the child input it would only throw away. When several mouse motion reports are queued, all but the newest are dropped, because only the current pointer position means anything. Presses, releases and scroll are never dropped.
+
+The cost is that the bridge now reads the stream rather than only relaying it. It already did that for the resize sequence, and this is the second exception, so the file is no longer a byte for byte pipe. The risk is that the pattern it matches, ESC [ < digits ; digits ; digits and M or m, could in principle appear in pasted binary input and be dropped. A transparent relay cannot fix this though, because deciding that a run of positions is obsolete requires knowing they are mouse motion.
+
 ## Kittens over pipes rather than a pseudoconsole
 
 A kitten is a VT program talking to kitty, so there is nothing for a pseudoconsole to do except get in the way. Running kittens on one made conhost rewrite their escape codes, which showed as flicker, and left kitty without an EOF when the kitten exited, so its window stayed open. Plain pipes fix both.
