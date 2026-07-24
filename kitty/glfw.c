@@ -1559,6 +1559,9 @@ apply_window_chrome_state(GLFWwindow *w, WindowChromeState new_state, int width,
         // Publish the background colour so the win32 backend can match the
         // caption to it. glfwSetWindowBlur re-reads this and restyles the caption.
         { char tb[16]; snprintf(tb, sizeof tb, "%06x", (unsigned)(new_state.color & 0xffffff)); setenv("KITTY_TITLEBAR_RGB", tb, 1); }
+        // The acrylic material is tinted with these two, so it needs the
+        // configured opacity, not the discounted one the renderer uses.
+        { char bo[16]; snprintf(bo, sizeof bo, "%.4f", (double)OPT(background_opacity)); setenv("KITTY_BACKGROUND_OPACITY", bo, 1); }
 #endif
         glfwSetWindowBlur(w, new_state.background_blur);
         if (global_state.is_wayland) {

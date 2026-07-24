@@ -10,6 +10,12 @@
 #include <ole2.h>
 #include <shellapi.h>
 
+#include "win32_acrylic.h"
+
+#ifndef WS_EX_NOREDIRECTIONBITMAP
+#define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
+#endif
+
 // ---------------------------------------------------------------------------
 // Key translation: Win32 virtual key -> kitty functional key
 // ---------------------------------------------------------------------------
@@ -75,7 +81,24 @@ static int titlebarHeightPx(HWND hWnd) { return MulDiv(KITTY_TITLEBAR_LOGICAL_PX
 static void ensureCaptionButtons(_GLFWwindow* window);      // fwd
 static void positionCaptionButtons(_GLFWwindow* window);    // fwd
 static void updateWindowComposition(_GLFWwindow* window);   // fwd
-static void refreshBackdrop(_GLFWwindow* window);           // fwd
+
+// kitty publishes the window background colour and opacity in the environment
+// before it calls glfwSetWindowBlur, the same channel the caption colour
+// already used. The acrylic tint is derived from both.
+static unsigned int titlebarRGB(void) {
+    const char* rgb = getenv("KITTY_TITLEBAR_RGB");
+    if (!rgb || strlen(rgb) < 6) return 0x1e1e1e;
+    return (unsigned int)(strtoul(rgb, NULL, 16) & 0xffffff);
+}
+
+static float backgroundOpacity(void) {
+    const char* s = getenv("KITTY_BACKGROUND_OPACITY");
+    if (!s || !*s) return 1.f;
+    double v = strtod(s, NULL);
+    if (v < 0.) v = 0.;
+    if (v > 1.) v = 1.;
+    return (float) v;
+}
 
 // ---------------------------------------------------------------------------
 // Window procedure
@@ -160,10 +183,10 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             _glfwInputFramebufferSize(window, width, height);
             _glfwInputWindowSize(window, width, height);
             positionCaptionButtons(window);
-            // Maximize/restore/fullscreen: DWM carries the backdrop it sampled
-            // for the old bounds through the transition, so the acrylic lands
-            // showing a stale, cropped piece of wallpaper. Force a resample.
-            if (wParam == SIZE_MAXIMIZED || wParam == SIZE_RESTORED) refreshBackdrop(window);
+            // The composition swapchain holding the GL output has to follow the
+            // window, or the terminal is stretched from the old size.
+            if (window->win32.acrylic && !window->win32.iconified)
+                _glfwWin32AcrylicResize(window, width, height);
             // The Win32 modal resize loop blocks our main loop, so render here to
             // keep the window live (otherwise DWM stretches the stale frame).
             if (_glfw.win32.tickCallback && !window->win32.iconified)
@@ -179,7 +202,6 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             KillTimer(hWnd, 1001);
             _glfwInputLiveResize(window, false);
             if (_glfw.win32.tickCallback) _glfw.win32.tickCallback(_glfw.win32.tickCallbackData);
-            refreshBackdrop(window);
             break;
         case WM_TIMER:
             if (wParam == 1001) {
@@ -626,40 +648,54 @@ static void styleTitlebar(_GLFWwindow* window) {
 // Transparency + real frosted acrylic on the window itself (no second window,
 // so no drag ghost).
 //
-// This is the genuine Windows 11 acrylic material, the same one Windows
-// Terminal shows -- not the plain Gaussian blur this port used previously.
-// The accent policy (ACCENT_ENABLE_ACRYLICBLURBEHIND) is gone: on Win11 24H2
-// it renders the same flat Gaussian blur as the legacy aero state no matter
-// what tint alpha it is given, and it tapered off over the outer ~64px.
+// The material is built by win32_acrylic.c as a Windows.UI.Composition effect
+// graph, the same recipe WinUI's AcrylicBrush uses and therefore the same one
+// Windows Terminal shows. It replaces the DWM system backdrop this port used
+// before (DWMWA_SYSTEMBACKDROP_TYPE with DWMSBT_TRANSIENTWINDOW), which DWM
+// renders with maths of its own that cannot be matched to Terminal, and which
+// needed two workarounds this path does not: a forced-active WM_NCACTIVATE to
+// stop DWM dropping the material on focus loss, and an off/on toggle after
+// every maximize to make DWM resample a stale backdrop.
 //
-// The DWM system backdrop was originally rejected for one reason -- it goes
-// opaque the moment the window is deactivated. That turns out to be trivially
-// avoidable: the swap keys off the frame's active state, which is nothing more
-// than the wParam DefWindowProc receives in WM_NCACTIVATE. windowProc reports
-// active unconditionally for transparent windows, so the material survives
-// losing focus. Nothing about packaging or a composition render path was
-// actually required.
+// Glass mode, transparent with blur off, keeps the old mechanism: an
+// empty-region blur-behind for per-pixel alpha with no material. A plain Win32
+// window is opaque regardless of framebuffer alpha, so it is still needed.
 //
-// Note the backdrop is requested untinted; kitty's own background_opacity
-// stays in charge of the colour, exactly as it does on the other platforms.
-// Handing the tint to DWM instead blends it with DWM's own maths and a
-// saturation boost, which reads darker and warmer than the configured colour.
-//
-// Two modes, both of which need the empty-region blur-behind for per-pixel
-// alpha (a plain Win32 window is opaque regardless of framebuffer alpha):
-//   * glass (transparent, no blur): alpha only, no material.
-//   * blur  (transparent + blur):   alpha plus the acrylic backdrop.
 // DwmExtendFrameIntoClientArea is deliberately not used to expose the
 // material -- it makes DWM paint its own caption over the custom one (see
 // docs/decisions.md).
 static void updateWindowComposition(_GLFWwindow* window) {
     HWND hwnd = window->win32.handle;
     if (!hwnd) return;
-    const bool wantBlur = window->win32.blur > 0;
     const bool wantTransparent = window->win32.transparent;
-    const bool acrylic = wantTransparent && wantBlur;
-    // Per-pixel alpha for every transparent mode. Dark caption/border is set
-    // separately in styleTitlebar().
+    const bool wantAcrylic = wantTransparent && window->win32.blur > 0;
+
+    if (wantAcrylic) {
+        // The host backdrop brush samples what is behind the window, and needs
+        // this attribute on the top level HWND to produce anything at all.
+        if (_glfw.win32.dwmapi.SetWindowAttribute) {
+            BOOL on = TRUE;
+            _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 17 /* DWMWA_USE_HOSTBACKDROPBRUSH */, &on, sizeof(on));
+            // The minimize/maximize animation is DWM scaling a snapshot of the
+            // window. The backdrop reaches us through the redirection surface,
+            // so that snapshot carries a stale, stretched copy of the desktop
+            // and the material visibly lags the animation. A snapshot cannot
+            // be made live, so drop the transition instead.
+            BOOL noTransitions = TRUE;
+            _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 3 /* DWMWA_TRANSITIONS_FORCEDISABLED */,
+                                                  &noTransitions, sizeof(noTransitions));
+        }
+        if (!window->win32.acrylic) _glfwWin32AcrylicCreate(window);
+        if (window->win32.acrylic) {
+            _glfwWin32AcrylicSetTint(window, titlebarRGB(), backgroundOpacity());
+            return;
+        }
+        // Creating it failed, most likely no WGL_NV_DX_interop2. Fall through
+        // to glass so the window is at least translucent.
+    }
+
+    if (window->win32.acrylic) _glfwWin32AcrylicDestroy(window);
+
     if (_glfw.win32.dwmapi.EnableBlurBehindWindow) {
         DWM_BLURBEHIND bb; memset(&bb, 0, sizeof bb);
         bb.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
@@ -669,25 +705,9 @@ static void updateWindowComposition(_GLFWwindow* window) {
         if (bb.hRgnBlur) DeleteObject(bb.hRgnBlur);
     }
     if (_glfw.win32.dwmapi.SetWindowAttribute) {
-        DWORD backdrop = acrylic ? 3 /* DWMSBT_TRANSIENTWINDOW */ : 1 /* DWMSBT_NONE */;
+        DWORD backdrop = 1 /* DWMSBT_NONE */;
         _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
     }
-}
-
-// Force DWM to resample the acrylic for the window's current bounds.
-//
-// Through a maximize/restore/fullscreen transition DWM keeps the backdrop it
-// sampled for the old bounds, so once the window lands the acrylic is a stale
-// piece of wallpaper, cropped to where the window used to be. Re-setting the
-// attribute to the value it already holds is a no-op as far as DWM is
-// concerned, so clear it first: the off/on pair is what makes it resample.
-static void refreshBackdrop(_GLFWwindow* window) {
-    HWND hwnd = window->win32.handle;
-    if (!hwnd || !_glfw.win32.dwmapi.SetWindowAttribute) return;
-    if (!window->win32.transparent || window->win32.blur <= 0) return;
-    DWORD none = 1 /* DWMSBT_NONE */, acrylic = 3 /* DWMSBT_TRANSIENTWINDOW */;
-    _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 38, &none, sizeof(none));
-    _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 38, &acrylic, sizeof(acrylic));
 }
 
 int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconfig,
@@ -706,7 +726,16 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
     RECT rect = { 0, 0, wndconfig->width, wndconfig->height };
     AdjustWindowRectEx(&rect, style, FALSE, WS_EX_APPWINDOW);
 
-    window->win32.handle = CreateWindowExW(WS_EX_APPWINDOW, _GLFW_WNDCLASSNAME, wtitle ? wtitle : L"kitty",
+    // WS_EX_NOREDIRECTIONBITMAP has to be decided here, since it cannot be
+    // added after the window exists. Acrylic needs it: the material lives in a
+    // composition tree, and a composition tree always draws above the
+    // redirection surface, so leaving the surface in place would hide the
+    // terminal behind the material. See win32_acrylic.c.
+    window->win32.blur = _glfw.hints.window.blur_radius;
+    const DWORD exStyle = WS_EX_APPWINDOW |
+        (window->win32.transparent && window->win32.blur > 0 ? WS_EX_NOREDIRECTIONBITMAP : 0);
+
+    window->win32.handle = CreateWindowExW(exStyle, _GLFW_WNDCLASSNAME, wtitle ? wtitle : L"kitty",
         style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
         NULL, NULL, _glfw.win32.instance, NULL);
     free(wtitle);
@@ -723,6 +752,10 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
     }
     window->win32.customFrame = window->decorated && !window->monitor;
     if (window->win32.transparent) updateWindowComposition(window);
+    // The framebuffer swap has to happen with the context current, which it is
+    // right after creation. If either step fails the window keeps the plain
+    // path and simply has no acrylic.
+    if (window->win32.acrylic) _glfwWin32AcrylicBindFramebuffer(window);
     styleTitlebar(window);
     if (window->win32.customFrame) {
         ensureCaptionButtons(window);
@@ -734,6 +767,8 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
 }
 
 void _glfwPlatformDestroyWindow(_GLFWwindow* window) {
+    // Before the context goes: releasing the interop objects needs it current.
+    _glfwWin32AcrylicDestroy(window);
     if (window->context.destroy) window->context.destroy(window);
     if (window->win32.captionButtons) {
         DestroyWindow(window->win32.captionButtons);
