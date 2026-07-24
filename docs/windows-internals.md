@@ -27,6 +27,7 @@ A few details make it work.
 - UTF-8 is forced. The MSYS2 runtime converts the output of native Windows programs from the console code page to the pty charset, so the bridge sets the console code page to 65001 and defaults LANG to a UTF-8 locale, which makes that conversion an identity.
 - The bridge marks its own standard handles non inheritable. Otherwise every native program the shell starts inherits a copy of the output pipe write handle, and kitty never sees EOF, so the window will not close.
 - Both pumps are non blocking with a short adaptive sleep. A parked Cygwin blocking read holds Cygwin internal locks in a retry cycle of 10 to 15 ms that stalls the other direction, so waiting that way costs more than polling.
+- Superseded mouse motion is dropped. Writing to the pty master blocks until the child drains it whatever O_NONBLOCK says, so a slow child stalls the input pump and the backlog makes the next write block longer still. `coalesce_mouse_motion` forwards only the newest motion report and drops the ones it replaces. Presses, releases and scroll always go through. See `docs/decisions.md` for why this is done in the bridge.
 
 kitty also installs its terminfo into the MSYS2 tree, in `ensure_msys2_terminfo`. The MSYS2 runtime only enables its console interop for native Windows programs, which is what gives them keyboard input and the right terminal size, when it can find the terminfo entry for `$TERM`. Without the entry, native programs run from the shell get neither.
 

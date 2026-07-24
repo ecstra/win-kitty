@@ -42,6 +42,36 @@ RESIZE_PAT = re.compile(br'\x1b\[8;(\d{1,5});(\d{1,5})t')
 # Longest prefix of an incomplete resize sequence we might need to hold back.
 MAX_HOLD = 16
 
+# SGR mouse report: ESC [ < button ; col ; row (M|m). Bit 5 of the button code
+# marks a motion event (35 = hover, 32-34 = drag); presses, releases and scroll
+# do not have it set.
+SGR_MOUSE_PAT = re.compile(br'\x1b\[<(\d{1,4});(\d{1,5});(\d{1,5})[Mm]')
+
+def coalesce_mouse_motion(data: bytes) -> bytes:
+    '''Drop superseded mouse motion reports, keeping the most recent.
+
+    Writing to the cygwin pty master blocks until the child drains it, and it
+    does so even with O_NONBLOCK set, which cygwin ignores here. A child that is
+    slow to consume input therefore stalls this pump, and every stall lets more
+    motion reports pile up, so the next write blocks longer still: measured with
+    the mouse-demo kitten, one write went from 118ms to 2.6s as the backlog grew
+    from 15 reports to 241.
+
+    Only the newest position is meaningful, so the older ones are dropped rather
+    than queued. Presses, releases and scroll are never dropped, and nothing
+    else in the stream is touched.
+    '''
+    motions = [m for m in SGR_MOUSE_PAT.finditer(data) if int(m.group(1)) & 32]
+    if len(motions) < 2:
+        return data
+    out = []
+    pos = 0
+    for m in motions[:-1]:
+        out.append(data[pos:m.start()])
+        pos = m.end()
+    out.append(data[pos:])
+    return b''.join(out)
+
 def could_be_resize_prefix(data: bytes) -> int:
     'Length of the trailing bytes of data that are a prefix of a resize sequence, else 0.'
     full = b'\x1b[8;'
@@ -186,13 +216,31 @@ def main() -> None:
         time.sleep(0.0008 if idle < 0.25 else (0.005 if idle < 2.0 else 0.012))
 
     def pump_input() -> None:
-        held = b''
+        held = b''      # trailing bytes that might be an incomplete resize sequence
+        pending = b''   # input the pty master has not accepted yet
         last_busy = time.monotonic()
         while True:
+            # Writing to the pty master blocks until the child drains it, and it
+            # does so even though the fd is O_NONBLOCK, which cygwin ignores
+            # here. Coalescing keeps what is handed over small enough that the
+            # child stays ahead of it; pending covers a short write.
+            if pending:
+                pending = coalesce_mouse_motion(pending)
+                try:
+                    pending = pending[os.write(master, pending):]
+                except (BlockingIOError, InterruptedError):
+                    pass
+                except OSError:
+                    return
             try:
                 data = os.read(0, 65536)
             except BlockingIOError:
-                adaptive_sleep(last_busy)
+                # Nothing new from kitty. Spin tight while the pty still owes us
+                # a drain, otherwise fall back to the idle-adaptive sleep.
+                if pending:
+                    time.sleep(0.0008)
+                else:
+                    adaptive_sleep(last_busy)
                 continue
             except OSError:
                 data = b''
@@ -216,11 +264,7 @@ def main() -> None:
             if n:
                 held = data[len(data) - n:]
                 data = data[:len(data) - n]
-            if data:
-                try:
-                    write_all(master, data)
-                except OSError:
-                    return
+            pending += data
 
     def pump_output() -> None:
         last_busy = time.monotonic()
