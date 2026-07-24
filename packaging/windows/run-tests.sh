@@ -1,70 +1,33 @@
 #!/bin/bash
-# Run the part of the kitty test suite that works on the native Windows port.
+# Run the kitty test suite on the native Windows port.
 #
-# Most of the suite assumes a Unix host. It opens ptys, calls os.mkfifo, uses
-# POSIX shared memory and utmp, and spawns real shells, none of which exist
-# here. Running the whole suite does not fail cleanly either, it hangs, so CI
-# needs an explicit list.
+# This used to run an explicit list of 13 modules. The rest either failed on
+# POSIX assumptions or hung outright, so naming the ones that worked was the
+# only way to get a usable signal. They now either pass or skip with a stated
+# reason, so the whole suite runs, Go tests included.
 #
-# The excluded modules are listed below with the reason each one is out, so
-# this reads as a record of what is left to port rather than a quiet subset.
-# When one starts working on Windows, move it up into MODULES.
+# Skips are printed by the runner rather than hidden in a list here, so what is
+# not covered stays visible in the CI log. WINDOWS_TODO records the gaps behind
+# the ones that cannot pass yet.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
 PY="${PY:-python}"
-TIMEOUT="${TIMEOUT:-120}"
+# A hang would otherwise sit there until the job limit. The suite takes well
+# under a minute, so anything approaching this is wrong rather than slow.
+TIMEOUT="${TIMEOUT:-900}"
 
-MODULES=(
-    parser
-    screen
-    layout
-    search_query_parser
-    crypto
-    multicell
-    tab_bar
-    open_actions
-    keys
-    mouse
-    notifications
-    command_palette
-    clipboard
-)
-
-# Excluded, with the blocker:
-#   atexit             spawns the atexit helper over a pty
-#   check_build        checks a Unix install layout
-#   completion         drives the shell completion helpers through a shell
-#   datatypes          os.mkfifo
-#   dnd, dnd_kitten    the dnd kitten is not implemented on Windows
-#   file_transmission  needs a pty and Unix file modes
-#   fonts              fontconfig matching differs, needs its own Windows tests
-#   glfw               expects the X11/Cocoa backends
-#   graphics, gr       need a pty for the graphics protocol round trip
-#   options            execs a helper that is not a Windows binary
-#   panels             the panel kitten is not implemented on Windows
-#   shell_integration  needs a pty and a POSIX shell
-#   shm                POSIX shared memory
-#   ssh                needs a pty
-#   tui                needs a pty
-#   utmp               no utmp on Windows
-
-failed=()
-for m in "${MODULES[@]}"; do
-    printf '==> %s\n' "$m"
-    if PYTHONUTF8=1 timeout "$TIMEOUT" "$PY" test.py --module "$m"; then
-        :
-    else
-        rc=$?
-        [ "$rc" -eq 124 ] && echo "    TIMED OUT after ${TIMEOUT}s"
-        failed+=("$m")
-    fi
-done
-
-if [ ${#failed[@]} -gt 0 ]; then
-    printf '\nFAILED: %s\n' "${failed[*]}"
-    exit 1
+if timeout "$TIMEOUT" "$PY" test.py; then
+    echo
+    echo "Test suite passed"
+    exit 0
 fi
-printf '\nAll %d Windows test modules passed\n' "${#MODULES[@]}"
+
+rc=$?
+echo
+if [ "$rc" -eq 124 ]; then
+    echo "TIMED OUT after ${TIMEOUT}s"
+fi
+exit "$rc"
