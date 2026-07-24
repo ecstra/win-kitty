@@ -99,6 +99,11 @@ typedef struct _GLFWlibraryWin32 {
         HINSTANCE instance;
         UINT (WINAPI *BeginPeriod)(UINT);
         UINT (WINAPI *EndPeriod)(UINT);
+        // timeSetEvent/timeKillEvent, typed with raw params to avoid dragging
+        // in mmsystem.h. The multimedia timer fires below SetTimer's 10ms floor,
+        // which is what a high-refresh live resize needs.
+        UINT (WINAPI *SetEvent)(UINT, UINT, void (CALLBACK *)(UINT, UINT, DWORD_PTR, DWORD_PTR, DWORD_PTR), DWORD_PTR, UINT);
+        UINT (WINAPI *KillEvent)(UINT);
     } winmm;
 
     struct {

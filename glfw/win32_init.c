@@ -89,6 +89,8 @@ static bool loadLibraries(void) {
     if (_glfw.win32.winmm.instance) {
         _glfw.win32.winmm.BeginPeriod = (void*)GetProcAddress(_glfw.win32.winmm.instance, "timeBeginPeriod");
         _glfw.win32.winmm.EndPeriod = (void*)GetProcAddress(_glfw.win32.winmm.instance, "timeEndPeriod");
+        _glfw.win32.winmm.SetEvent = (void*)GetProcAddress(_glfw.win32.winmm.instance, "timeSetEvent");
+        _glfw.win32.winmm.KillEvent = (void*)GetProcAddress(_glfw.win32.winmm.instance, "timeKillEvent");
     }
 
     _glfw.win32.dwmapi.instance = LoadLibraryA("dwmapi.dll");

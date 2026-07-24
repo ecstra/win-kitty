@@ -79,9 +79,60 @@ static UINT windowDpi(HWND hWnd) {
 }
 static int titlebarHeightPx(HWND hWnd) { return MulDiv(KITTY_TITLEBAR_LOGICAL_PX, windowDpi(hWnd), 96); }
 
+// The repaint interval for the live-resize timer, one monitor refresh period.
+// The present already paces to the compositor through DwmFlush, so the timer
+// only has to request renders often enough to keep up: a fixed 12 ms held the
+// resize to ~80fps on a 144Hz or faster panel. timeBeginPeriod(1) is set at
+// startup, so a sub-12ms timer actually fires.
+static UINT resizeTimerMs(HWND hWnd) {
+    MONITORINFOEXW mi; ZeroMemory(&mi, sizeof mi); mi.cbSize = sizeof mi;
+    DEVMODEW dm; ZeroMemory(&dm, sizeof dm); dm.dmSize = sizeof dm;
+    HMONITOR mon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+    if (GetMonitorInfoW(mon, (LPMONITORINFO) &mi) &&
+        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) &&
+        dm.dmDisplayFrequency > 1) {
+        UINT ms = 1000u / dm.dmDisplayFrequency;
+        if (ms < 3) ms = 3;    // ~333Hz ceiling; DwmFlush paces the rest
+        if (ms > 20) ms = 20;  // ~50Hz floor
+        return ms;
+    }
+    return 12;
+}
+
 static void ensureCaptionButtons(_GLFWwindow* window);      // fwd
 static void positionCaptionButtons(_GLFWwindow* window);    // fwd
 static void updateWindowComposition(_GLFWwindow* window);   // fwd
+
+// A multimedia timer drives the repaint during a live resize, because SetTimer
+// clamps any interval below 10ms up to USER_TIMER_MINIMUM, which held the
+// resize to ~80fps on a faster panel. timeSetEvent fires on its own thread and
+// only posts this message; the render happens on the main thread where the
+// modal loop pumps it. Coalesced in the handler so it never backs up.
+#define WM_APP_RESIZE_TICK (WM_APP + 1)
+#ifndef TIME_PERIODIC
+#define TIME_PERIODIC 0x0001
+#endif
+static UINT g_resizeMMTimer = 0;
+
+static void CALLBACK resizeTickProc(UINT id, UINT msg, DWORD_PTR user, DWORD_PTR d1, DWORD_PTR d2) {
+    (void) id; (void) msg; (void) d1; (void) d2;
+    PostMessageW((HWND) user, WM_APP_RESIZE_TICK, 0, 0);
+}
+
+static void startResizeTimer(HWND hWnd) {
+    UINT period = resizeTimerMs(hWnd);
+    if (_glfw.win32.winmm.SetEvent)
+        g_resizeMMTimer = _glfw.win32.winmm.SetEvent(period, 1, resizeTickProc, (DWORD_PTR) hWnd, TIME_PERIODIC);
+    if (!g_resizeMMTimer) SetTimer(hWnd, 1001, period, NULL);  // fallback: winmm missing
+}
+
+static void stopResizeTimer(HWND hWnd) {
+    if (g_resizeMMTimer) {
+        if (_glfw.win32.winmm.KillEvent) _glfw.win32.winmm.KillEvent(g_resizeMMTimer);
+        g_resizeMMTimer = 0;
+    }
+    KillTimer(hWnd, 1001);
+}
 
 // kitty publishes the window background colour and opacity in the environment
 // before it calls glfwSetWindowBlur, the same channel the caption colour
@@ -177,6 +228,17 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             _glfwInputWindowDamage(window);
             break; // let DefWindowProc validate the region
 
+        case WM_APP_RESIZE_TICK: {
+            // Drain any ticks that piled up while a render was in flight, then
+            // render once. The present paces to the compositor, so this settles
+            // at the refresh rate without backing up the queue.
+            MSG extra;
+            while (PeekMessageW(&extra, hWnd, WM_APP_RESIZE_TICK, WM_APP_RESIZE_TICK, PM_REMOVE)) { }
+            if (_glfw.win32.tickCallback && !window->win32.iconified)
+                _glfw.win32.tickCallback(_glfw.win32.tickCallbackData);
+            return 0;
+        }
+
         case WM_SIZE: {
             int width = LOWORD(lParam), height = HIWORD(lParam);
             window->win32.iconified = wParam == SIZE_MINIMIZED;
@@ -197,10 +259,10 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 
         case WM_ENTERSIZEMOVE:
             _glfwInputLiveResize(window, true);
-            SetTimer(hWnd, 1001, 12, NULL);   // ~80fps repaint during the drag
+            startResizeTimer(hWnd);
             break;
         case WM_EXITSIZEMOVE:
-            KillTimer(hWnd, 1001);
+            stopResizeTimer(hWnd);
             _glfwInputLiveResize(window, false);
             if (_glfw.win32.tickCallback) _glfw.win32.tickCallback(_glfw.win32.tickCallbackData);
             break;
@@ -797,6 +859,7 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
 }
 
 void _glfwPlatformDestroyWindow(_GLFWwindow* window) {
+    if (window->win32.handle) stopResizeTimer(window->win32.handle);
     if (window->win32.acrylic) {
         // Unregistering the interop objects needs the context that registered
         // them, and it has to happen before that context is destroyed.
