@@ -244,8 +244,20 @@ kill(pid_t pid, int sig) {
     HANDLE p = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);
     if (!p) { errno = ESRCH; return -1; }
     BOOL ok = TerminateProcess(p, 128 + sig);
+    DWORD err = ok ? 0 : GetLastError();
     CloseHandle(p);
-    return ok ? 0 : -1;
+    if (!ok) {
+        /* Without this errno keeps whatever it held, and callers that print it
+         * report "No error". TerminateProcess answers ERROR_ACCESS_DENIED for a
+         * process that has already exited, which is ESRCH as far as a caller
+         * asking "is it gone" is concerned, and is not worth reporting.
+         *
+         * Note this kills one process, not a tree. Children are held in a job
+         * object instead, see create_kill_on_close_job in kitty/child.c. */
+        errno = (err == ERROR_ACCESS_DENIED) ? ESRCH : EPERM;
+        return -1;
+    }
+    return 0;
 }
 int killpg(pid_t pgrp, int sig) { return kill(pgrp, sig); }
 pid_t getpgid(pid_t pid) { return pid; }
