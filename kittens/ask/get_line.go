@@ -50,7 +50,13 @@ func get_line(o *Options, complete_file_names bool) (result string, err error) {
 	lp.OnResize = rl.OnResize
 
 	lp.OnKeyEvent = func(event *loop.KeyEvent) error {
-		if event.MatchesPressOrRepeat("ctrl+c") {
+		// esc cancels as well as ctrl+c. The choices dialog in choices.go
+		// already treats the two the same, and it is what anyone half way
+		// through renaming a tab expects. It has to cancel through the error
+		// rather than by quitting quietly: Response is a plain string, so an
+		// empty one still serializes as "" and handle_result would take that
+		// for an answer and apply it, renaming the tab to nothing.
+		if event.MatchesPressOrRepeat("esc") || event.MatchesPressOrRepeat("ctrl+c") {
 			return fmt.Errorf("Canceled by user")
 		}
 		err := rl.OnKeyEvent(event)
