@@ -29,7 +29,11 @@ def main() -> Dict[str, Dict[str, str]]:
             dirnames.remove('generated')
         for f in filenames:
             if f.endswith('.rst'):
-                with open(os.path.join(dirpath, f)) as stream:
+                # The docs are UTF-8. Without saying so, Python uses the locale
+                # encoding, which on Windows is a legacy code page (cp1252 here)
+                # and cannot decode them, so the build fails before it compiles
+                # anything.
+                with open(os.path.join(dirpath, f), encoding='utf-8') as stream:
                     raw = stream.read()
                 href = os.path.relpath(stream.name, base).replace(os.sep, '/')
                 href = href.rpartition('.')[0] + '/'

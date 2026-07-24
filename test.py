@@ -22,8 +22,25 @@ def bootstrap_windows() -> None:
             setattr(os, fn, lambda: 0)
 
 
+def ensure_utf8_mode() -> None:
+    # Same reason as setup.py: Windows defaults to a legacy code page for text
+    # files, and the suite reads UTF-8 sources, so it dies while collecting the
+    # Go packages before it runs anything. UTF-8 mode cannot be switched on once
+    # the interpreter is up, so start again with it set.
+    import os
+    import subprocess
+    import sys
+    if sys.platform != 'win32' or sys.flags.utf8_mode:
+        return
+    env = dict(os.environ)
+    env['PYTHONUTF8'] = '1'
+    cmd = [sys.executable, '-X', 'utf8', os.path.abspath(__file__)] + sys.argv[1:]
+    raise SystemExit(subprocess.run(cmd, env=env).returncode)
+
+
 def main() -> None:
     import sys
+    ensure_utf8_mode()
     if sys.platform == 'win32':
         bootstrap_windows()
     m = importlib.import_module('kitty_tests.main')

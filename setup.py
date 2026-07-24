@@ -22,8 +22,31 @@ from functools import lru_cache, partial
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, Union, cast
 
-from glfw import glfw
-from glfw.glfw import ISA, BinaryArch, Command, CompileKey, CompilerType
+
+def ensure_utf8_mode() -> None:
+    """Restart the build in UTF-8 mode on Windows.
+
+    Windows still defaults to a legacy code page for text files, cp1252 on a
+    typical install, while everything this build reads is UTF-8: the docs, the
+    option definitions, the shell integration scripts. Reading any of them fails
+    outright, before a single file is compiled. Annotating every open() would be
+    a large change and an easy one to forget to extend, and UTF-8 mode cannot be
+    turned on once the interpreter has started, so start again with it set.
+    PYTHONUTF8 goes into the environment too, so the Python subprocesses the
+    build spawns inherit it rather than each needing the flag of its own.
+    """
+    if sys.platform != 'win32' or sys.flags.utf8_mode:
+        return
+    env = dict(os.environ)
+    env['PYTHONUTF8'] = '1'
+    cmd = [sys.executable, '-X', 'utf8', os.path.abspath(__file__)] + sys.argv[1:]
+    raise SystemExit(subprocess.run(cmd, env=env).returncode)
+
+
+ensure_utf8_mode()
+
+from glfw import glfw  # noqa: E402
+from glfw.glfw import ISA, BinaryArch, Command, CompileKey, CompilerType  # noqa: E402
 
 src_base = os.path.dirname(os.path.abspath(__file__))
 setattr(sys, 'running_from_setup', True)
