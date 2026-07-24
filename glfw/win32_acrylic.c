@@ -1080,6 +1080,19 @@ bool _glfwWin32AcrylicCreate(_GLFWwindow *window) {
     if (FAILED(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                                  NULL, 0, D3D11_SDK_VERSION, &a->d3dDevice, NULL, NULL))) goto fail;
     if (FAILED(ID3D11Device_QueryInterface(a->d3dDevice, &IID_IDXGIDevice, (void **)&dxgiDevice))) goto fail;
+    // Queue at most one frame. The default is three, and during a live resize
+    // both WM_SIZE and the repaint timer present rapidly, so the compositor
+    // ends up showing frames a few behind. While the content is reflowing that
+    // reads as the cursor jittering between recent positions. One frame in
+    // flight keeps what is shown current, and it matches the low-latency stance
+    // kitty already takes with DwmFlush in swapBuffersWGL.
+    {
+        IDXGIDevice1 *dxgiDevice1 = NULL;
+        if (SUCCEEDED(ID3D11Device_QueryInterface(a->d3dDevice, &IID_IDXGIDevice1, (void **)&dxgiDevice1))) {
+            IDXGIDevice1_SetMaximumFrameLatency(dxgiDevice1, 1);
+            IDXGIDevice1_Release(dxgiDevice1);
+        }
+    }
     if (FAILED(IDXGIDevice_GetAdapter(dxgiDevice, &dxgiAdapter))) goto fail;
     if (FAILED(IDXGIAdapter_GetParent(dxgiAdapter, &IID_IDXGIFactory2, (void **)&dxgiFactory))) goto fail;
 
