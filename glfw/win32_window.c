@@ -119,6 +119,16 @@ static void CALLBACK resizeTickProc(UINT id, UINT msg, DWORD_PTR user, DWORD_PTR
     PostMessageW((HWND) user, WM_APP_RESIZE_TICK, 0, 0);
 }
 
+// Reapply the shape the application last asked for. Windows resets the pointer
+// to the window class cursor on every WM_SETCURSOR, which it sends on every
+// mouse move, so without this the shape set by _glfwPlatformSetCursor survives
+// only until the pointer moves again.
+static void applyClientCursor(_GLFWwindow* window) {
+    SetCursor((window->cursor && window->cursor->win32.handle)
+              ? window->cursor->win32.handle
+              : LoadCursorW(NULL, (LPCWSTR) IDC_ARROW));
+}
+
 static void startResizeTimer(HWND hWnd) {
     UINT period = resizeTimerMs(hWnd);
     if (_glfw.win32.winmm.SetEvent)
@@ -223,6 +233,21 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_KILLFOCUS:
             _glfwInputWindowFocus(window, false);
             return 0;
+
+        case WM_SETCURSOR:
+            // DefWindowProc answers this by setting the window class cursor,
+            // and it arrives on every mouse move, so a shape the application
+            // asked for was being overwritten between moves: the pointer
+            // alternated between that shape and the class arrow for as long as
+            // the mouse kept moving, and only settled once it stopped. Claim
+            // the message for the terminal area and put our own shape back.
+            // Only HTCLIENT is ours -- the resize borders and the caption strip
+            // that WM_NCHITTEST reports still want DefWindowProc's cursors.
+            if (LOWORD(lParam) == HTCLIENT) {
+                applyClientCursor(window);
+                return TRUE;
+            }
+            break;
 
         case WM_PAINT:
             _glfwInputWindowDamage(window);
