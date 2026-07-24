@@ -37,7 +37,7 @@ Close any running kitty first. The source tree keeps its own development build a
 - Tabs and OS windows. Closing one OS window leaves the others alone.
 - Scrollback, mouse selection, and the real Windows clipboard for copy and paste.
 - Dropping files and text onto a window, which pastes the paths or the text.
-- Transparency. With `background_blur` on you get the real Windows 11 acrylic material, and it stays put when the window loses focus.
+- Transparency. With `background_blur` on you get the real Windows 11 acrylic material, matched to what Windows Terminal shows, and it stays put when the window loses focus.
 - A custom title bar that matches the terminal background, with rounded corners and minimize, maximize, and close buttons.
 - Kittens, run from inside kitty. icat, hints, unicode_input, themes, ask, diff, choose-files, and the confirmation prompts all work.
 - Desktop notifications, shown as real Windows toasts.
@@ -80,7 +80,7 @@ Things here that exist only because the platform needed them. The internals doc 
 - The Cygwin pty bridge: MSYS2 and Cygwin shells run on a genuine Cygwin pty, which is what removes the cursor bouncing and flicker conhost causes. `KITTY_NO_CYGWIN_PTY=1` turns it off.
 - terminfo installed into the MSYS2 tree, so native Windows programs run from those shells get keyboard input and the right size.
 - A title bar drawn by kitty, with caption buttons, matching the terminal background.
-- Windows 11 acrylic through the DWM system backdrop, which keeps the material and the transparency when the window loses focus.
+- Windows 11 acrylic built as a Windows.UI.Composition effect graph, the same recipe WinUI's AcrylicBrush uses, so it matches Windows Terminal and keeps the material and the transparency when the window loses focus.
 - `background_opacity` scaled by the factor WinUI applies, so the same number means the same thing here as in Windows Terminal.
 - Desktop notifications as real Windows toasts.
 - An "Open in kitty" entry in both the modern and the classic Explorer menus.
@@ -138,7 +138,8 @@ There is no need to build separately first. `dist/install.log` records what the 
 - `kitty/child.c` and `kitty/child.py`: spawning children, the pseudoconsole, resizing, and choosing the pty bridge for MSYS2 and Cygwin shells.
 - `shell-integration/msys2/pty-bridge.py`: the bridge that runs those shells on a real Cygwin pty.
 - `kitty/wincompat/`: small shims for the POSIX calls the rest of the code assumes, such as `pipe2` and `poll`.
-- `glfw/win32_window.c`: the window, the custom frame, the caption buttons, keyboard translation, transparency, and acrylic.
+- `glfw/win32_window.c`: the window, the custom frame, the caption buttons, keyboard translation, and transparency.
+- `glfw/win32_acrylic.c`: the acrylic material, its composition tree, and the swapchain that carries the OpenGL output.
 - `glfw/win32_init.c`: the main loop, timers, and the timer resolution request.
 - `glfw/caption_icons.h`: the caption button icons as embedded pixels.
 - `kitty/state.c`: reserves the title bar strip at the top of the OS window.
