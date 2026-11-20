@@ -202,7 +202,7 @@ An empty config gets these built in. An explicit setting in kitty.conf still win
 
 ## Building from source
 
-You need the MSYS2 UCRT64 toolchain, the UCRT64 build of Python 3, and Go on PATH. Run the build from git-bash or an MSYS2 shell.
+You need the MSYS2 UCRT64 toolchain, the UCRT64 build of Python 3, and Go on PATH. Install the packages from an MSYS2 UCRT64 shell (`C:\msys64\msys2_shell.cmd -ucrt64`); the README lists the full `pacman -S` command. Run the build from git-bash or an MSYS2 shell.
 
 ```
 PATH="/c/msys64/ucrt64/bin:$PATH" PYTHONUTF8=1 /c/msys64/ucrt64/bin/python.exe setup.py build

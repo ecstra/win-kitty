@@ -5,7 +5,7 @@ name: CI
 # this fork does not change, and the port's own code is covered here.
 on:
     push:
-        branches: [windows-native-port, master]
+        branches: [windows-native-port, master, ucrt64-migration]
         # Documentation cannot break the build, so do not spend a runner on it.
         # Written out twice because GitHub Actions does not support YAML anchors.
         paths-ignore:
