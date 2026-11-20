@@ -12,13 +12,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-MINGW="${MINGW_ROOT:-/c/msys64/mingw64}"
+MINGW="${MINGW_ROOT:-/c/msys64/ucrt64}"
 PYVER="${PYVER:-3.14}"
 DIST="$ROOT/dist/kitty"
 PY="$MINGW/bin/python.exe"
 
 cd "$ROOT"
-[ -x "$PY" ] || { echo "mingw python not found at $PY (set MINGW_ROOT)"; exit 1; }
+[ -x "$PY" ] || { echo "ucrt64 python not found at $PY (set MINGW_ROOT)"; exit 1; }
 
 echo "==> building kitty"
 # --portable drops -march=native. Everything this script produces is meant to

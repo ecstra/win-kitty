@@ -12,7 +12,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-MINGW="${MINGW_ROOT:-/c/msys64/mingw64}"
+MINGW="${MINGW_ROOT:-/c/msys64/ucrt64}"
 CERTDIR="$HERE/cert"
 VERSION="$(cat "$ROOT/dist/VERSION" 2>/dev/null || echo 0.48.0)"
 

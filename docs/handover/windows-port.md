@@ -13,11 +13,11 @@ Every high risk unknown of the port is answered. The rest is assembly.
 
 ## Toolchain
 
-- Compiler: mingw64 gcc 15.2 at `C:\msys64\mingw64\bin`.
-- Python for the build: mingw python 3.14 at `C:\msys64\mingw64\bin\python.exe`.
+- Compiler: ucrt64 gcc at `C:\msys64\ucrt64\bin`.
+- Python for the build: ucrt64 python 3.14 at `C:\msys64\ucrt64\bin\python.exe`.
 - Go at `C:\Program Files\Go`.
 - No `make`, so run `python setup.py ...` directly.
-- Installed mingw packages: lcms2, xxhash. Not available for mingw: xkbcommon (shimmed for the two constants keys.c needs).
+- Installed ucrt packages: lcms2, xxhash. Not available for mingw: xkbcommon (shimmed for the two constants keys.c needs).
 
 ## Compile flags that matter
 

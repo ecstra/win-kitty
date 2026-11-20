@@ -88,7 +88,49 @@ Kittens deliberately refuse to start outside kitty on Windows, because they depe
 
 ## Build
 
-You need the MSYS2 mingw64 toolchain, its build of Python 3, and Go. From git-bash or an MSYS2 shell:
+You need the MSYS2 UCRT64 toolchain, its build of Python 3, and Go. Install them from an MSYS2 UCRT64 shell (`C:\msys64\msys2_shell.cmd -ucrt64`):
+
+```bash
+pacman -S --needed \
+    base-devel \
+    mingw-w64-ucrt-x86_64-gcc \
+    mingw-w64-ucrt-x86_64-pkgconf \
+    mingw-w64-ucrt-x86_64-python \
+    mingw-w64-ucrt-x86_64-go \
+    mingw-w64-ucrt-x86_64-harfbuzz \
+    mingw-w64-ucrt-x86_64-freetype \
+    mingw-w64-ucrt-x86_64-fontconfig \
+    mingw-w64-ucrt-x86_64-cairo \
+    mingw-w64-ucrt-x86_64-libpng \
+    mingw-w64-ucrt-x86_64-xxhash \
+    mingw-w64-ucrt-x86_64-openssl \
+    mingw-w64-ucrt-x86_64-ncurses \
+    mingw-w64-ucrt-x86_64-lcms2 \
+    mingw-w64-ucrt-x86_64-ruff
+```
+
+Building the installer additionally needs Inno Setup (`winget install JRSoftware.InnoSetup`) and the Windows SDK for `makeappx` and `signtool`.
+
+If you build outside an MSYS2 UCRT64 login shell, set `GOROOT` yourself. The packaged `go.exe` is built with `-trimpath`, so it cannot work out where its own standard library lives, and without this the build stops at `cannot find GOROOT directory`:
+
+```bash
+export GOROOT=/ucrt64/lib/go          # git-bash or MSYS2
+```
+```powershell
+$env:GOROOT = 'C:\msys64\ucrt64\lib\go'   # PowerShell
+```
+
+An MSYS2 UCRT64 login shell sets this for you, from `etc/profile.d/go.sh`.
+
+The build also wants Symbols Nerd Font Mono. It looks for it in `%windir%\Fonts` and your per-user font directory, and fails if it is missing. Either install the font, or drop the file straight into `fonts/`, which the build accepts and which is gitignored:
+
+```bash
+curl -fsSL -o /tmp/nerd.tar.xz https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz
+tar -xf /tmp/nerd.tar.xz -C /tmp/nerd
+find /tmp/nerd -name 'SymbolsNerdFontMono-Regular.ttf' -exec cp {} fonts/ \;
+```
+
+Then, from git-bash or an MSYS2 shell:
 
 ```bash
 ./packaging/windows/make-installer.sh
