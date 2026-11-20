@@ -88,7 +88,7 @@ Kittens deliberately refuse to start outside kitty on Windows, because they depe
 
 ## Build
 
-You need the MSYS2 mingw64 toolchain, its build of Python 3, and Go. From git-bash or an MSYS2 shell:
+You need the MSYS2 UCRT64 toolchain, its build of Python 3, and Go. From git-bash or an MSYS2 shell:
 
 ```bash
 ./packaging/windows/make-installer.sh

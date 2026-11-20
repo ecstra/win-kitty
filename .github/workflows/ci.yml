@@ -38,32 +38,32 @@ jobs:
             - name: Set up MSYS2
               uses: msys2/setup-msys2@v2
               with:
-                  msystem: MINGW64
+                  msystem: UCRT64
                   update: true
                   # The build needs the same toolchain and libraries the port is
                   # developed against. The library list matches the DLL closure
                   # make-dist.sh bundles into the install tree.
                   install: >-
                       base-devel
-                      mingw-w64-x86_64-gcc
-                      mingw-w64-x86_64-pkgconf
-                      mingw-w64-x86_64-python
-                      mingw-w64-x86_64-go
-                      mingw-w64-x86_64-harfbuzz
-                      mingw-w64-x86_64-freetype
-                      mingw-w64-x86_64-fontconfig
-                      mingw-w64-x86_64-cairo
-                      mingw-w64-x86_64-libpng
-                      mingw-w64-x86_64-xxhash
-                      mingw-w64-x86_64-openssl
-                      mingw-w64-x86_64-ncurses
-                      mingw-w64-x86_64-lcms2
-                      mingw-w64-x86_64-ruff
+                      mingw-w64-ucrt-x86_64-gcc
+                      mingw-w64-ucrt-x86_64-pkgconf
+                      mingw-w64-ucrt-x86_64-python
+                      mingw-w64-ucrt-x86_64-go
+                      mingw-w64-ucrt-x86_64-harfbuzz
+                      mingw-w64-ucrt-x86_64-freetype
+                      mingw-w64-ucrt-x86_64-fontconfig
+                      mingw-w64-ucrt-x86_64-cairo
+                      mingw-w64-ucrt-x86_64-libpng
+                      mingw-w64-ucrt-x86_64-xxhash
+                      mingw-w64-ucrt-x86_64-openssl
+                      mingw-w64-ucrt-x86_64-ncurses
+                      mingw-w64-ucrt-x86_64-lcms2
+                      mingw-w64-ucrt-x86_64-ruff
 
             - name: Lint
               run: |
                   set -euo pipefail
-                  export PATH="/mingw64/bin:$PATH"
+                  export PATH="/ucrt64/bin:$PATH"
                   # ruff runs the same everywhere, so this catches what it
                   # caught on upstream's Linux runner. It comes from pacman
                   # above because the mingw python ships without pip.
@@ -87,21 +87,21 @@ jobs:
             - name: Build
               run: |
                   set -euo pipefail
-                  # mingw64 first on PATH: the compiler loads its own DLLs through
+                  # ucrt64 first on PATH: the compiler loads its own DLLs through
                   # PATH and cc1 dies without it.
-                  export PATH="/mingw64/bin:$PATH"
+                  export PATH="/ucrt64/bin:$PATH"
                   PYTHONUTF8=1 python setup.py build --verbose
 
             - name: Test
               run: |
-                  export PATH="/mingw64/bin:$PATH"
+                  export PATH="/ucrt64/bin:$PATH"
                   ./packaging/windows/run-tests.sh
 
             - name: Package
               run: |
                   set -euo pipefail
-                  export PATH="/mingw64/bin:$PATH"
-                  export MINGW_ROOT=/mingw64
+                  export PATH="/ucrt64/bin:$PATH"
+                  export MINGW_ROOT=/ucrt64
                   export PYVER="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
                   ./packaging/windows/make-installer.sh
 
