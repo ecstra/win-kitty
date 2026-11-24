@@ -742,21 +742,15 @@ HANDLER(handle_move_event) {
         return;
     }
     Screen *screen = w->render_data.screen;
-    // Hover detection of URLs is for a screen the user is reading. Once the
-    // application has grabbed the mouse it owns that screen and repaints it
-    // freely, and kitty is forwarding every motion to it, so running detection
-    // against content being rewritten underneath made the answer flip between
-    // moves and the pointer alternate between the hyperlink shape and the
-    // grabbed one. Seen with the mouse-demo kitten, which repaints in full
-    // hundreds of times while the mouse crosses it.
-    //
-    // The shape still has to be recomputed on every move even when detection is
-    // skipped: it is what keeps a shape the application set with OSC 22 applied
-    // as the pointer moves within the region that asked for it. Clicking a URL
-    // is unaffected either way, mouse_open_url runs detection itself.
-    if (OPT(detect_urls) && screen->modes.mouse_tracking_mode == NO_TRACKING) {
-        detect_url(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, modifiers);
-    } else set_mouse_cursor_for_screen(screen);
+    // The shape has to be recomputed on every move even without URL detection:
+    // it is what keeps a shape the application set with OSC 22 applied as the
+    // pointer moves within the region that asked for it. detect_url() does it
+    // itself, and once the application has grabbed the mouse it shows the link
+    // pointer only while the modifiers of a grabbed link mapping are held, so
+    // the pointer no longer flips between the link and grabbed shapes while an
+    // application such as the mouse-demo kitten repaints under it.
+    if (OPT(detect_urls)) detect_url(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, modifiers);
+    else set_mouse_cursor_for_screen(screen);
     if (should_handle_in_kitty(w, screen, button)) {
         handle_mouse_movement_in_kitty(w, button, mouse_cell_changed | cell_half_changed);
     } else {
@@ -1257,9 +1251,12 @@ update_mouse_pointer_shape(void) {
             if (r.window->render_data.screen->url_ranges.count && r.window->id == global_state.mouse_hover_in_window) mouse_cursor_shape = POINTER_POINTER;
         }
     }
-    // Deferred to apply_pending_mouse_pointer_shape, see above.
-    pointer_shape_to_apply_for_os_window = global_state.callback_os_window ? global_state.callback_os_window->id : 0;
-    request_tick_callback();
+    // Deferred to apply_pending_mouse_pointer_shape, see above. Headless mock
+    // OS windows have no native cursor to apply it to, and no glfw to wake up.
+    if (global_state.callback_os_window && global_state.callback_os_window->handle) {
+        pointer_shape_to_apply_for_os_window = global_state.callback_os_window->id;
+        request_tick_callback();
+    } else pointer_shape_to_apply_for_os_window = 0;
 }
 
 void

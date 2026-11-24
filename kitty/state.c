@@ -848,7 +848,7 @@ pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
 #ifdef _WIN32
     // Fill the custom-frame title-bar strip with the window background at the
     // same opacity as the cells, so the title bar matches the body exactly.
-    if (!(OPT(hide_window_decorations) & 1)) {
+    if (osw->handle && !(OPT(hide_window_decorations) & 1)) {
         long strip = pt_to_px_for_os_window(30.0, osw); // ~40px title bar
         if (strip > 0) {
             BorderRect *r = br->rect_buf + br->num_border_rects;
@@ -960,7 +960,8 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
     // Reserve a title-bar strip at the very top for the win32 custom frame. The
     // strip shows the acrylic window background and hosts the caption buttons;
     // the terminal (and a top tab bar) sit below it. ~36 logical px = 27pt.
-    if (!(OPT(hide_window_decorations) & 1)) {
+    // Headless mock OS windows have no native frame, so no strip either.
+    if (os_window->handle && !(OPT(hide_window_decorations) & 1)) {
         long strip = pt_to_px_for_os_window(30.0, os_window); // ~40px title bar
         if (strip > (long)os_window->viewport_height) strip = os_window->viewport_height;
         if (tab_bar->bottom > tab_bar->top && OPT(tab_bar_edge) == TOP_EDGE) {
