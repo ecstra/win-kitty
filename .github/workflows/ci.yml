@@ -93,8 +93,19 @@ jobs:
                   # slangc release upstream builds with, named in bypy/sources.json,
                   # since an older one writes GLSL the checker rejects.
                   version="$(grep -o '"slang [0-9.]*"' bypy/sources.json | tr -d '"' | cut -d' ' -f2)"
+                  # The prebuilt slangc runs in the build and its output ships in
+                  # the installer, so the download is pinned. When sources.json
+                  # moves to a new version this fails until both lines below are
+                  # updated, the hash from the release asset's sha256 digest.
+                  pinned_version=2026.14.1
+                  pinned_sha256=791fe8400fe3cabdaf054089e6f5bffa745fbf5912b5b85e2ee4dc78c6b9aff7
+                  if [ "$version" != "$pinned_version" ]; then
+                      echo "bypy/sources.json wants slang $version, but this step pins $pinned_version" >&2
+                      exit 1
+                  fi
                   mkdir -p /tmp/slang
                   curl -fsSL -o /tmp/slang.tar.gz "https://github.com/shader-slang/slang/releases/download/v${version}/slang-${version}-windows-x86_64.tar.gz"
+                  echo "$pinned_sha256  /tmp/slang.tar.gz" | sha256sum -c -
                   tar -xzf /tmp/slang.tar.gz -C /tmp/slang
                   test -x /tmp/slang/bin/slangc.exe
                   echo "SLANGC=$(cygpath -m /tmp/slang/bin/slangc.exe)" >> "$GITHUB_ENV"

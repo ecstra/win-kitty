@@ -11,6 +11,7 @@ Based on kitty 0.51.1.
 - With the acrylic background on, the window could show only the background, with no text and no cursor.
 - Completing a path that starts with a backslash, such as `\Windows`, now looks in the root of the current drive.
 - Files the ssh kitten copies from inside your home folder no longer arrive on the remote with backslashes in their names.
+- The ssh kitten asks for `--dest` when you copy a file from outside your home folder, instead of putting it in a folder named after the drive on the remote.
 
 ### Changed
 

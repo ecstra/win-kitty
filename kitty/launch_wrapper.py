@@ -125,6 +125,14 @@ def load_prefix_func() -> PrefixFunc | None:
     return ans
 
 
+@run_once
+def refuse_launch_wrapper_on_windows() -> None:
+    # Windows starts each child through a ConPTY of its own, which the prefix
+    # is not ported to yet, so a configured wrapper is reported, once.
+    if load_prefix_func() is not None:
+        log_error(f'{os.path.join(config_dir, MODULE_NAME)} is not used, launch wrappers: not supported on Windows yet')
+
+
 def clear_caches() -> None:
     load_prefix_func.clear_cached()
 

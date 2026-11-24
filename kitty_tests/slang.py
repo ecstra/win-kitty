@@ -40,12 +40,25 @@ from kitty.shaders.slang import (
     variant_name,
 )
 
-from .base import BaseTest
+from .base import BaseTest, is_windows
 
 _SUPPORT_SHADER_NAMES = frozenset(('types', 'pipeline'))
 
 
 class TestSlang(BaseTest):
+    def test_slangc_from_a_windows_path(self):
+        # A Windows path in SLANGC has backslashes, which POSIX shell rules eat
+        if not is_windows:
+            self.skipTest('Windows paths only')
+        from kitty import constants
+
+        for value, expected in (
+            (r'C:\slang\bin\slangc.exe', ('C:/slang/bin/slangc.exe',)),
+            (r'"C:\Program Files\slang\slangc.exe" -v', ('C:/Program Files/slang/slangc.exe', '-v')),
+        ):
+            with patch.object(constants, '_slangc', ()), patch.dict(os.environ, {'SLANGC': value}):
+                self.ae(constants.slangc(), expected)
+
     def test_animation_step_parsing(self):
         def step(val):
             return parse_pipeline_definition(['startgroup', f'animation_step {val}', 'shaders focus-highlight', 'endgroup'], 'test')['groups'][0][

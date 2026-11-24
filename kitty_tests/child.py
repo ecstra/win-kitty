@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
 from kitty.constants import is_macos, kitten_exe, kitty_exe
 
-from .base import BaseTest, skip_on_windows
+from .base import BaseTest, is_windows, skip_on_windows
 
 # Features new in kitty 0.49 to 0.51 that the Windows port does not have yet
 no_memory_accounting = skip_on_windows('child memory accounting reads /proc and cgroups, which is not ported yet')
@@ -317,6 +317,31 @@ class LaunchWrapperTest(BaseTest):
         os.close(c.child_fd)
         c.child_fd = None
         return c, spawned['exe'], spawned['argv']
+
+    def test_launch_wrapper_refused_on_windows(self):
+        # Windows starts children through a ConPTY of its own, which the
+        # wrapper is not ported to, so a configured wrapper must be reported
+        if not is_windows:
+            self.skipTest('the refusal is Windows only')
+        from kitty import child as child_module
+        from kitty import launch_wrapper
+        from kitty.launch_wrapper import LaunchRequest, load_prefix_func, refuse_launch_wrapper_on_windows
+
+        class StopBeforeSpawn(Exception):
+            pass
+
+        load_prefix_func.set_override(lambda ctx: ('wrapper',))
+        refuse_launch_wrapper_on_windows.clear_cached()
+        c = Child(['cmd.exe'], os.getcwd(), env={}, launch_request=LaunchRequest('window'))
+        boss = SimpleNamespace(encryption_public_key='key', listening_on='', window_id_map={})
+        with (
+            patch.object(child_module.fast_data_types, 'get_boss', return_value=boss),
+            patch.object(launch_wrapper, 'log_error') as log_error,
+            patch.object(child_module.fast_data_types, 'open_pty', side_effect=StopBeforeSpawn, create=True),
+            self.assertRaises(StopBeforeSpawn),
+        ):
+            c.fork()
+        self.assertIn('not supported on Windows', log_error.call_args[0][0])
 
     def _recording(self, ans):
         def func(ctx):

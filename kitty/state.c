@@ -863,6 +863,10 @@ pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
             r->color = 0 /* default_bg */;
             r->border_type = 0;
             r->horizontal = 1;
+            // rect_buf is reused without zeroing, so a rounded border an earlier
+            // layout left in this slot would be drawn around the strip
+            r->radius = 0;
+            r->thickness = 0;
             br->num_border_rects++;
         }
     }

@@ -47,7 +47,12 @@ def slangc() -> tuple[str, ...]:
         if DEVELOP_ROOT:
             _slangc = (os.path.join(DEVELOP_ROOT, 'bin', 'slangc'),)
         else:
-            _slangc = tuple(Shlex(os.environ.get('SLANGC', 'slangc'), False))
+            spec = os.environ.get('SLANGC', 'slangc')
+            if is_windows:
+                # A backslash there separates folders, and POSIX shell rules
+                # would read it as an escape. Windows takes forward slashes too.
+                spec = spec.replace('\\', '/')
+            _slangc = tuple(Shlex(spec, False))
     return _slangc
 
 

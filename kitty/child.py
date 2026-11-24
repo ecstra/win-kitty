@@ -809,6 +809,10 @@ class Child:
         exe = which(argv[0]) or argv[0]
         self.final_exe = exe
         self.final_argv0 = argv[0]
+        if self.launch_request is not None:
+            from .launch_wrapper import refuse_launch_wrapper_on_windows
+
+            refuse_launch_wrapper_on_windows()
         # Create the ConPTY at the real window size so the shell's first prompt
         # is laid out correctly. Using a fixed 80x24 makes conhost/PSReadLine draw
         # the initial prompt at the wrong width until the next resize (or `cls`).

@@ -212,6 +212,20 @@ func get_arcname(loc, dest, home string) (arcname string) {
 	return prefix + arcname
 }
 
+// A local path outside home is copied to the same path on the remote, which a
+// Windows path, with its drive or share, has no counterpart for. Elsewhere no
+// path has a volume name, so this never refuses.
+func check_remote_place(loc, home string) error {
+	loc = filepath.Clean(loc)
+	if filepath.VolumeName(loc) == "" {
+		return nil
+	}
+	if ra, err := filepath.Rel(home, loc); err == nil && filepath.IsLocal(ra) {
+		return nil
+	}
+	return fmt.Errorf("%s is outside your home folder, so give it a --dest to say where it goes on the remote", loc)
+}
+
 func ParseCopyInstruction(spec string) (ans []*CopyInstruction, err error) {
 	args, err := shlex.Split("copy " + spec)
 	if err != nil {
@@ -252,6 +266,15 @@ func ParseCopyInstruction(spec string) (ans []*CopyInstruction, err error) {
 			ci.local_path, err = filepath.EvalSymlinks(loc)
 			if err != nil {
 				return nil, fmt.Errorf("Failed to resolve symlinks in %#v with error: %w", loc, err)
+			}
+		}
+		if opts.Dest == "" {
+			src := loc
+			if opts.SymlinkStrategy == "resolve" {
+				src = ci.local_path
+			}
+			if err = check_remote_place(src, home); err != nil {
+				return nil, err
 			}
 		}
 		if opts.SymlinkStrategy == "resolve" {

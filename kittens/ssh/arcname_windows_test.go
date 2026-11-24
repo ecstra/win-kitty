@@ -23,3 +23,19 @@ func TestSSHCopyArcnamesWindows(t *testing.T) {
 		})
 	}
 }
+
+// A path outside home goes to the same path on the remote, and a Windows path
+// there has a drive or share the remote has no counterpart for.
+func TestSSHCopyOutsideHomeWindows(t *testing.T) {
+	home := `C:\Users\alice`
+	for _, loc := range []string{`D:\proj\tool.conf`, `C:\tools\x`, `\\server\share\x`} {
+		if err := check_remote_place(loc, home); err == nil {
+			t.Fatalf("%s is outside home and was not refused", loc)
+		}
+	}
+	for _, loc := range []string{home, `C:\Users\alice\.config\app`} {
+		if err := check_remote_place(loc, home); err != nil {
+			t.Fatalf("%s is in home and was refused: %s", loc, err)
+		}
+	}
+}

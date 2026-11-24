@@ -12,7 +12,7 @@ from kitty.fast_data_types import Screen
 from kitty.os_window_size import WindowSize, WindowSizes, initial_window_size_func
 from kitty.session import get_os_window_sizing_data, parse_session, save_as_session
 
-from .base import BaseTest, parse_bytes, skip_on_windows
+from .base import BaseTest, is_windows, parse_bytes, skip_on_windows
 
 
 class TestSessions(BaseTest):
@@ -294,6 +294,19 @@ class TestSessions(BaseTest):
         ):
             with self.subTest(unsafe=unsafe):
                 self.ae(s(f'a{unsafe}b'), expected)
+
+    def test_restore_after_logout_refused_on_windows(self) -> None:
+        # The logout monitor is a D-Bus portal with no Windows counterpart, so
+        # turning the option on must not stop kitty from starting
+        if not is_windows:
+            self.skipTest('the refusal is Windows only')
+        from kitty import boss
+
+        self.set_options({'restore_session_after_logout': True})
+        fake_boss = cast(boss.Boss, SimpleNamespace(on_desktop_session_state_changed=lambda state: None))
+        with patch.object(boss, 'log_error') as log_error:
+            boss.Boss.monitor_desktop_session_if_needed(fake_boss)
+        self.assertIn('not supported on Windows', log_error.call_args[0][0])
 
     @skip_on_windows('checks POSIX permission bits on the saved snapshots, which Windows does not keep')
     def test_logout_snapshots(self) -> None:

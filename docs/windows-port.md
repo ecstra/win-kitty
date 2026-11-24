@@ -72,8 +72,8 @@ Known missing, and confirmed so.
 New in kitty 0.49 to 0.51 and not ported yet.
 
 - Custom shaders. They are compiled with the Slang compiler when first used, and the installer does not include it yet.
-- The launch wrapper, which runs new windows through a wrapper command. It is written around POSIX shells and paths.
-- `restore_session_after_logout`. Nothing on Windows tells kitty the session is ending yet.
+- The launch wrapper, which runs new windows through a wrapper command. It is written around POSIX shells and paths. If you have a `launch_wrapper.py`, kitty logs once that it is not used.
+- `restore_session_after_logout`. Nothing on Windows tells kitty the session is ending yet. Turning it on logs that it is not supported and changes nothing else.
 - `tab.children_mem_usage` in tab titles, and the tracking of a window's root and descendant processes. Both read `/proc` and cgroups.
 
 Deliberate, not missing.
