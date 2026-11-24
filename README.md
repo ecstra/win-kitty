@@ -16,39 +16,51 @@
 
 ## Overview
 
-kitty is a fast, GPU based terminal. This fork runs it natively on Windows, with no WSL, no X server, and no Cygwin layer under the terminal itself.
+[kitty](https://github.com/kovidgoyal/kitty) is a fast terminal that draws everything on your graphics card. This is kitty running natively on Windows 11. No WSL, no X server, nothing to set up first.
 
-Windows console programs run through the pseudoconsole API. MSYS2 and Cygwin shells run on a real Cygwin pty instead, which is what keeps zsh from bouncing and flickering the way it does through conhost. Everything is drawn with OpenGL, the same rendering path kitty uses on every other platform.
+I built it so I could use kitty as my daily terminal on Windows, and it does that for me. It is still young and it has bugs. The things under What works are the ones I use every day, so they get the most testing.
 
-Built for Windows 11, which is where all of it is developed and tested. The acrylic and the rounded title bar lean on composition features Windows 10 does not have, so those will not look right there, but nothing blocks you from installing it and the terminal itself should still run. Try it if you like. There is no support for Windows 10 and no plan to add any.
+> [!NOTE]
+> I work on this in my free time, so progress might be slow. There is no roadmap and no promised dates.
 
 > [!IMPORTANT]
-> This is a fork of [kitty](https://github.com/kovidgoyal/kitty), and none of the Windows work is upstream. Report anything about this build [here](https://github.com/ecstra/win-kitty/issues) rather than on the upstream tracker, since upstream cannot act on it.
->
-> This was built so I could use kitty as my daily terminal on Windows, and in this state it does that for me. That is the whole promise. It is young and it has bugs, the features below are the ones used enough to trust, and anything off that path is likely to be rough. I may add features, port more of upstream, or fix more bugs in my free time. I am not committing to any of it, and there is no roadmap.
+> None of the Windows work is in upstream kitty. Report problems with this build [here](https://github.com/ecstra/win-kitty/issues), not on the upstream tracker.
 
-<img alt="image" src="https://github.com/user-attachments/assets/cf5382f5-386d-4832-a0e9-f172f1f70252" />
+<img alt="kitty on Windows" src="https://github.com/user-attachments/assets/cf5382f5-386d-4832-a0e9-f172f1f70252" />
 
-## Features
+## What works
 
-* **Genuine Windows acrylic, taken straight from how Windows Terminal does it:** not a blur approximation. It follows the same WinUI `AcrylicBrush` recipe, the real noise texture, the blurred backdrop, the luminosity and tint blends, assembled here as a composition effect graph. Because kitty owns that graph instead of asking DWM for a backdrop, the material keeps its blur and transparency when the window loses focus, which is exactly where DWM's own version gives up and goes flat. `background_opacity` is scaled to match, so a number means the same thing it means in Windows Terminal. Measured against Terminal on the same wallpaper it lands within half a percent.
-* **A title bar kitty draws itself:** the caption shares the terminal background, with rounded corners and its own minimize, maximize and close buttons, so the whole window is one surface instead of kitty wearing a grey Windows hat.
-* **Any shell, each on the right plumbing:** pwsh, Windows PowerShell and cmd run on a pseudoconsole. MSYS2 and Cygwin shells run on a real Cygwin pty through a bridge written for this port, which keeps conhost out of the data path entirely. That is what stops zsh bouncing and flickering the way it does in every terminal that pipes it through ConPTY. Shell integration for each.
-* **Images in the terminal:** icat and the graphics protocol work. conhost eats the escape sequences that carry image data, so the port routes them around it through a private named pipe and places the image with unicode placeholders.
-* **Kittens:** icat, hints, unicode_input, diff, themes, choose-files, ask and the confirmation prompts, all running as the real Go kittens inside kitty.
-* **Remote control:** `kitty @` works over `listen_on tcp:`, so scripting kitty from outside works the same as it does elsewhere.
-* **Native toasts:** desktop notifications are real Windows notifications, attributed to kitty.
-* **Explorer integration:** an **Open in kitty** entry in the main Windows 11 menu, which needs a signed MSIX package rather than a registry key, and in the classic menu too.
-* **Snappy input:** the port asks Windows for a 1 ms timer resolution, which is where most of the typing latency was hiding, and renders at your monitor's real refresh rate rather than an assumed 60 Hz.
-* **The rest of kitty:** tabs and OS windows, scrollback, mouse selection, the Windows clipboard, ligatures and fonts, per monitor DPI scaling, config reloading, and dropping files onto a window.
+* **Acrylic:** the same frosted glass background Windows Terminal has, and it stays frosted when the window loses focus.
+* **Title bar:** kitty draws its own in the terminal's colours, so the whole window looks like one piece.
+* **Shells:** pwsh, Windows PowerShell, cmd, and MSYS2 or Cygwin shells like zsh and bash, with shell integration for each.
+* **No flicker in zsh:** MSYS2 and Cygwin shells get a real terminal of their own, so zsh stays still while you type.
+* **Images:** `kitten icat` and the kitty graphics protocol.
+* **Kittens:** icat, hints, unicode_input, diff, themes, choose-files and ask.
+* **Remote control:** `kitty @` over `listen_on tcp:`.
+* **Notifications:** real Windows notifications from kitty.
+* **Explorer:** an Open in kitty entry when you right click a folder.
+* **Low input lag:** typing feels instant, and kitty draws at your monitor's real refresh rate.
+* **The rest of kitty:** tabs, OS windows, scrollback, mouse selection, the clipboard, ligatures, per monitor scaling, live config reload, and dropping files onto a window.
+
+## What is missing
+
+* Dragging tabs to move them around or into another window.
+* Remote control over `listen_on unix:`. TCP works.
+* The dnd, panel, quick-access-terminal and desktop-ui kittens.
+* Dragging text or files out of a window. Dropping them in works.
+* `kitty +something` commands and the full `kitty --help` when you run them from another terminal.
+* Kittens outside kitty. Run them from a kitty window.
+* Emoji typed at an MSYS2 zsh prompt show up in pieces like `<d83d>`. That is zsh on Cygwin and it happens in Windows Terminal too. Emoji in output are fine.
+
+The full list, with what is still untested, is in [docs/windows-port.md](docs/windows-port.md).
 
 ## Install
 
-Download `kitty-setup.exe` from the [latest release](https://github.com/ecstra/win-kitty/releases/latest) and run it. It asks for administrator rights, installs to `C:\Program Files\kitty`, and offers to put kitty on your PATH, add the Explorer menu entry, and create a desktop shortcut.
+1. Download `kitty-setup.exe` from the [latest release](https://github.com/ecstra/win-kitty/releases/latest).
+2. Run it and say yes to the administrator prompt.
+3. Pick whether you want kitty on your PATH, the Explorer entry and a desktop shortcut.
 
-Nothing else is needed. Python, every MinGW DLL and the terminfo are bundled, and each build is smoke tested against a cleaned PATH so a missing dependency fails the build rather than you.
-
-To install without prompts:
+Everything kitty needs comes with it. For a silent install, run
 
 ```
 kitty-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
@@ -56,98 +68,74 @@ kitty-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 
 ## Configuration
 
-kitty reads its config from `%USERPROFILE%\.config\kitty\kitty.conf`, which
-expands to:
+kitty reads `%USERPROFILE%\.config\kitty\kitty.conf`, the same place it uses on Linux. It does not look in `%APPDATA%`.
 
-```
-C:\Users\<user>\.config\kitty\kitty.conf
-```
+1. Make the folder `%USERPROFILE%\.config\kitty`, since the installer does not.
+2. For the setup in the screenshot, copy `kitty.conf` and the `kitty-themes` folder from [example/.config/kitty](example/.config/kitty) into it.
 
-Note that this is `.config` in your home folder, the same place kitty uses on
-Linux, and not `%APPDATA%`. The folder is not created for you. Make it yourself,
-or set `KITTY_CONFIG_DIRECTORY` to keep the config somewhere else.
+Save the file and kitty picks up the change without a restart. To keep your config somewhere else, set `KITTY_CONFIG_DIRECTORY`.
 
-A working config is in [example/.config/kitty](example/.config/kitty). Copy
-`kitty.conf` and the `kitty-themes` folder beside it into your own
-`.config\kitty` and you have the setup in the screenshots, MSYS2 zsh included.
-The comments in it cover the options where Windows behaves differently from
-Linux or macOS, so you can tell which ones are safe to change.
+## Problems
 
-Config reloading works, so you can edit the file and see the result without
-restarting.
-
-## What is missing
-
-* **Remote control over a Unix socket:** `listen_on unix:...`. Windows has carried AF_UNIX since build 17063, but CPython does not build it ([python/cpython#77589](https://github.com/python/cpython/issues/77589)), so the socket cannot be created. `kitty @` itself works over `listen_on tcp:...`.
-* **Four kittens:** dnd, panel, quick-access-terminal and desktop-ui. They are marked in the `kitten` command list and refuse cleanly.
-* **Dragging content out** of a window. Dropping onto one works.
-* **Some console invocations:** the `kitty +something` entry points and the full `kitty --help` list when run from another terminal.
-* **Emoji at an MSYS2 zsh prompt:** typing or pasting one shows its pieces instead, as `<d83d>` or similar. Cygwin stores a wide character in 16 bits, so anything above U+FFFF needs two of them and zsh's line editor assumes one. This is zsh on Cygwin rather than anything kitty does, and it reproduces in Windows Terminal with the same shell. Only the prompt is affected. Emoji in program output, in file names and in kitten interfaces are all fine, and bash on the same install handles them correctly.
-
-Kittens deliberately refuse to start outside kitty on Windows, because they depend on kitty's own input and output path. Inside kitty they work. [docs/windows-port.md](docs/windows-port.md) has the full list, including what is simply untested.
+Open an [issue](https://github.com/ecstra/win-kitty/issues) and say what you did, what you saw, your Windows version and which shell you were in. [CONTRIBUTING.md](CONTRIBUTING.md) has the rest. If it also happens on Linux or macOS, it belongs on the [upstream tracker](https://github.com/kovidgoyal/kitty/issues).
 
 ## Build
 
-You need the MSYS2 UCRT64 toolchain, its build of Python 3, and Go. Install them from an MSYS2 UCRT64 shell (`C:\msys64\msys2_shell.cmd -ucrt64`):
+1. Install [MSYS2](https://www.msys2.org/) and open its UCRT64 shell with `C:\msys64\msys2_shell.cmd -ucrt64`.
+2. Install the toolchain.
 
-```bash
-pacman -S --needed \
-    base-devel \
-    mingw-w64-ucrt-x86_64-gcc \
-    mingw-w64-ucrt-x86_64-pkgconf \
-    mingw-w64-ucrt-x86_64-python \
-    mingw-w64-ucrt-x86_64-go \
-    mingw-w64-ucrt-x86_64-harfbuzz \
-    mingw-w64-ucrt-x86_64-freetype \
-    mingw-w64-ucrt-x86_64-fontconfig \
-    mingw-w64-ucrt-x86_64-cairo \
-    mingw-w64-ucrt-x86_64-libpng \
-    mingw-w64-ucrt-x86_64-xxhash \
-    mingw-w64-ucrt-x86_64-openssl \
-    mingw-w64-ucrt-x86_64-ncurses \
-    mingw-w64-ucrt-x86_64-lcms2 \
-    mingw-w64-ucrt-x86_64-ruff
-```
+   ```bash
+   pacman -S --needed \
+       base-devel \
+       mingw-w64-ucrt-x86_64-gcc \
+       mingw-w64-ucrt-x86_64-pkgconf \
+       mingw-w64-ucrt-x86_64-python \
+       mingw-w64-ucrt-x86_64-go \
+       mingw-w64-ucrt-x86_64-harfbuzz \
+       mingw-w64-ucrt-x86_64-freetype \
+       mingw-w64-ucrt-x86_64-fontconfig \
+       mingw-w64-ucrt-x86_64-cairo \
+       mingw-w64-ucrt-x86_64-libpng \
+       mingw-w64-ucrt-x86_64-xxhash \
+       mingw-w64-ucrt-x86_64-openssl \
+       mingw-w64-ucrt-x86_64-ncurses \
+       mingw-w64-ucrt-x86_64-lcms2 \
+       mingw-w64-ucrt-x86_64-ruff
+   ```
 
-Building the installer additionally needs Inno Setup (`winget install JRSoftware.InnoSetup`) and the Windows SDK for `makeappx` and `signtool`.
+3. Install [Inno Setup](https://jrsoftware.org/isinfo.php) and the Windows SDK, which the installer step needs.
 
-If you build outside an MSYS2 UCRT64 login shell, set `GOROOT` yourself. The packaged `go.exe` is built with `-trimpath`, so it cannot work out where its own standard library lives, and without this the build stops at `cannot find GOROOT directory`:
+   ```powershell
+   winget install JRSoftware.InnoSetup
+   ```
 
-```bash
-export GOROOT=/ucrt64/lib/go          # git-bash or MSYS2
-```
-```powershell
-$env:GOROOT = 'C:\msys64\ucrt64\lib\go'   # PowerShell
-```
+4. Put Symbols Nerd Font Mono in `fonts/`, unless you have it installed already.
 
-An MSYS2 UCRT64 login shell sets this for you, from `etc/profile.d/go.sh`.
+   ```bash
+   mkdir -p /tmp/nerd fonts
+   curl -fsSL -o /tmp/nerd.tar.xz https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz
+   tar -xf /tmp/nerd.tar.xz -C /tmp/nerd
+   cp /tmp/nerd/SymbolsNerdFontMono-Regular.ttf fonts/
+   ```
 
-The build also wants Symbols Nerd Font Mono. It looks for it in `%windir%\Fonts` and your per-user font directory, and fails if it is missing. Either install the font, or drop the file straight into `fonts/`, which the build accepts and which is gitignored:
+5. Build the installer. It lands in `dist/kitty-setup.exe`.
 
-```bash
-curl -fsSL -o /tmp/nerd.tar.xz https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz
-tar -xf /tmp/nerd.tar.xz -C /tmp/nerd
-find /tmp/nerd -name 'SymbolsNerdFontMono-Regular.ttf' -exec cp {} fonts/ \;
-```
+   ```bash
+   ./packaging/windows/make-installer.sh
+   ```
 
-Then, from git-bash or an MSYS2 shell:
-
-```bash
-./packaging/windows/make-installer.sh
-```
-
-That one command builds everything and produces `dist/kitty-setup.exe`. CI runs the same build on every push, so a green run always has an installer attached.
+Outside a UCRT64 shell, run `export GOROOT=/ucrt64/lib/go` first, or Go cannot find its own standard library.
 
 ## Documentation
 
-* [example/.config/kitty](example/.config/kitty): a working config, commented for Windows.
+* [example/.config/kitty](example/.config/kitty): a working config with notes on what behaves differently on Windows.
 * [docs/windows-port.md](docs/windows-port.md): installing, building, the Windows defaults, and what is not there yet.
-* [docs/windows-internals.md](docs/windows-internals.md): how each Windows piece works, from the pty bridge to the acrylic.
-* [docs/decisions.md](docs/decisions.md): why the choices were made, including the ones that were reversed.
-* [CONTRIBUTING.md](CONTRIBUTING.md): where to report things, and what to include.
+* [docs/windows-changelog.md](docs/windows-changelog.md): what changed in each release.
+* [docs/windows-internals.md](docs/windows-internals.md): how each Windows piece works.
+* [docs/decisions.md](docs/decisions.md): why things were done the way they were.
 
 ## Credits
 
-kitty is created and maintained by [Kovid Goyal](https://github.com/kovidgoyal). This fork only adds the Windows port, by **ecstra**. Everything that makes kitty good is his work, and the upstream documentation at [sw.kovidgoyal.net/kitty](https://sw.kovidgoyal.net/kitty/) applies here too.
+kitty is made by [Kovid Goyal](https://github.com/kovidgoyal), and everything that makes it good is his work. This fork adds the Windows port, by **ecstra**. The [upstream documentation](https://sw.kovidgoyal.net/kitty/) applies here too.
 
 Licensed under GPLv3, the same as upstream.
