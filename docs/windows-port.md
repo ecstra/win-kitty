@@ -69,6 +69,13 @@ Known missing, and confirmed so.
 - The `kitty +something` entry points from another terminal. They reach the window binary and print nothing. Inside kitty they work as normal. `kitty +icat` is removed on Windows, since it only forwards to `kitten icat`, which will not run outside kitty anyway.
 - The full `kitty --help` option list. From another terminal `--help` prints a short pointer to the online documentation instead, because the formatter needs a terminal size that Windows reports differently. `--version` prints normally.
 
+New in kitty 0.49 to 0.51 and not ported yet.
+
+- Custom shaders. They are compiled with the Slang compiler when first used, and the installer does not include it yet.
+- The launch wrapper, which runs new windows through a wrapper command. It is written around POSIX shells and paths.
+- `restore_session_after_logout`. Nothing on Windows tells kitty the session is ending yet.
+- `tab.children_mem_usage` in tab titles, and the tracking of a window's root and descendant processes. Both read `/proc` and cgroups.
+
 Deliberate, not missing.
 
 - Kittens refuse to start outside kitty. On Windows a kitten needs kitty's own input and output path, and in another terminal it misbehaves in ways that look like bugs, so it exits with a message. Inside kitty every ported kitten works.
@@ -209,6 +216,8 @@ PATH="/c/msys64/ucrt64/bin:$PATH" PYTHONUTF8=1 /c/msys64/ucrt64/bin/python.exe s
 ```
 
 Putting the ucrt64 bin directory first matters. The compiler loads its own DLLs through PATH, and without it the build fails while working out the target architecture.
+
+The build also compiles kitty's Slang shaders to GLSL and checks them, so it needs `glslangValidator` on PATH, from the `mingw-w64-ucrt-x86_64-glslang` package, and `slangc` at the version `bypy/sources.json` names, found through the `SLANGC` variable or PATH. An older `slangc`, such as the one in the Vulkan SDK, writes GLSL the check rejects. The README shows how to fetch the right one.
 
 The build emits `.so` names and Windows imports `.pyd`, so copy both extensions afterwards. A stale `.pyd` is imported silently in preference to the `.so` you just built, which is a good way to test a binary that has none of your changes in it.
 

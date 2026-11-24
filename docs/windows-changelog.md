@@ -4,9 +4,17 @@ What changed in each release of kitty for Windows, newest first. What upstream k
 
 ## Next (unreleased)
 
+Based on kitty 0.51.1.
+
+### Fixed
+
+- Completing a path that starts with a backslash, such as `\Windows`, now looks in the root of the current drive.
+- Files the ssh kitten copies from inside your home folder no longer arrive on the remote with backslashes in their names.
+
 ### Changed
 
-- Building from source now uses the MSYS2 UCRT64 toolchain instead of MINGW64, which MSYS2 is retiring.
+- Updated from kitty 0.48.0 to 0.51.1.
+- Building from source now uses the MSYS2 UCRT64 toolchain instead of MINGW64, which MSYS2 is retiring, and needs the Slang shader compiler.
 
 ## 0.48.0-win.1 (2026-07-24)
 

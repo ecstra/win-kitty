@@ -10,7 +10,7 @@
   <a href="https://github.com/ecstra/win-kitty/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ecstra/win-kitty/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="GPLv3 licence" src="https://img.shields.io/badge/licence-GPLv3-yellow.svg"></a>
   <a href="https://github.com/ecstra/win-kitty/releases"><img alt="Windows 11" src="https://img.shields.io/badge/windows-11-0078D6.svg"></a>
-  <a href="https://sw.kovidgoyal.net/kitty/"><img alt="kitty 0.48.0" src="https://img.shields.io/badge/kitty-0.48.0-brightgreen.svg"></a>
+  <a href="https://sw.kovidgoyal.net/kitty/"><img alt="kitty 0.51.1" src="https://img.shields.io/badge/kitty-0.51.1-brightgreen.svg"></a>
   <br><br>
 </p>
 
@@ -50,6 +50,8 @@ I built it so I could use kitty as my daily terminal on Windows, and it does tha
 * Dragging text or files out of a window. Dropping them in works.
 * `kitty +something` commands and the full `kitty --help` when you run them from another terminal.
 * Kittens outside kitty. Run them from a kitty window.
+* Custom shaders, since the installer does not include the Slang compiler they need yet.
+* A few things new in kitty 0.49 to 0.51: the launch wrapper, saving your session when you log out, and the memory use of a tab's programs in tab titles.
 * Emoji typed at an MSYS2 zsh prompt show up in pieces like `<d83d>`. That is zsh on Cygwin and it happens in Windows Terminal too. Emoji in output are fine.
 
 The full list, with what is still untested, is in [docs/windows-port.md](docs/windows-port.md).
@@ -100,7 +102,8 @@ Open an [issue](https://github.com/ecstra/win-kitty/issues) and say what you did
        mingw-w64-ucrt-x86_64-openssl \
        mingw-w64-ucrt-x86_64-ncurses \
        mingw-w64-ucrt-x86_64-lcms2 \
-       mingw-w64-ucrt-x86_64-ruff
+       mingw-w64-ucrt-x86_64-ruff \
+       mingw-w64-ucrt-x86_64-glslang
    ```
 
 3. Install [Inno Setup](https://jrsoftware.org/isinfo.php) and the Windows SDK, which the installer step needs.
@@ -118,7 +121,16 @@ Open an [issue](https://github.com/ecstra/win-kitty/issues) and say what you did
    cp /tmp/nerd/SymbolsNerdFontMono-Regular.ttf fonts/
    ```
 
-5. Build the installer. It lands in `dist/kitty-setup.exe`.
+5. Get the Slang shader compiler at the version in `bypy/sources.json`, and point `SLANGC` at it. An older one, such as the Vulkan SDK's, writes shaders the build rejects.
+
+   ```bash
+   mkdir -p /tmp/slang
+   curl -fsSL -o /tmp/slang.tar.gz https://github.com/shader-slang/slang/releases/download/v2026.14.1/slang-2026.14.1-windows-x86_64.tar.gz
+   tar -xzf /tmp/slang.tar.gz -C /tmp/slang
+   export SLANGC="$(cygpath -m /tmp/slang/bin/slangc.exe)"
+   ```
+
+6. Build the installer. It lands in `dist/kitty-setup.exe`.
 
    ```bash
    ./packaging/windows/make-installer.sh
