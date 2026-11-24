@@ -59,6 +59,7 @@ jobs:
                       mingw-w64-ucrt-x86_64-ncurses
                       mingw-w64-ucrt-x86_64-lcms2
                       mingw-w64-ucrt-x86_64-ruff
+                      mingw-w64-ucrt-x86_64-glslang
 
             - name: Lint
               run: |
@@ -83,6 +84,20 @@ jobs:
                   tar -xf /tmp/nerd.tar.xz -C /tmp/nerd
                   find /tmp/nerd -name 'SymbolsNerdFontMono-Regular.ttf' -exec cp {} fonts/ \;
                   test -f fonts/SymbolsNerdFontMono-Regular.ttf
+
+            - name: Fetch the Slang compiler
+              run: |
+                  set -euo pipefail
+                  # kitty writes its shaders in Slang and compiles them to GLSL
+                  # during the build, which glslangValidator then checks. Use the
+                  # slangc release upstream builds with, named in bypy/sources.json,
+                  # since an older one writes GLSL the checker rejects.
+                  version="$(grep -o '"slang [0-9.]*"' bypy/sources.json | tr -d '"' | cut -d' ' -f2)"
+                  mkdir -p /tmp/slang
+                  curl -fsSL -o /tmp/slang.tar.gz "https://github.com/shader-slang/slang/releases/download/v${version}/slang-${version}-windows-x86_64.tar.gz"
+                  tar -xzf /tmp/slang.tar.gz -C /tmp/slang
+                  test -x /tmp/slang/bin/slangc.exe
+                  echo "SLANGC=$(cygpath -m /tmp/slang/bin/slangc.exe)" >> "$GITHUB_ENV"
 
             - name: Build
               run: |
