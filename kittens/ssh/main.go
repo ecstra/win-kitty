@@ -908,8 +908,8 @@ func run_ssh(ssh_args, server_args, found_extra_args []string, ssh_config_channe
 	defer cleanup()
 	// Receive ssh config
 	cd.ssh_config = <-ssh_config_channel
-	var pre_launch_termios unix.Termios
-	if err = term.Tcgetattr(&pre_launch_termios); err != nil {
+	var pre_launch_termios terminal_attributes
+	if err = get_terminal_attributes(term, &pre_launch_termios); err != nil {
 		return 1, fmt.Errorf("Failed to get terminal attributes with error: %w", err)
 	}
 	launch := func() (*exec.Cmd, error) {
@@ -970,7 +970,7 @@ func run_ssh(ssh_args, server_args, found_extra_args []string, ssh_config_channe
 			} else {
 				// The session is stuck waiting on the same dead connection,
 				// so it has not produced any output yet and is safe to kill
-				_ = c.Process.Signal(unix.SIGTERM)
+				_ = c.Process.Signal(syscall.SIGTERM)
 				select {
 				case <-session_done:
 				case <-time.After(time.Second):
@@ -982,7 +982,7 @@ func run_ssh(ssh_args, server_args, found_extra_args []string, ssh_config_channe
 				// Discard the data kitty sent for the killed session and
 				// restore the terminal to the state the session expects
 				drain_potential_tty_garbage(term)
-				if err = term.Tcsetattr(tty.TCSANOW, &pre_launch_termios); err != nil {
+				if err = set_terminal_attributes(term, &pre_launch_termios); err != nil {
 					return 1, fmt.Errorf("Failed to restore terminal attributes with error: %w", err)
 				}
 				// kitty has already consumed the data for the killed session

@@ -920,7 +920,8 @@ def kitty_env(args: Options) -> Env:
     if is_macos:
         ans.ldpaths.extend('-framework Cocoa'.split())
     elif is_windows:
-        ans.ldpaths += '-lgdi32 -luser32 -ldwmapi -lws2_32 -lshell32 -limm32 -ladvapi32'.split()
+        # libsystre is the POSIX regex the C library lacks here, for detect_url_regex
+        ans.ldpaths += '-lgdi32 -luser32 -ldwmapi -lws2_32 -lshell32 -limm32 -ladvapi32 -lsystre'.split()
     elif not is_openbsd:
         ans.ldpaths += ['-lrt']
         if '-ldl' not in ans.ldpaths:
@@ -1620,9 +1621,27 @@ def build_shaders(args: Options, kitty_exe: str, shaders_dest: str = '') -> None
         shutil.copytree('shaders', shaders_dest, dirs_exist_ok=True)
 
 
+def runnable_launcher(kitty_exe: str) -> str:
+    if is_windows:
+        # Callers build this from appname, and subprocess applies neither
+        # PATHEXT nor cwd resolution to an explicit executable: CreateProcess
+        # rejects a *relative* path spelled with forward slashes, which is what
+        # the hard-coded 'kitty/launcher' launcher_dir produces. Absolute it.
+        if not kitty_exe.lower().endswith('.exe'):
+            kitty_exe += '.exe'
+        kitty_exe = os.path.abspath(kitty_exe)
+    return kitty_exe
+
+
 def generate_shaders(kitty_exe: str) -> None:
     env = os.environ.copy()
     env['ASAN_OPTIONS'] = 'detect_leaks=0'
+    kitty_exe = runnable_launcher(kitty_exe)
+    # kitty.exe is a GUI subsystem binary, which gets the parent's std handles
+    # only when they are passed explicitly. Without a console to attach to, as
+    # under CI or a redirected build, it would have nowhere to write and exit 1
+    # with no message.
+    std_handles = {'stdout': sys.stdout, 'stderr': sys.stderr} if is_windows else {}
     cp = subprocess.run(
         [
             kitty_exe,
@@ -1633,6 +1652,7 @@ def generate_shaders(kitty_exe: str) -> None:
             'shaders',
         ],
         env=env,
+        **std_handles,
     )
     if cp.returncode != 0:
         if os.environ.get('CI') == 'true' and cp.returncode < 0 and shutil.which('coredumpctl'):
@@ -1698,14 +1718,7 @@ def update_go_generated_files(args: Options, kitty_exe: str) -> None:
 
     env = os.environ.copy()
     env['ASAN_OPTIONS'] = 'detect_leaks=0'
-    if is_windows:
-        # Callers build this from appname, and subprocess applies neither
-        # PATHEXT nor cwd resolution to an explicit executable: CreateProcess
-        # rejects a *relative* path spelled with forward slashes, which is what
-        # the hard-coded 'kitty/launcher' launcher_dir produces. Absolute it.
-        if not kitty_exe.lower().endswith('.exe'):
-            kitty_exe += '.exe'
-        kitty_exe = os.path.abspath(kitty_exe)
+    kitty_exe = runnable_launcher(kitty_exe)
     cp = subprocess.run([kitty_exe, '+launch', os.path.join(src_base, 'gen/go_code.py')], stdout=subprocess.DEVNULL, env=env)
     if cp.returncode != 0:
         if os.environ.get('CI') == 'true' and cp.returncode < 0 and shutil.which('coredumpctl'):

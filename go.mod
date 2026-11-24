@@ -35,6 +35,8 @@ require (
 // Uncomment the following to use a local checkout of dbus
 replace github.com/kovidgoyal/go-shm => ./3rdparty/go-shm
 
+replace github.com/kovidgoyal/go-shm/v2 => ./3rdparty/go-shm-v2
+
 // replace github.com/kovidgoyal/dbus => ../dbus
 
 // Uncomment the following to use a local checkout of imaging

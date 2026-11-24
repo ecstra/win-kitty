@@ -75,6 +75,15 @@ func CreateDirAt(parent *os.File, name string, permissions os.FileMode) (*os.Fil
 	return OpenDirAt(parent, name)
 }
 
+// Fails if a directory entry with the same name already exists, as the POSIX
+// version does.
+func CreateExclusiveDirAt(parent *os.File, name string, permissions os.FileMode) (*os.File, error) {
+	if err := MkdirAt(parent, name, permissions); err != nil {
+		return nil, err
+	}
+	return OpenDirAt(parent, name)
+}
+
 func StatAt(dirFile *os.File, name string) (os.FileInfo, error) {
 	return os.Stat(join(dirFile, name))
 }

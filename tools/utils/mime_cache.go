@@ -14,8 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-
-	"golang.org/x/sys/unix"
+	"syscall"
 )
 
 // Fast lookup of MIME types for file names using the binary mime.cache files
@@ -386,7 +385,7 @@ func load_mime_cache(path string) (*mime_cache, error) {
 	// (QMimeBinaryProvider) mmap these files in exactly the same way, without
 	// handling SIGBUS. All reads from the mapped data are bounds checked, so
 	// corrupt or malicious cache file contents are safe.
-	data, err := unix.Mmap(int(f.Fd()), 0, int(st.Size()), unix.PROT_READ, unix.MAP_PRIVATE)
+	data, err := mmap_read_only(f, int(st.Size()))
 	is_mmapped := err == nil
 	if !is_mmapped {
 		if data, err = os.ReadFile(path); err != nil {
@@ -399,7 +398,7 @@ func load_mime_cache(path string) (*mime_cache, error) {
 	major, minor := binary.BigEndian.Uint16(data), binary.BigEndian.Uint16(data[2:])
 	if major != 1 || minor < 1 {
 		if is_mmapped {
-			_ = unix.Munmap(data)
+			_ = munmap(data)
 		}
 		return nil, fmt.Errorf("the MIME cache file %s has unsupported version %d.%d", path, major, minor)
 	}
@@ -437,7 +436,7 @@ func load_mime_caches(paths []string) (ans mime_caches) {
 	for _, p := range paths {
 		c, err := load_mime_cache(p)
 		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, unix.ENOTDIR) {
+			if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
 				fmt.Fprintln(os.Stderr, "Failed to load MIME cache file with error:", err)
 			}
 			continue

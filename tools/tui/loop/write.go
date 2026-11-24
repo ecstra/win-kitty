@@ -5,7 +5,6 @@ package loop
 import (
 	"fmt"
 	"github.com/kovidgoyal/kitty/tools/tty"
-	"github.com/kovidgoyal/kitty/tools/utils"
 	"io"
 	"os"
 	"time"

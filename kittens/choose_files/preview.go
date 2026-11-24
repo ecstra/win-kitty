@@ -22,7 +22,6 @@ import (
 	"github.com/kovidgoyal/kitty/tools/utils/humanize"
 	"github.com/kovidgoyal/kitty/tools/utils/style"
 	"github.com/kovidgoyal/kitty/tools/wcswidth"
-	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
@@ -266,7 +265,7 @@ const MAX_TEXT_FILE_SIZE = 16 * 1024 * 1024
 // descriptor, as opening a FIFO can otherwise block indefinitely and the path
 // can be replaced by a special file after any earlier stat() calls.
 func read_regular_file(path string, max_size int64) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|open_nonblocking, 0)
 	if err != nil {
 		return nil, err
 	}

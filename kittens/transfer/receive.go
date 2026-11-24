@@ -61,7 +61,7 @@ type filesystem_file struct {
 // and that interrupted transfers do not leave truncated files behind.
 func new_filesystem_file(path string) (*filesystem_file, error) {
 	if s, err := os.Stat(path); err == nil && s.IsDir() {
-		return nil, &fs.PathError{Op: "open", Path: path, Err: unix.EISDIR}
+		return nil, &fs.PathError{Op: "open", Path: path, Err: syscall.EISDIR}
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".kitty-transfer-")
 	if err == nil {
@@ -70,11 +70,8 @@ func new_filesystem_file(path string) (*filesystem_file, error) {
 	if errors.Is(err, fs.ErrPermission) {
 		// The directory is not writable, fallback to writing in place, but
 		// only if that cannot affect any other file.
-		var st unix.Stat_t
-		if unix.Lstat(path, &st) == nil && st.Mode&unix.S_IFMT == unix.S_IFREG && st.Nlink == 1 {
-			if f, ferr := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC|unix.O_NOFOLLOW, 0); ferr == nil {
-				return &filesystem_file{f: f}, nil
-			}
+		if f := open_for_writing_in_place(path); f != nil {
+			return &filesystem_file{f: f}, nil
 		}
 	}
 	return nil, err

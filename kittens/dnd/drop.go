@@ -14,11 +14,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/emmansun/base64"
-	"golang.org/x/sys/unix"
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/kovidgoyal/go-parallel"
@@ -821,18 +819,6 @@ func (dnd *dnd) new_tdir() (dir_file *os.File, err error) {
 	dnd.tdir_counter++
 	name := strconv.Itoa(dnd.tdir_counter)
 	return utils.CreateDirAt(dnd.base_tempdir, name, 0o700)
-}
-
-// Identify a file by device and inode. Unlike os.SameFile this also works
-// with the os.FileInfo objects returned by utils.StatAt.
-func file_identity(info os.FileInfo) (dev, ino uint64, err error) {
-	switch s := info.Sys().(type) {
-	case *syscall.Stat_t:
-		return uint64(s.Dev), uint64(s.Ino), nil
-	case *unix.Stat_t:
-		return uint64(s.Dev), uint64(s.Ino), nil
-	}
-	return 0, 0, fmt.Errorf("unknown stat result type for %s: %T", info.Name(), info.Sys())
 }
 
 func same_file(a, b os.FileInfo) (bool, error) {

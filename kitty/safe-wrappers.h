@@ -29,14 +29,29 @@ safe_lockf(int fd, int function, off_t size) {
     }
 }
 
+static inline bool
+get_socket_send_timeout(int socket_fd, struct timeval *tv) {
+#ifdef _WIN32
+    // Winsock reports SO_SNDTIMEO as a DWORD of milliseconds, not a timeval.
+    DWORD ms = 0;
+    int sz = sizeof(ms);
+    if (getsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, (char *)&ms, &sz) != 0) return false;
+    tv->tv_sec = ms / 1000;
+    tv->tv_usec = (ms % 1000) * 1000;
+    return true;
+#else
+    socklen_t sz = sizeof(*tv);
+    return getsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, tv, &sz) == 0;
+#endif
+}
+
 static inline int
 wait_for_pending_connect(int socket_fd) {
     // Wait for a connect() that is continuing in the background to complete,
     // honoring any send timeout set on the socket, as a blocking connect() would.
     struct timeval tv = {0};
-    socklen_t sz = sizeof(tv);
     int64_t deadline = 0;
-    if (getsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, &sz) == 0 && (tv.tv_sec > 0 || tv.tv_usec > 0)) {
+    if (get_socket_send_timeout(socket_fd, &tv) && (tv.tv_sec > 0 || tv.tv_usec > 0)) {
         struct timespec now;
         if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
         deadline = (int64_t)now.tv_sec * 1000000000ll + now.tv_nsec + (int64_t)tv.tv_sec * 1000000000ll + (int64_t)tv.tv_usec * 1000ll;
@@ -61,7 +76,8 @@ wait_for_pending_connect(int socket_fd) {
     }
     int err = 0;
     socklen_t errlen = sizeof(err);
-    if (getsockopt(socket_fd, SOL_SOCKET, SO_ERROR, &err, &errlen) < 0) return -1;
+    // void * since Winsock declares the buffer as char * where POSIX has void *
+    if (getsockopt(socket_fd, SOL_SOCKET, SO_ERROR, (void *)&err, &errlen) < 0) return -1;
     if (err != 0) {
         errno = err;
         return -1;

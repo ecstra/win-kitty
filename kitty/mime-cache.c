@@ -13,7 +13,9 @@
 #include "data-types.h"
 #include "monotonic.h"
 
-#ifdef __APPLE__
+// Windows has no shared-mime-info database either, so it takes the same stubs
+// as macOS and the Python side falls back to the mimetypes module.
+#if defined(__APPLE__) || defined(_WIN32)
 
 static PyObject *
 mime_type_for_filename(PyObject *self UNUSED, PyObject *name UNUSED) {

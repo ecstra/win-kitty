@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/kovidgoyal/kitty/tools/utils"
-	"golang.org/x/sys/unix"
 )
 
 type strategy_settings struct {
@@ -122,10 +121,10 @@ func update_settings(path, strategy, field, value string) (resize_settings, erro
 		return resize_settings{}, err
 	}
 	defer lock.Close()
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
+	if err := utils.LockFileExclusive(lock); err != nil {
 		return resize_settings{}, err
 	}
-	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
+	defer utils.UnlockFile(lock)
 	s, err := load_settings(path)
 	if err != nil {
 		return s, err
