@@ -364,8 +364,9 @@ func TestChooseFilesDirectorySymlinks(t *testing.T) {
 		{"directories", SELECT_SINGLE_DIR, Filter{},
 			[]string{"linked-dir", "real-dir"}, []string{"linked-dir", "real-dir"}},
 		{"file filter", SELECT_SINGLE_FILE, *filter,
-			[]string{"file.txt", "linked-dir", "linked-file.txt", "real-dir", "real-dir/nested.txt"},
-			[]string{"file.txt", "linked-file.txt", "real-dir/nested.txt"}},
+			// choices are shown with the platform's separator
+			[]string{"file.txt", "linked-dir", "linked-file.txt", "real-dir", filepath.FromSlash("real-dir/nested.txt")},
+			[]string{"file.txt", "linked-file.txt", filepath.FromSlash("real-dir/nested.txt")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			done := make(chan struct{})

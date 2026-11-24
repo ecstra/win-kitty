@@ -147,7 +147,7 @@ func TestCompleteFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	test_with_cwd("sessions/", filepath.Base(cdir), "sessions/work.kitty-session")
-	test_with_cwd("s", filepath.Base(cdir), "sessions/")
+	test_with_cwd("s", filepath.Base(cdir), "sessions"+utils.Sep) // directories end with the platform's separator
 	if err := os.Chdir(tdir); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestCompleteFiles(t *testing.T) {
 	os.Symlink(filepath.Join(tdir, "odir"), filepath.Join(tdir, "slink"))
 	c := NewCompletions()
 	DirectoryCompleter("", CWD)(c, "s", 0)
-	if len(c.Groups) != 1 || len(c.Groups[0].Matches) != 1 || c.Groups[0].Matches[0].Word != "slink/" {
+	if len(c.Groups) != 1 || len(c.Groups[0].Matches) != 1 || c.Groups[0].Matches[0].Word != "slink"+utils.Sep {
 		t.Fatalf("Symlink to directory not completed by DirectoryCompleter: %#v", c.Groups)
 	}
 
@@ -168,7 +168,7 @@ func TestCompleteFiles(t *testing.T) {
 	found := false
 	for _, g := range c.Groups {
 		for _, m := range g.Matches {
-			found = found || m.Word == "cdir/"
+			found = found || m.Word == "cdir"+utils.Sep
 		}
 	}
 	if !found {
