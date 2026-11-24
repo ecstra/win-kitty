@@ -105,7 +105,7 @@ func find_shell_parent_process() string {
 		}
 		if cmdline, err := p.CmdlineSlice(); err == nil && len(cmdline) > 0 {
 			exe := get_shell_name(filepath.Base(cmdline[0]))
-			if shell_integration.IsSupportedShell(exe) {
+			if is_parent_shell(exe) {
 				return exe
 			}
 		}
