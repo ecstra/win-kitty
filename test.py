@@ -20,6 +20,8 @@ def bootstrap_windows() -> None:
     for fn in ('geteuid', 'getuid', 'getegid', 'getgid'):
         if not hasattr(os, fn):
             setattr(os, fn, lambda: 0)
+    if not hasattr(os, 'O_CLOEXEC'):
+        os.O_CLOEXEC = os.O_NOINHERIT  # ty: ignore[unresolved-attribute]
 
 
 def ensure_utf8_mode() -> None:

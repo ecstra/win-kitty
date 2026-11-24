@@ -22,7 +22,7 @@ from itertools import chain, product
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Iterator, Literal, NamedTuple, Sequence, TypedDict, TypeGuard
 
-from kitty.constants import config_dir, read_kitty_resource, shaders_dir, slangc
+from kitty.constants import config_dir, is_windows, read_kitty_resource, shaders_dir, slangc
 from kitty.fast_data_types import (
     ANIMATION_SAMPLE_WAIT,
     BGIMAGE_PROGRAM,
@@ -2183,7 +2183,11 @@ def test_slang_build() -> None:
 [shader("vertex")]
 float4 main(uint vertex_id : SV_VertexID) : SV_Position { return float4(vertex_id, 1, 0, 1); }
 """
-    cp = subprocess.run(list(slangc()) + '-lang slang -entry main -stage vertex -target glsl -o /dev/stdout -- -'.split(), input=src, capture_output=True)
+    with tempfile.TemporaryDirectory() as tdir:
+        # Windows has no /dev/stdout for slangc to write to
+        out = os.path.join(tdir, 'test.glsl') if is_windows else '/dev/stdout'
+        cmd = list(slangc()) + '-lang slang -entry main -stage vertex -target glsl -o'.split() + [out, '--', '-']
+        cp = subprocess.run(cmd, input=src, capture_output=True)
     if cp.returncode != 0:
         raise AssertionError(f'Test compile of shader to GLSL failed with returncode: {cp.returncode} and stderr: {cp.stderr.decode()}')
 

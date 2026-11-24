@@ -985,7 +985,10 @@ float f() { static const float SCAN = 2; return SCAN; }
             notch = w('notch.slang', '// notch shader\n')
             w('pipelines/other.slang', '// other\n')
             orig_home = os.environ.get('HOME')
+            orig_profile = os.environ.get('USERPROFILE')
             os.environ['HOME'] = tmpdir
+            # ~ is the profile folder on Windows, which expanduser() reads from USERPROFILE
+            os.environ['USERPROFILE'] = tmpdir
             clear_caches()
             try:
                 # absolute paths with the extension are not extended again
@@ -1013,4 +1016,8 @@ float f() { static const float SCAN = 2; return SCAN; }
                     os.environ.pop('HOME', None)
                 else:
                     os.environ['HOME'] = orig_home
+                if orig_profile is None:
+                    os.environ.pop('USERPROFILE', None)
+                else:
+                    os.environ['USERPROFILE'] = orig_profile
                 clear_caches()
