@@ -56,7 +56,13 @@ func CompleteFiles(prefix string, callback func(*FileEntry), cwd string) error {
 	// relative prefixes are resolved against cwd, not the process working directory
 	location := utils.Expanduser(prefix)
 	if !filepath.IsAbs(location) {
-		location = filepath.Join(cwd, location)
+		if location != "" && os.IsPathSeparator(location[0]) {
+			// Rooted on the drive of cwd, as \Windows is on Windows, where a
+			// path is absolute only with its volume name.
+			location = filepath.VolumeName(cwd) + location
+		} else {
+			location = filepath.Join(cwd, location)
+		}
 	}
 	base_dir := ""
 	joinable_prefix := ""

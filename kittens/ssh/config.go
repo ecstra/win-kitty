@@ -202,6 +202,8 @@ func get_arcname(loc, dest, home string) (arcname string) {
 		if ra, err := filepath.Rel(home, arcname); err == nil && filepath.IsLocal(ra) {
 			arcname = ra
 		}
+		// The arcname is a path on the remote, POSIX, host
+		arcname = filepath.ToSlash(arcname)
 	}
 	prefix := "home/"
 	if strings.HasPrefix(arcname, "/") {

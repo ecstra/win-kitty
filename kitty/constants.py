@@ -126,7 +126,9 @@ def kitten_host_exe() -> str:
 def _get_config_dir() -> str:
     cdir = kitty_run_data.get('config_dir', '')
     if cdir:
-        return str(cdir)
+        # On Windows the launcher joins USERPROFILE, spelled with backslashes, to
+        # a forward slash path, so normalize it to one spelling of separators.
+        return os.path.normpath(cdir) if is_windows else str(cdir)
     import atexit
     import tempfile
 

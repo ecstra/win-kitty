@@ -140,6 +140,7 @@ func TestCompleteFiles(t *testing.T) {
 	test_with_cwd("./sessions/w", cdir, "./sessions/work.kitty-session")
 	test_with_cwd("../sessions/w", filepath.Join(cdir, "sessions"), "../sessions/work.kitty-session")
 	t.Setenv("HOME", cdir)
+	t.Setenv("USERPROFILE", cdir) // what os.UserHomeDir() reads on Windows
 	test_with_cwd("~/sessions/w", tdir, "~/sessions/work.kitty-session")
 	// a relative cwd, such as a config directory from a relative XDG_CONFIG_HOME, is relative to the process cwd
 	if err := os.Chdir(filepath.Dir(cdir)); err != nil {

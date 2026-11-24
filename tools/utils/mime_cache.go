@@ -447,7 +447,9 @@ func load_mime_caches(paths []string) (ans mime_caches) {
 }
 
 var system_mime_caches = sync.OnceValue(func() mime_caches {
-	if runtime.GOOS == "darwin" {
+	// Windows has no shared-mime-info either, and XDG_DATA_DIRS is split on
+	// colons, which a Windows path has after its drive letter.
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
 		return nil
 	}
 	return load_mime_caches(mime_cache_paths())
