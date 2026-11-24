@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -377,6 +378,9 @@ func TestDiskCachePathExtraKey(t *testing.T) {
 }
 
 func TestDiskCacheRejectsStalePathKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a replaced file is told apart by its inode, which os.Stat does not report on Windows")
+	}
 	tdir := t.TempDir()
 	dc, err := NewDiskCache(filepath.Join(tdir, "cache"), 1024*1024)
 	if err != nil {

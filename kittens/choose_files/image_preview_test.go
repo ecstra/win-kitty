@@ -253,6 +253,7 @@ func TestImagePreviewRendersSymlinkTarget(t *testing.T) {
 }
 
 func TestCmdPreviewConcurrentRendering(t *testing.T) {
+	skip_where_sh_scripts_cannot_run(t)
 	dir := t.TempDir()
 	script := filepath.Join(dir, "preview.sh")
 	body := "#!/bin/sh\nIFS= read -r content < \"$2\"\nprintf '{\"lines\":[\"%s\",\"%s\"]}\\n' \"$1\" \"$content\"\n"
@@ -348,6 +349,7 @@ func (f fake_ffmpeg) valid_thumbnail() string { return f.dir }
 // format registered with the real image loader, so decodes can be counted.
 func install_fake_ffmpeg(t *testing.T) fake_ffmpeg {
 	t.Helper()
+	skip_where_sh_scripts_cannot_run(t)
 	dir := t.TempDir()
 	f := fake_ffmpeg{dir: dir, video: filepath.Join(dir, "video.mp4"), runs_log: filepath.Join(dir, "ffmpeg-runs"), decodes: &atomic.Int32{}}
 	thumbnail := image.NewNRGBA(image.Rect(0, 0, 2, 1))
@@ -449,6 +451,7 @@ func TestFFMpegPreviewDiskCache(t *testing.T) {
 }
 
 func TestCmdPreviewDiskCache(t *testing.T) {
+	skip_where_sh_scripts_cannot_run(t)
 	dir := t.TempDir()
 	runs_log := filepath.Join(dir, "runs")
 	script := filepath.Join(dir, "preview.sh")
@@ -474,6 +477,7 @@ func TestCmdPreviewDiskCache(t *testing.T) {
 }
 
 func TestCmdPreviewDiskCacheSymlinks(t *testing.T) {
+	skip_where_sh_scripts_cannot_run(t)
 	dir := t.TempDir()
 	first_target := filepath.Join(dir, "first.txt")
 	other_target := filepath.Join(dir, "other.txt")
@@ -533,6 +537,7 @@ printf '{"lines":["%s:%s"]}\n' "${1##*/}" "$target"
 }
 
 func TestCmdPreviewDiskCacheCommandChange(t *testing.T) {
+	skip_where_sh_scripts_cannot_run(t)
 	dir := t.TempDir()
 	runs_log := filepath.Join(dir, "runs")
 	t.Setenv("KITTY_TEST_CMD_PREVIEW_RUNS", runs_log)
@@ -563,6 +568,7 @@ printf '{"lines":["%s"]}\n' "$1"
 }
 
 func TestCmdPreviewInvalidJSON(t *testing.T) {
+	skip_where_sh_scripts_cannot_run(t)
 	dir := t.TempDir()
 	script := filepath.Join(dir, "preview.sh")
 	// A type error still populates image, which must not hide the decode error.

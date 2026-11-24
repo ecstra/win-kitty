@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 from kitty.utils import get_editor
 
-from .base import BaseTest
+from .base import BaseTest, is_windows
 
 
 @contextmanager
@@ -220,6 +220,11 @@ action two
 
         if not shutil.which('update-mime-database'):
             self.skipTest('update-mime-database not available')
+        if is_windows:
+            # MSYS2 ships update-mime-database, but kitty does not read
+            # freedesktop mime.cache files on Windows, the C side is the stub
+            # macOS uses, and file types come from the mimetypes module.
+            self.skipTest('freedesktop MIME caches are not read on Windows')
 
         def build_cache(data_dir: str, xml: str) -> None:
             pkgs = os.path.join(data_dir, 'mime', 'packages')

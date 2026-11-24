@@ -12,7 +12,7 @@ from kitty.fast_data_types import Screen
 from kitty.os_window_size import WindowSize, WindowSizes, initial_window_size_func
 from kitty.session import get_os_window_sizing_data, parse_session, save_as_session
 
-from .base import BaseTest, parse_bytes
+from .base import BaseTest, parse_bytes, skip_on_windows
 
 
 class TestSessions(BaseTest):
@@ -149,6 +149,7 @@ class TestSessions(BaseTest):
                     assert_error('None of the matching windows')
         boss.edit_file.assert_not_called()
 
+    @skip_on_windows('expects a POSIX cwd such as /home to survive unchanged, Windows makes it C:/home')
     def test_save_as_session_line_injection(self) -> None:
         # Values such as the cwd reported via OSC 7 or user vars are under the
         # control of programs running in the window and must not be able to
@@ -294,6 +295,7 @@ class TestSessions(BaseTest):
             with self.subTest(unsafe=unsafe):
                 self.ae(s(f'a{unsafe}b'), expected)
 
+    @skip_on_windows('checks POSIX permission bits on the saved snapshots, which Windows does not keep')
     def test_logout_snapshots(self) -> None:
         from .crypto import is_rlimit_memlock_too_low
 

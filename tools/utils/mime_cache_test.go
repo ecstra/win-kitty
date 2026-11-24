@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -29,6 +30,10 @@ const mime_cache_test_types = `
 func TestMimeCache(t *testing.T) {
 	if _, err := exec.LookPath("update-mime-database"); err != nil {
 		t.Skip("update-mime-database not available")
+	}
+	if runtime.GOOS == "windows" {
+		// MSYS2 ships update-mime-database, but freedesktop caches are not read on Windows
+		t.Skip("freedesktop MIME caches are not read on Windows")
 	}
 	tdir := t.TempDir()
 	build_cache := func(data_dir, types string) {

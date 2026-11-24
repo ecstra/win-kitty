@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -148,6 +149,9 @@ func assert_no_temp_files(t *testing.T, dir string, expected ...string) {
 }
 
 func TestReceiveReplacesExistingLinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("checks POSIX permission bits and link semantics, which Windows does not have")
+	}
 	for _, link := range []struct {
 		name          string
 		create        func(string, string) error
@@ -248,6 +252,9 @@ func TestReceiveInterruptedLeavesDestinationIntact(t *testing.T) {
 }
 
 func TestReceiveIntoUnwritableDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("makes a directory unwritable with POSIX permission bits, which Windows does not honour")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("Directory permissions are not enforced for root")
 	}

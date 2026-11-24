@@ -912,7 +912,11 @@ class TestDataTypes(BaseTest):
             self.assertFalse(is_locked_by_another_process(lock_path))
 
             # a waiting process acquires the lock once it is released
-            code = f'from kitty.utils import lock_with_file;lock_with_file({lock_path!r}).__enter__();print("acquired", flush=True)'
+            # Written as bytes, as a text mode stdout on Windows would end the line with \r\n
+            code = (
+                f'import sys;from kitty.utils import lock_with_file;lock_with_file({lock_path!r}).__enter__();'
+                'sys.stdout.buffer.write(b"acquired\\n");sys.stdout.flush()'
+            )
             with lock_with_file(lock_path):
                 p = subprocess.Popen([kitty_exe(), '+runpy', code], stdout=subprocess.PIPE)
                 try:

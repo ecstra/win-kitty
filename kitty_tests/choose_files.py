@@ -3,7 +3,7 @@
 
 import shlex
 
-from .base import BaseTest
+from .base import BaseTest, is_windows
 
 
 class TestChooseFiles(BaseTest):
@@ -11,6 +11,8 @@ class TestChooseFiles(BaseTest):
         from kittens.choose_files.main import format_selection_for_paste
 
         paths = ['/work/simple', '/work/a path', '/work/a;command', '/work/*.txt', '/work/~root', '/work/a>output', r'/work/a\b', "/work/it's"]
+        if is_windows:  # a backslash separates paths on Windows, it is never part of a name
+            paths.remove(r'/work/a\b')
         text = format_selection_for_paste(paths, '/work', at_prompt=True)
         self.assertEqual(shlex.split(text), [path.removeprefix('/work/') for path in paths])
         self.assertEqual(format_selection_for_paste(paths[:2], '/work', at_prompt=False), 'simple\na path')

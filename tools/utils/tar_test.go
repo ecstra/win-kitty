@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -139,6 +140,9 @@ func assert_file_contents(t *testing.T, path, expected string) {
 }
 
 func TestTarExtractHardlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("checks POSIX permission bits on files outside the destination, which Windows does not keep")
+	}
 	for _, tc := range []struct {
 		name, target, link string
 	}{
@@ -278,6 +282,9 @@ func TestTarExtractReadOnlyDirectory(t *testing.T) {
 }
 
 func TestTarExtractUnsearchableParentDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("makes a directory unsearchable with POSIX permission bits, which Windows does not honour")
+	}
 	dest := t.TempDir()
 	parent := filepath.Join(dest, "a")
 	t.Cleanup(func() {

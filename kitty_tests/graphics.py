@@ -13,7 +13,7 @@ from io import BytesIO
 
 from kitty.fast_data_types import base64_decode, base64_encode, load_png_data, shm_unlink, shm_write
 
-from .base import BaseTest, is_windows, parse_bytes
+from .base import BaseTest, is_windows, parse_bytes, skip_on_windows
 
 try:
     from PIL import Image
@@ -655,6 +655,7 @@ class TestGraphics(BaseTest):
         s.reset()
         self.assertEqual(g.disk_cache.total_size, 0)
 
+    @skip_on_windows('reopens a NamedTemporaryFile, which Windows refuses, and uses a FIFO and POSIX shm')
     def test_load_images_from_file_edge_cases(self):
         s, g, pl, sl = load_helpers(self)
         random_data = byte_block(32 * 1024)
@@ -734,6 +735,7 @@ class TestGraphics(BaseTest):
         s.reset()
         self.assertEqual(g.disk_cache.total_size, 0)
 
+    @skip_on_windows('checks /proc, /sys and /dev paths and counts fds through /dev/fd')
     def test_graphics_file_reading_policy(self):
         from kitty.fast_data_types import set_boss
         from kitty.utils import is_ok_to_read_image_file, is_ok_to_read_image_path

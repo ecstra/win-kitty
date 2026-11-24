@@ -170,6 +170,9 @@ func TestSSHConfigParsing(t *testing.T) {
 }
 
 func TestSSHCopyArcnames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the local paths here are POSIX paths, TestSSHCopyArcnamesWindows covers Windows ones")
+	}
 	for _, tc := range []struct {
 		name, loc, dest, home, expected string
 	}{
@@ -193,6 +196,9 @@ func TestSSHCopyArcnames(t *testing.T) {
 }
 
 func TestSSHCopySymlinkedHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("copy instructions are split with POSIX shell quoting, which eats the backslashes of a Windows path")
+	}
 	tdir := t.TempDir()
 	real_home := filepath.Join(tdir, "usr", "home", "alice")
 	if err := os.MkdirAll(real_home, 0o755); err != nil {
@@ -223,6 +229,9 @@ func TestSSHCopySymlinkedHome(t *testing.T) {
 }
 
 func TestSSHCopyDirectoryMetadata(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("checks POSIX permission bits, which Windows does not keep")
+	}
 	root := filepath.Join(t.TempDir(), "tree")
 	dirs := []struct {
 		name string

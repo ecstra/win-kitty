@@ -5,7 +5,7 @@ import subprocess
 
 from kitty.constants import kitten_exe
 
-from .base import PTY, BaseTest
+from .base import PTY, BaseTest, skip_on_windows
 
 
 class TestNotify(BaseTest):
@@ -29,12 +29,14 @@ class TestNotify(BaseTest):
                 self.ae(p.stdout, b'')
                 self.assertIn(error, p.stderr)
 
+    @skip_on_windows('drives the kitten over a pty, which does not exist here')
     def test_notify_close_terminal(self):
         with PTY([kitten_exe(), 'notify', '--identifier=test']) as pty:
             pty.wait_till(lambda: bool(pty.callbacks.notifications))
             pty.wait_till_child_exits(require_exit_code=0)
             self.ae(pty.callbacks.notifications, [(99, 'i=test:p=close;')])
 
+    @skip_on_windows('drives the kitten over a pty, which does not exist here')
     def test_notify_close_wait(self):
         for title, response in (([], 'alive'), ([''], 'close')):
             with self.subTest(title=title), PTY([kitten_exe(), 'notify', '--identifier=test', '--wait-till-closed', *title]) as pty:

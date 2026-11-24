@@ -1,5 +1,9 @@
 // License: GPLv3 Copyright: 2025, Kovid Goyal, <kovid at kovidgoyal.net>
 
+// The dnd kitten refuses to start on Windows, where drag and drop is not built
+// and files cannot be identified by device and inode.
+//go:build !windows
+
 package dnd
 
 import (

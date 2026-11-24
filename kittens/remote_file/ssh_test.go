@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -71,6 +72,9 @@ func TestHostnameMatches(t *testing.T) {
 }
 
 func TestAutoRenameDest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the destinations here are POSIX paths, while local paths on Windows use backslashes")
+	}
 	taken := map[string]bool{"/x/a.txt": true, "/x/a-1.txt": true}
 	got := auto_rename_dest("/x/a.txt", func(p string) bool { return taken[p] })
 	if got != "/x/a-2.txt" {
@@ -131,6 +135,9 @@ func TestPythonSplitExt(t *testing.T) {
 }
 
 func TestRemoteEditFinalUpload(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake ssh here is an sh script, which Windows cannot run")
+	}
 	const ssh_script = `#!/bin/sh
 for arg in "$@"; do
     case "$arg" in

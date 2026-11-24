@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -424,6 +425,9 @@ func TestClipboardReadDuplicateOutputFilesSymlinkCwd(t *testing.T) {
 }
 
 func TestClipboardOutputCommitAtomic(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("checks POSIX permission bits, which Windows does not keep")
+	}
 	dest := filepath.Join(t.TempDir(), "output")
 	old_data := bytes.Repeat([]byte("old contents\n"), 1024)
 	new_data := bytes.Repeat([]byte("new contents\n"), 1024)

@@ -5,11 +5,15 @@ package utils
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestAtomicWriteFileSymlinkChain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("compares symlink targets spelled with forward slashes and POSIX permission bits")
+	}
 	dir := t.TempDir()
 	t.Chdir(dir)
 	for _, name := range []string{"nested", "real"} {
@@ -43,6 +47,9 @@ func TestAtomicWriteFileSymlinkChain(t *testing.T) {
 }
 
 func TestAtomicWriteFileSymlinkFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("compares symlink targets spelled with forward slashes, Windows stores them with backslashes")
+	}
 	for _, link := range []string{"missing/target", "link"} {
 		t.Run(link, func(t *testing.T) {
 			dir := t.TempDir()

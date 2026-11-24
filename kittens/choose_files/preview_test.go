@@ -1,3 +1,6 @@
+// Every test here is about FIFOs, which Windows does not have in the file system
+//go:build !windows
+
 package choose_files
 
 import (

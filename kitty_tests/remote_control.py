@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 from kitty.constants import kitty_exe
 from kitty.rc.base import PayloadGetter, all_command_names, command_for_name
 
-from .base import BaseTest
+from .base import BaseTest, skip_on_windows
 
 
 class Window:
@@ -563,6 +563,7 @@ os._exit(0)
 """
 
 
+@skip_on_windows('talks over AF_UNIX sockets, which CPython does not build on Windows')
 class TestTalkThread(BaseTest):
     def test_talk_thread_not_blocked_by_stalled_peer(self):
         p = subprocess.run([kitty_exe(), '+runpy', TALK_THREAD_STALLED_PEER], capture_output=True, text=True, timeout=30)
