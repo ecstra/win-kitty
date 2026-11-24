@@ -473,6 +473,10 @@ typedef struct CursorTrail {
     float cursor_edge_y[2];
     float prev_cursor_edge_x[2];                   // cursor_edge_x before the most recent cursor move
     float prev_cursor_edge_y[2];                   // cursor_edge_y before the most recent cursor move
+#ifdef _WIN32
+    float edge_geometry[4]; // the window geometry, in NDC, that cursor_edge_* was last computed in
+    bool geometry_changed;  // set when the latest target was computed in a different geometry
+#endif
     CursorMove history[CURSOR_TRAIL_HISTORY_SIZE]; // recent cursor moves that started a trail, most recent first
 } CursorTrail;
 

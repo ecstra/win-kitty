@@ -14,6 +14,7 @@ Based on kitty 0.51.1.
 - The ssh kitten asks for `--dest` when you copy a file from outside your home folder, instead of putting it in a folder named after the drive on the remote.
 - `kitten run-shell` goes back to the shell that ran it, zsh, pwsh or cmd, instead of opening cmd. Kittens now find programs on your PATH by their name alone, without the `.exe`.
 - Pressing Ctrl+C no longer leaves the shell or program a kitten started running in the background, where it read your typing alongside the next shell.
+- With `cursor_trail` on, resizing or maximizing the window no longer sends the cursor flying in from the side. It stays in its cell.
 
 ### Changed
 
