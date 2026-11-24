@@ -71,6 +71,8 @@ func TestHintMarking(t *testing.T) {
 	r("http://example.com.", "http://example.com")
 	r("http://example.com!", "http://example.com")
 	r("http://example.com?", "http://example.com")
+	r("“"+u+"”", u)
+	r("‘"+u+"’", u)
 
 	opts.Type = "linenum"
 	m := func(text, path string, line int) {
@@ -98,6 +100,27 @@ func TestHintMarking(t *testing.T) {
 	r("file.epub.", "file.epub")
 	r("(file.epub)", "file.epub")
 	r("some/path", "some/path")
+	r("“some/path”", "some/path")
+	r("Saving to: ‘index.html’", "index.html")
+	// a match consisting of only a quote must not result in start > end
+	for _, text := range []string{`"`, `'`, `""`, "“”", "“"} {
+		for _, name := range []string{"quotes", "brackets"} {
+			if s, e := PostProcessorMap()[name](text, 0, len(text)); s > e {
+				t.Fatalf("%s post processor returned start (%d) > end (%d) for %#v", name, s, e, text)
+			}
+		}
+	}
+	// long lines without spaces must not cause quadratic backtracking
+	long_line := strings.Repeat("1,", 20000)
+	r(long_line)
+	r("漢字 "+long_line+" some/path", "some/path")
+	r("漢字"+long_line+"a.txt", "漢字"+long_line+"a.txt")
+	// \b must use Unicode word characters, like regexp2
+	r("config.yaml文件")
+	r("a.txt文 é/b.c", "a.txt文", "é/b.c")
+	opts.Type = "linenum"
+	r(long_line)
+	m(long_line+" a/file.c:23", "a/file.c", 23)
 
 	reset()
 	cols = 60
@@ -119,6 +142,9 @@ func TestHintMarking(t *testing.T) {
 	r(`* 2b687c2 - test1`, `2b687c2`)
 	opts.Regex = `(?<=got:    )sha256.{4}`
 	r(`got:    sha256-L8=`, `sha256-L8=`)
+	// captures inside lookarounds can overlap subsequent matches
+	opts.Regex = `([αβγ])(?=([αβγ]+))`
+	r(`αβγ`, `α`, `β`)
 
 	reset()
 	opts.Type = "word"

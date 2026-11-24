@@ -11,7 +11,7 @@ import sys
 import tempfile
 from contextlib import suppress
 
-from bypy.constants import LIBDIR, PREFIX, PYTHON, ismacos, worker_env
+from bypy.constants import BIN, LIBDIR, PREFIX, PYTHON, ismacos, worker_env
 from bypy.constants import SRC as KITTY_DIR
 from bypy.utils import run_shell, walk
 
@@ -26,9 +26,7 @@ def initialize_constants():
     src = read_src_file('constants.py')
     nv = re.search(r'Version\((\d+), (\d+), (\d+)\)', src)
     kitty_constants['version'] = f'{nv.group(1)}.{nv.group(2)}.{nv.group(3)}'
-    kitty_constants['appname'] = re.search(
-            r'appname: str\s+=\s+(u{0,1})[\'"]([^\'"]+)[\'"]', src
-    ).group(2)
+    kitty_constants['appname'] = re.search(r'appname: str\s+=\s+(u{0,1})[\'"]([^\'"]+)[\'"]', src).group(2)
     kitty_constants['cacerts_url'] = 'https://curl.haxx.se/ca/cacert.pem'
     return kitty_constants
 
@@ -39,6 +37,7 @@ def run(*args, **extra_env):
     env.update(extra_env)
     env['SW'] = PREFIX
     env['LD_LIBRARY_PATH'] = LIBDIR
+    env['SLANGC'] = os.path.join(BIN, 'slangc')
     if ismacos:
         env['PKGCONFIG_EXE'] = os.path.join(PREFIX, 'bin', 'pkg-config')
     cwd = env.pop('cwd', KITTY_DIR)
@@ -49,9 +48,20 @@ def run(*args, **extra_env):
 SETUP_CMD = [PYTHON, 'setup.py']
 
 
+def setup_py_options(extra_program_data: str) -> list[str]:
+    # extra_program_data is the VCS revision, followed by :nightly:<commit time> for nightly builds
+    if not extra_program_data:
+        return []
+    vcs_rev, _, commit_time = extra_program_data.partition(':nightly:')
+    ans = [f'--vcs-rev={vcs_rev}']
+    if commit_time:
+        ans += ['--nightly', f'--vcs-commit-time={commit_time}']
+    return ans
+
+
 def build_frozen_launcher(extra_include_dirs):
     inc_dirs = [f'--extra-include-dirs={x}' for x in extra_include_dirs]
-    cmd = SETUP_CMD + ['--prefix', build_frozen_launcher.prefix] + inc_dirs + ['build-frozen-launcher']
+    cmd = SETUP_CMD + ['--prefix', build_frozen_launcher.prefix] + inc_dirs + build_frozen_launcher.setup_py_options + ['build-frozen-launcher']
     if run(*cmd, cwd=build_frozen_launcher.writeable_src_dir) != 0:
         print('Building of frozen kitty launcher failed', file=sys.stderr)
         os.chdir(KITTY_DIR)
@@ -62,10 +72,7 @@ def build_frozen_launcher(extra_include_dirs):
 
 def run_tests(kitty_exe) -> None:
     with tempfile.TemporaryDirectory() as tdir:
-        uenv = {
-            'KITTY_CONFIG_DIRECTORY': os.path.join(tdir, 'conf'),
-            'KITTY_CACHE_DIRECTORY': os.path.join(tdir, 'cache')
-        }
+        uenv = {'KITTY_CONFIG_DIRECTORY': os.path.join(tdir, 'conf'), 'KITTY_CACHE_DIRECTORY': os.path.join(tdir, 'cache')}
         [os.mkdir(x) for x in uenv.values()]
         env = os.environ.copy()
         env.update(uenv)
@@ -79,7 +86,7 @@ def run_tests(kitty_exe) -> None:
 
 
 def build_frozen_tools(kitty_exe) -> None:
-    cmd = SETUP_CMD + ['--prefix', os.path.dirname(kitty_exe)] + ['build-frozen-tools']
+    cmd = SETUP_CMD + ['--prefix', os.path.dirname(kitty_exe)] + build_frozen_launcher.setup_py_options + ['build-frozen-tools']
     if run(*cmd, cwd=build_frozen_launcher.writeable_src_dir) != 0:
         print('Building of frozen kitten failed', file=sys.stderr)
         os.chdir(KITTY_DIR)
@@ -89,7 +96,7 @@ def build_frozen_tools(kitty_exe) -> None:
 
 def sanitize_source_folder(path: str) -> None:
     for q in walk(path):
-        if os.path.splitext(q)[1] not in ('.py', '.glsl', '.ttf', '.otf', '.json'):
+        if os.path.splitext(q)[1] not in ('.py', '.glsl', '.slang', '.pipeline', '.ttf', '.otf', '.json'):
             os.unlink(q)
 
 
@@ -97,8 +104,10 @@ def build_c_extensions(ext_dir, args):
     writeable_src_dir = os.path.join(ext_dir, 'src')
     build_frozen_launcher.writeable_src_dir = writeable_src_dir
     shutil.copytree(
-        KITTY_DIR, writeable_src_dir, symlinks=True,
-        ignore=shutil.ignore_patterns('b', 'build', 'dist', '*_commands.json', '*.o', '*.so', '*.dylib', '*.pyd'))
+        KITTY_DIR, writeable_src_dir, symlinks=True, ignore=shutil.ignore_patterns('b', 'build', 'dist', '*_commands.json', '*.o', '*.so', '*.dylib', '*.pyd')
+    )
+    with suppress(FileNotFoundError):
+        shutil.rmtree(os.path.join(writeable_src_dir, 'shaders'))
 
     with suppress(FileNotFoundError):
         os.unlink(os.path.join(writeable_src_dir, 'kitty', 'launcher', 'kitty'))
@@ -106,8 +115,8 @@ def build_c_extensions(ext_dir, args):
     cmd = SETUP_CMD + ['macos-freeze' if ismacos else 'linux-freeze']
     if args.dont_strip:
         cmd.append('--debug')
-    if args.extra_program_data:
-        cmd.append(f'--vcs-rev={args.extra_program_data}')
+    build_frozen_launcher.setup_py_options = setup_py_options(args.extra_program_data)
+    cmd += build_frozen_launcher.setup_py_options
     dest = kitty_constants['appname'] + ('.app' if ismacos else '')
     dest = build_frozen_launcher.prefix = os.path.join(ext_dir, dest)
     cmd += ['--prefix', dest, '--full']

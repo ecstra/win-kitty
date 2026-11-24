@@ -29,17 +29,24 @@ from .typing_compat import BadLineType
 
 is_macos
 go_type_map = {
-    'bool-set': 'bool', 'bool-reset': 'bool', 'bool-unset': 'bool', 'int': 'int', 'float': 'float64',
-    '': 'string', 'list': '[]string', 'choices': 'string', 'str': 'string'}
+    'bool-set': 'bool',
+    'bool-reset': 'bool',
+    'bool-unset': 'bool',
+    'int': 'int',
+    'float': 'float64',
+    '': 'string',
+    'list': '[]string',
+    'choices': 'string',
+    'str': 'string',
+}
 
 
 class GoOption:
-
     def __init__(self, x: OptionDefinition) -> None:
         flags = sorted(x.aliases, key=len)
         short = ''
         self.aliases = []
-        if len(flags) > 1 and not flags[0].startswith("--"):
+        if len(flags) > 1 and not flags[0].startswith('--'):
             short = flags[0][1:]
         self.short, self.long = short, x.name.replace('_', '-')
         for f in flags:
@@ -99,13 +106,13 @@ class GoOption:
                 godef = '`true`' if self.type != 'bool-set' else '`false`'
             case 'int':
                 yield f'sval = fmt.Sprintf(`%d`, {val})'
-                godef = f"`{self.default or '0'}`"
+                godef = f'`{self.default or "0"}`'
             case 'string':
                 yield f'sval = {val}'
                 godef = f'''"{serialize_as_go_string(self.default or '')}"'''
             case 'float64':
                 yield f'sval = fmt.Sprintf(`%f`, {val})'
-                godef = f"`{self.default or '0'}`"
+                godef = f'`{self.default or "0"}`'
             case _:
                 raise ValueError(f'Unknown type: {self.go_type}')
         yield f'\tif (sval != {godef}) {{ ans = append(ans, `{flag}=` + sval)}}'
@@ -122,7 +129,6 @@ def go_options_for_seq(seq: 'OptionSpecSeq') -> Iterator[GoOption]:
     for x in seq:
         if not isinstance(x, str):
             yield GoOption(x)
-
 
 
 def surround(x: str, start: int, end: int) -> str:
@@ -227,6 +233,7 @@ role_map['envvar'] = role_map['env']
 @run_once
 def hostname() -> str:
     from .utils import get_hostname
+
     return get_hostname(fallback='localhost')
 
 
@@ -237,9 +244,9 @@ def hyperlink_for_url(url: str, text: str) -> str:
 
 
 def hyperlink_for_path(path: str, text: str) -> str:
-    path = os.path.abspath(path).replace(os.sep, "/")
+    path = os.path.abspath(path).replace(os.sep, '/')
     if os.path.isdir(path):
-        path += path.rstrip("/") + "/"
+        path += path.rstrip('/') + '/'
     return hyperlink_for_url(f'file://{hostname()}{path}', text)
 
 
@@ -255,6 +262,7 @@ def doc(x: str) -> str:
     t, q = text_and_target(x)
     if t == q:
         from .conf.types import ref_map
+
         m = ref_map()['doc']
         q = q.strip('/')
         if q in m:
@@ -314,19 +322,31 @@ def prettify_rst(text: str) -> str:
 def version(add_rev: bool = False) -> str:
     rev = ''
     from . import fast_data_types
-    if add_rev:
+
+    suffix = fast_data_types.KITTY_VERSION_SUFFIX
+    # nightly builds already include the revision in the version suffix
+    if add_rev and not suffix:
         if getattr(fast_data_types, 'KITTY_VCS_REV', ''):
             rev = f' ({fast_data_types.KITTY_VCS_REV[:10]})'
-    ans = '{} {}{} created by {}'.format(italic(appname), green(str_version), rev, title('Kovid Goyal'))
+    ans = '{} {}{} created by {}'.format(italic(appname), green(str_version + suffix), rev, title('Kovid Goyal'))
     from .constants import is_windows
+
     if is_windows:
+
         def sgr(x: str, start: str, end: str) -> str:
             if sys.stdout is not None and sys.stdout.isatty():
                 return f'\033[{start}m{x}\033[{end}m'
             return x
+
         # orange name (#fd971f) to match the cursor, dim brackets, cyan email
-        credit = (italic('Windows native port by ') + sgr('ecstra', '38;2;253;151;31', '39') +
-                  ' ' + sgr('<', '2', '22') + cyan('gotham47g@gmail.com') + sgr('>', '2', '22'))
+        credit = (
+            italic('Windows native port by ')
+            + sgr('ecstra', '38;2;253;151;31', '39')
+            + ' '
+            + sgr('<', '2', '22')
+            + cyan('gotham47g@gmail.com')
+            + sgr('>', '2', '22')
+        )
         ans += '\n' + credit
     return ans
 
@@ -365,7 +385,7 @@ def wrap(text: str, limit: int = 80) -> Iterator[str]:
         if in_escape > 0:
             if in_escape == 1 and ch in '[]':
                 in_escape = 2 if ch == '[' else 3
-            if (in_escape == 2 and ch == 'm') or (in_escape == 3 and ch == '\\' and text[i-1] == '\x1b'):
+            if (in_escape == 2 and ch == 'm') or (in_escape == 3 and ch == '\\' and text[i - 1] == '\x1b'):
                 in_escape = 0
             escapes.append(ch)
             continue
@@ -392,14 +412,15 @@ def get_defaults_from_seq(seq: OptionSpecSeq) -> dict[str, Any]:
     return ans
 
 
-default_msg = ('''\
+default_msg = (
+    """\
 Run the :italic:`{appname}` terminal emulator. You can also specify the
 :italic:`program` to run inside :italic:`{appname}` as normal arguments
 following the :italic:`options`.
 For example: {appname} --hold sh -c "echo hello, world"
 
-For comprehensive documentation for kitty, please see: {url}''').format(
-    appname=appname, url=website_url())
+For comprehensive documentation for kitty, please see: {url}"""
+).format(appname=appname, url=website_url())
 
 
 def help_defval_for_bool(otype: str) -> str:
@@ -409,11 +430,11 @@ def help_defval_for_bool(otype: str) -> str:
 
 
 class PrintHelpForSeq:
-
     allow_pager = True
 
     def __call__(self, seq: OptionSpecSeq, usage: str | None, message: str | None, appname: str) -> None:
         from kitty.utils import screen_size_function
+
         screen_size = screen_size_function()
         try:
             linesz = min(screen_size().cols, 76)
@@ -454,7 +475,7 @@ class PrintHelpForSeq:
             if (otype := opt.type).startswith('bool-'):
                 blocks[-1] += italic(f'[={help_defval_for_bool(otype)}]')
             else:
-                dt = f'''=[{italic(defval or '""')}]'''
+                dt = f"""=[{italic(defval or '""')}]"""
                 blocks[-1] += dt
             if opt.help:
                 t = help_text.replace('%default', str(defval)).strip()
@@ -469,6 +490,7 @@ class PrintHelpForSeq:
         text = '\n'.join(blocks) + '\n\n' + version()
         if print_help_for_seq.allow_pager and sys.stdout.isatty():
             import subprocess
+
             try:
                 p = subprocess.Popen(default_pager_for_help, stdin=subprocess.PIPE, preexec_fn=clear_handled_signals)
             except FileNotFoundError:
@@ -495,14 +517,9 @@ def escape_rst(text: str) -> str:
     return text
 
 
-def seq_as_rst(
-    seq: OptionSpecSeq,
-    usage: str | None,
-    message: str | None,
-    appname: str | None,
-    heading_char: str = '-'
-) -> str:
+def seq_as_rst(seq: OptionSpecSeq, usage: str | None, message: str | None, appname: str | None, heading_char: str = '-') -> str:
     import textwrap
+
     blocks: list[str] = []
     a = blocks.append
 
@@ -551,6 +568,7 @@ def seq_as_rst(
 
 def as_type_stub(seq: OptionSpecSeq, disabled: OptionSpecSeq, class_name: str, extra_fields: Sequence[str] = ()) -> str:
     from itertools import chain
+
     ans: list[str] = [f'class {class_name}:']
     for opt in chain(seq, disabled):
         if isinstance(opt, str):
@@ -589,7 +607,6 @@ def to_bool(alias: str, x: str) -> bool:
 
 
 class Options:
-
     do_print = True
 
     def __init__(self, seq: OptionSpecSeq, usage: str | None, message: str | None, appname: str | None):
@@ -615,8 +632,7 @@ PreparsedCLIFlags = tuple[dict[str, tuple[Any, bool]], list[str]]
 
 
 def apply_preparsed_cli_flags(
-    preparsed_from_c: PreparsedCLIFlags, ans: Any, create_oc: Callable[[], Options],
-    track_seen_options: dict[str, Any] | None = None
+    preparsed_from_c: PreparsedCLIFlags, ans: Any, create_oc: Callable[[], Options], track_seen_options: dict[str, Any] | None = None
 ) -> list[str]:
     for key, (val, is_seen) in preparsed_from_c[0].items():
         if key == 'help' and is_seen and val:
@@ -630,8 +646,13 @@ def apply_preparsed_cli_flags(
 
 
 def parse_cmdline_inner(
-        args: list[str], oc: Options, disabled: OptionSpecSeq, names_map: dict[str, OptionDefinition],
-        values_map: dict[str, OptionDefinition], ans: Any, track_seen_options: dict[str, Any] | None = None
+    args: list[str],
+    oc: Options,
+    disabled: OptionSpecSeq,
+    names_map: dict[str, OptionDefinition],
+    values_map: dict[str, OptionDefinition],
+    ans: Any,
+    track_seen_options: dict[str, Any] | None = None,
 ) -> list[str]:
     preparsed = parse_cli_from_spec(args, names_map, values_map)
     leftover_args = apply_preparsed_cli_flags(preparsed, ans, lambda: oc, track_seen_options)
@@ -641,10 +662,7 @@ def parse_cmdline_inner(
     return leftover_args
 
 
-def parse_cmdline(
-    oc: Options, disabled: OptionSpecSeq, ans: Any, args: list[str] | None = None,
-    track_seen_options: dict[str, Any] | None = None
-) -> list[str]:
+def parse_cmdline(oc: Options, disabled: OptionSpecSeq, ans: Any, args: list[str] | None = None, track_seen_options: dict[str, Any] | None = None) -> list[str]:
     names_map = oc.names_map.copy()
     values_map = oc.values_map.copy()
     if 'help' not in names_map:
@@ -673,15 +691,12 @@ def cached_parse_cmdline(spec: str, args: list[str], ans: Any) -> list[str]:
 
 
 def options_for_completion() -> OptionSpecSeq:
-    raw = '--help -h\ntype=bool-set\nShow help for {appname} command line options\n\n{raw}'.format(
-            appname=appname, raw=kitty_options_spec())
+    raw = '--help -h\ntype=bool-set\nShow help for {appname} command line options\n\n{raw}'.format(appname=appname, raw=kitty_options_spec())
     return parse_option_spec(raw)[0]
 
 
 def option_spec_as_rst(
-    ospec: Callable[[], str] = kitty_options_spec,
-    usage: str | None = None, message: str | None = None, appname: str | None = None,
-    heading_char: str = '-'
+    ospec: Callable[[], str] = kitty_options_spec, usage: str | None = None, message: str | None = None, appname: str | None = None, heading_char: str = '-'
 ) -> str:
     options = parse_option_spec(ospec())
     seq, disabled = options
@@ -740,6 +755,7 @@ def parse_override(x: str) -> str:
 
 def create_opts(args: CLIOptions, accumulate_bad_lines: list[BadLineType] | None = None) -> KittyOpts:
     from .config import load_config
+
     config = default_config_paths(args.config)
     overrides = map(parse_override, args.override or ())
     opts = load_config(*config, overrides=overrides, accumulate_bad_lines=accumulate_bad_lines)
@@ -748,6 +764,7 @@ def create_opts(args: CLIOptions, accumulate_bad_lines: list[BadLineType] | None
 
 def create_default_opts() -> KittyOpts:
     from .config import load_config
+
     config = default_config_paths(())
     opts = load_config(*config)
     return opts

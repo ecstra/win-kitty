@@ -16,7 +16,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/dlclark/regexp2"
+	"github.com/dlclark/regexp2/v2"
+	"github.com/dlclark/regexp2/v2/syntax"
 	"github.com/seancfoley/ipaddress-go/ipaddr"
 
 	"github.com/kovidgoyal/kitty"
@@ -137,17 +138,25 @@ func char_at(s string, i int) string {
 	return string(ans)
 }
 
+func char_before(s string, i int) string {
+	ans, _ := utf8.DecodeLastRuneInString(s[:i])
+	if ans == utf8.RuneError {
+		return ""
+	}
+	return string(ans)
+}
+
 func matching_remover(openers ...string) PostProcessorFunc {
 	return func(text string, s, e int) (int, int) {
 		if s < e && e <= len(text) {
 			before := char_at(text, s)
 			if slices.Index(openers, before) > -1 {
 				q := closing_bracket_for(before)
-				if e > 0 && char_at(text, e-1) == q {
-					s++
-					e--
+				if s+len(before) <= e-len(q) && char_before(text, e) == q {
+					s += len(before)
+					e -= len(q)
 				} else if char_at(text, e) == q {
-					s++
+					s += len(before)
 				}
 			}
 		}
@@ -174,15 +183,16 @@ var PostProcessorMap = sync.OnceValue(func() map[string]PostProcessorFunc {
 					e -= len(url) - idx
 				}
 			}
-			for e > 1 && is_punctuation(char_at(text, e-1)) { // remove trailing punctuation
+			for e > 1 && is_punctuation(char_before(text, e)) { // remove trailing punctuation
 				e--
 			}
 			// truncate url at closing bracket/quote
-			if s > 0 && e <= len(text) && closing_bracket_for(char_at(text, s-1)) != "" {
-				q := closing_bracket_for(char_at(text, s-1))
-				idx := strings.Index(text[s:], q)
-				if idx > 0 {
-					e = s + idx
+			if s > 0 && e <= len(text) {
+				if q := closing_bracket_for(char_before(text, s)); q != "" {
+					idx := strings.Index(text[s:], q)
+					if idx > 0 {
+						e = s + idx
+					}
 				}
 			}
 			// reStructuredText URLs
@@ -437,62 +447,76 @@ func (self Match) HasNamedGroups() bool {
 
 func find_all_matches(re *regexp2.Regexp, text string) (ans []Match, err error) {
 	m, err := re.FindStringMatch(text)
-	if err != nil {
-		return
-	}
-	rune_to_bytes := utils.RuneOffsetsToByteOffsets(text)
-	get_byte_offset_map := func(groups []regexp2.Group) (ans map[int]int, err error) {
-		ans = make(map[int]int, len(groups)*2)
-		rune_offsets := make([]int, 0, len(groups)*2)
-		for _, g := range groups {
-			for _, c := range g.Captures {
-				if _, found := ans[c.Index]; !found {
-					rune_offsets = append(rune_offsets, c.Index)
-					ans[c.Index] = -1
-				}
-				end := c.Index + c.Length
-				if _, found := ans[end]; !found {
-					rune_offsets = append(rune_offsets, end)
-					ans[end] = -1
-				}
-			}
-		}
-		slices.Sort(rune_offsets)
-		for _, pos := range rune_offsets {
-			if ans[pos] = rune_to_bytes(pos); ans[pos] < 0 {
-				return nil, fmt.Errorf("Matches are not monotonic cannot map rune offsets to byte offsets")
-			}
-		}
-		return
-	}
-
-	for m != nil {
+	for m != nil && err == nil {
 		groups := m.Groups()
-		bom, err := get_byte_offset_map(groups)
-		if err != nil {
-			return nil, err
-		}
 		match := Match{Groups: make([]Group, len(groups))}
-		for i, g := range m.Groups() {
+		for i, g := range groups {
 			match.Groups[i].Name = g.Name
 			match.Groups[i].IsNamed = g.Name != "" && g.Name != strconv.Itoa(i)
 			for _, c := range g.Captures {
 				cn := Capture{Text: c.String(), Text_as_runes: c.Runes()}
-				cn.Rune_Offsets.End = c.Index + c.Length
-				cn.Rune_Offsets.Start = c.Index
-				cn.Byte_Offsets.Start, cn.Byte_Offsets.End = bom[c.Index], bom[cn.Rune_Offsets.End]
+				cn.Rune_Offsets.Start, cn.Rune_Offsets.End = c.RuneIndex, c.RuneIndex+c.RuneLength
+				start, length := c.ByteRange()
+				cn.Byte_Offsets.Start, cn.Byte_Offsets.End = start, start+length
 				match.Groups[i].Captures = append(match.Groups[i].Captures, cn)
 			}
 		}
 		ans = append(ans, match)
-		m, _ = re.FindNextMatch(m)
+		m, err = re.FindNextMatch(m)
 	}
 	return
 }
 
-func mark(r *regexp2.Regexp, post_processors []PostProcessorFunc, group_processors []GroupProcessorFunc, text string, opts *Options) (ans []Mark) {
+// Go's regexp only considers ASCII characters when matching \b whereas regexp2
+// uses Unicode word characters. So replace every non-ASCII rune with a single
+// ASCII byte that is a word character iff the rune is one, and return the byte
+// offsets of the runes in text, to map match offsets back.
+func ascii_word_proxy(text string) (proxy string, byte_offsets []int) {
+	if !slices.ContainsFunc(utils.UnsafeStringToBytes(text), func(b byte) bool { return b >= utf8.RuneSelf }) {
+		return text, nil
+	}
+	buf := make([]byte, 0, len(text))
+	byte_offsets = make([]int, 0, len(text)+1)
+	for i, r := range text {
+		byte_offsets = append(byte_offsets, i)
+		switch {
+		case r < utf8.RuneSelf:
+			buf = append(buf, byte(r))
+		case syntax.IsWordChar(r):
+			buf = append(buf, '_')
+		default:
+			buf = append(buf, 0x7f)
+		}
+	}
+	return string(buf), append(byte_offsets, len(text))
+}
+
+func find_all_matches_stdlib(re *regexp.Regexp, text string, unicode_word_boundaries bool) (ans []Match) {
+	haystack, byte_offsets := text, []int(nil)
+	if unicode_word_boundaries {
+		haystack, byte_offsets = ascii_word_proxy(text)
+	}
+	names := re.SubexpNames()
+	for _, loc := range re.FindAllStringSubmatchIndex(haystack, -1) {
+		match := Match{Groups: make([]Group, len(names))}
+		for i, name := range names {
+			match.Groups[i] = Group{Name: name, IsNamed: name != ""}
+			if s, e := loc[2*i], loc[2*i+1]; s > -1 {
+				if byte_offsets != nil {
+					s, e = byte_offsets[s], byte_offsets[e]
+				}
+				c := Capture{Text: text[s:e]}
+				c.Byte_Offsets.Start, c.Byte_Offsets.End = s, e
+				match.Groups[i].Captures = []Capture{c}
+			}
+		}
+		ans = append(ans, match)
+	}
+	return
+}
+
+func mark(all_matches []Match, post_processors []PostProcessorFunc, group_processors []GroupProcessorFunc, text string, opts *Options) (ans []Mark) {
 	sanitize_pat := regexp.MustCompile("[\r\n\x00]")
-	all_matches, _ := find_all_matches(r, text)
 	for i, m := range all_matches {
 		full_capture := m.Groups[0].LastCapture()
 		match_start, match_end := full_capture.Byte_Offsets.Start, full_capture.Byte_Offsets.End
@@ -654,11 +678,25 @@ func find_marks(text string, opts *Options, cli_args ...string) (sanitized_text 
 		if err != nil {
 			return err
 		}
-		r, err := regexp2.Compile(pattern, regexp2.RE2)
-		if err != nil {
-			return fmt.Errorf("Failed to compile the regex pattern: %#v with error: %w", pattern, err)
+		var matches []Match
+		// the builtin patterns dont need lookarounds, so use the linear time stdlib engine for them
+		if pattern != opts.Regex {
+			r, err := regexp.Compile(pattern)
+			if err != nil {
+				return fmt.Errorf("Failed to compile the regex pattern: %#v with error: %w", pattern, err)
+			}
+			// the proxy text is only valid for patterns that dont reference specific non-ASCII characters
+			matches = find_all_matches_stdlib(r, sanitized_text, opts.Type == "path" || opts.Type == "linenum")
+		} else {
+			r, err := regexp2.Compile(pattern, regexp2.RE2)
+			if err != nil {
+				return fmt.Errorf("Failed to compile the regex pattern: %#v with error: %w", pattern, err)
+			}
+			if matches, err = find_all_matches(r, sanitized_text); err != nil {
+				return fmt.Errorf("Failed to match the regex pattern: %#v with error: %w", pattern, err)
+			}
 		}
-		ans = mark(r, post_processors, group_processors, sanitized_text, opts)
+		ans = mark(matches, post_processors, group_processors, sanitized_text, opts)
 		used_pattern = pattern
 		return nil
 	}

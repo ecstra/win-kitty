@@ -65,11 +65,32 @@ func CreateExclusiveAt(dirFile *os.File, name string, permissions os.FileMode) (
 	return os.OpenFile(join(dirFile, name), os.O_RDWR|os.O_CREATE|os.O_EXCL, permissions)
 }
 
+// Like the POSIX O_NOFOLLOW open, refuses a symlink or other reparse point,
+// such as a junction, rather than opening what it points to.
+func OpenDirNoFollowAt(dirFile *os.File, name string) (*os.File, error) {
+	st, err := os.Lstat(join(dirFile, name))
+	if err != nil {
+		return nil, err
+	}
+	if st.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+		return nil, &os.PathError{Op: "open", Path: join(dirFile, name), Err: syscall.ELOOP}
+	}
+	return OpenDirAt(dirFile, name)
+}
+
+// If the directory already exists it is opened, but a symlink is never
+// followed, matching the POSIX version.
 func CreateDirAt(parent *os.File, name string, permissions os.FileMode) (*os.File, error) {
+	if err := MkdirAt(parent, name, permissions); err != nil && !os.IsExist(err) {
+		return nil, err
+	}
+	return OpenDirNoFollowAt(parent, name)
+}
+
+// Fails if a directory entry with the same name already exists, as the POSIX
+// version does.
+func CreateExclusiveDirAt(parent *os.File, name string, permissions os.FileMode) (*os.File, error) {
 	if err := MkdirAt(parent, name, permissions); err != nil {
-		if os.IsExist(err) {
-			return OpenDirAt(parent, name)
-		}
 		return nil, err
 	}
 	return OpenDirAt(parent, name)

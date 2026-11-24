@@ -14,9 +14,10 @@
 //       SpriteVisual  acrylic effect brush     <- bottom
 //       SpriteVisual  swapchain surface brush  <- top, the OpenGL output
 //
-// OpenGL renders into the swapchain back buffer through WGL_NV_DX_interop2.
-// The back buffer is bound as an FBO once and never unbound, so kitty's
-// renderer, which only ever draws to framebuffer 0, needs no changes.
+// OpenGL reaches the swapchain through WGL_NV_DX_interop2. kitty's renderer
+// draws to framebuffer 0 as always and needs no changes. Each present blits
+// framebuffer 0 into a D3D texture shared with GL, and D3D copies that into
+// whichever swapchain buffer is current.
 //
 // The acrylic layer is the background. kitty must not paint the default
 // background as well, or the tint lands twice and the window reads as solid.
@@ -792,7 +793,9 @@ static IUnknown *g_dispatcherController;
 
 typedef struct _GLFWacrylicWin32 {
     ID3D11Device *d3dDevice;
+    ID3D11DeviceContext *d3dContext;
     IDXGISwapChain1 *swapChain;
+    ID3D11Texture2D *interopTarget;  // what GL draws into, see bindInteropTarget
 
     Compositor *compositor;
     CompositionTarget *target;
@@ -906,32 +909,57 @@ static bool loadGLEntryPoints(AcrylicGL *gl) {
            gl->DeleteTextures && gl->Flush && gl->BlitFramebuffer && gl->GetIntegerv;
 }
 
-static void unbindBackBuffer(_GLFWacrylicWin32 *a) {
-    if (!a->interopTexture) return;
-    if (a->locked) {
-        a->gl.UnlockObjects(a->interopDevice, 1, &a->interopTexture);
-        a->locked = false;
-    }
-    a->gl.UnregisterObject(a->interopDevice, a->interopTexture);
-    a->interopTexture = NULL;
-}
-
-// Register the swapchain back buffer with GL and leave it bound. kitty draws
-// to framebuffer 0 and never rebinds, so binding once here is enough.
-static bool bindBackBuffer(_GLFWacrylicWin32 *a) {
-    ID3D11Texture2D *backBuffer = NULL;
-
-    if (FAILED(IDXGISwapChain1_GetBuffer(a->swapChain, 0, &IID_ID3D11Texture2D, (void **)&backBuffer)))
-        return false;
-
-    a->interopTexture = a->gl.RegisterObject(a->interopDevice, backBuffer, a->glTexture,
-                                             ACRYLIC_GL_TEXTURE_2D, WGL_ACCESS_READ_WRITE_NV);
-    ID3D11Texture2D_Release(backBuffer);
-    if (!a->interopTexture) { ADBG("wglDXRegisterObjectNV failed: %lu", GetLastError()); return false; }
-
-    if (!a->gl.LockObjects(a->interopDevice, 1, &a->interopTexture)) {
+static void unbindInteropTarget(_GLFWacrylicWin32 *a) {
+    if (a->interopTexture) {
+        if (a->locked) {
+            a->gl.UnlockObjects(a->interopDevice, 1, &a->interopTexture);
+            a->locked = false;
+        }
         a->gl.UnregisterObject(a->interopDevice, a->interopTexture);
         a->interopTexture = NULL;
+    }
+    if (a->interopTarget) {
+        ID3D11Texture2D_Release(a->interopTarget);
+        a->interopTarget = NULL;
+    }
+}
+
+// Give GL a texture of its own at the swapchain's size and leave it locked for
+// GL. Present copies it into the swapchain on the D3D side.
+//
+// GL cannot be handed the swapchain's back buffer itself. In a flip model
+// swapchain buffer 0 is whichever buffer is current, and D3D follows it as the
+// two buffers take turns, but the interop registration pins the one that was
+// current when it was made. GL then drew every frame into that one buffer, so
+// every other present showed the other, empty one, and the window showed the
+// acrylic with nothing on it.
+static bool bindInteropTarget(_GLFWacrylicWin32 *a) {
+    D3D11_TEXTURE2D_DESC desc;
+    ZeroMemory(&desc, sizeof(desc));
+    desc.Width = (UINT) a->width;
+    desc.Height = (UINT) a->height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;  // the swapchain's, which CopyResource needs
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(ID3D11Device_CreateTexture2D(a->d3dDevice, &desc, NULL, &a->interopTarget))) {
+        a->interopTarget = NULL;
+        ADBG("CreateTexture2D %dx%d failed", a->width, a->height);
+        return false;
+    }
+
+    a->interopTexture = a->gl.RegisterObject(a->interopDevice, a->interopTarget, a->glTexture,
+                                             ACRYLIC_GL_TEXTURE_2D, WGL_ACCESS_READ_WRITE_NV);
+    if (!a->interopTexture) {
+        ADBG("wglDXRegisterObjectNV failed: %lu", GetLastError());
+        unbindInteropTarget(a);
+        return false;
+    }
+
+    if (!a->gl.LockObjects(a->interopDevice, 1, &a->interopTexture)) {
+        unbindInteropTarget(a);
         return false;
     }
     a->locked = true;
@@ -946,7 +974,7 @@ static bool bindBackBuffer(_GLFWacrylicWin32 *a) {
     // is only ever a blit destination in Present, never the draw target.
     a->gl.BindFramebuffer(ACRYLIC_GL_FRAMEBUFFER, 0);
     if (!complete) {
-        unbindBackBuffer(a);
+        unbindInteropTarget(a);
         return false;
     }
     return true;
@@ -1078,7 +1106,7 @@ bool _glfwWin32AcrylicCreate(_GLFWwindow *window) {
     }
 
     if (FAILED(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                 NULL, 0, D3D11_SDK_VERSION, &a->d3dDevice, NULL, NULL))) goto fail;
+                                 NULL, 0, D3D11_SDK_VERSION, &a->d3dDevice, NULL, &a->d3dContext))) goto fail;
     if (FAILED(ID3D11Device_QueryInterface(a->d3dDevice, &IID_IDXGIDevice, (void **)&dxgiDevice))) goto fail;
     // Queue at most one frame. The default is three, and during a live resize
     // both WM_SIZE and the repaint timer present rapidly, so the compositor
@@ -1125,6 +1153,7 @@ fail:
     if (dxgiDevice) IDXGIDevice_Release(dxgiDevice);
     if (!ok) {
         if (a->swapChain) IDXGISwapChain1_Release(a->swapChain);
+        if (a->d3dContext) ID3D11DeviceContext_Release(a->d3dContext);
         if (a->d3dDevice) ID3D11Device_Release(a->d3dDevice);
         free(a);
     }
@@ -1136,7 +1165,7 @@ void _glfwWin32AcrylicDestroy(_GLFWwindow *window) {
     if (!a) return;
     window->win32.acrylic = NULL;
 
-    unbindBackBuffer(a);
+    unbindInteropTarget(a);
     if (a->interopDevice && a->gl.CloseDevice) a->gl.CloseDevice(a->interopDevice);
     if (a->acrylicBrush) a->acrylicBrush->lpVtbl->Release(a->acrylicBrush);
     if (a->acrylicVisual) a->acrylicVisual->lpVtbl->Release(a->acrylicVisual);
@@ -1147,6 +1176,7 @@ void _glfwWin32AcrylicDestroy(_GLFWwindow *window) {
     if (a->backdropName) WindowsDeleteString(a->backdropName);
     if (a->noiseName) WindowsDeleteString(a->noiseName);
     if (a->swapChain) IDXGISwapChain1_Release(a->swapChain);
+    if (a->d3dContext) ID3D11DeviceContext_Release(a->d3dContext);
     if (a->d3dDevice) ID3D11Device_Release(a->d3dDevice);
     // g_dispatcherController is deliberately not released: it belongs to the
     // thread and the next window needs it.
@@ -1179,16 +1209,15 @@ bool _glfwWin32AcrylicBindFramebuffer(_GLFWwindow *window) {
     if (!a->glTexture) a->gl.GenTextures(1, &a->glTexture);
     if (!a->glFbo) a->gl.GenFramebuffers(1, &a->glFbo);
 
-    a->bound = bindBackBuffer(a);
+    a->bound = bindInteropTarget(a);
     ADBG("bind framebuffer: %s", a->bound ? "ok" : "FAILED");
     return a->bound;
 }
 
 // Only records the new size. WM_SIZE arrives with no GL context current, and
-// unregistering the interop object needs one -- without it the swapchain keeps
-// a live reference to the back buffer and ResizeBuffers fails, which used to
-// leave the window with nothing presenting at all. applyPendingResize does the
-// real work from Present, where the context is guaranteed current.
+// replacing the interop target needs one, since unregistering it from GL is a
+// GL call. applyPendingResize does the real work from Present, where the
+// context is guaranteed current.
 void _glfwWin32AcrylicResize(_GLFWwindow *window, int width, int height) {
     _GLFWacrylicWin32 *a = acrylic_of(window);
     if (!a || width < 1 || height < 1) return;
@@ -1202,17 +1231,17 @@ static void applyPendingResize(_GLFWacrylicWin32 *a) {
     if (!width || !height) return;
     a->pendingWidth = a->pendingHeight = 0;
 
-    unbindBackBuffer(a);
+    unbindInteropTarget(a);
     HRESULT hr = IDXGISwapChain1_ResizeBuffers(a->swapChain, 2, (UINT)width, (UINT)height,
                                                DXGI_FORMAT_B8G8R8A8_UNORM, 0);
     if (FAILED(hr)) {
         ADBG("ResizeBuffers %dx%d failed: 0x%08x", width, height, (unsigned)hr);
-        a->bound = bindBackBuffer(a);  // keep presenting at the old size
+        a->bound = bindInteropTarget(a);  // keep presenting at the old size
         return;
     }
     a->width = width;
     a->height = height;
-    a->bound = bindBackBuffer(a);
+    a->bound = bindInteropTarget(a);
     ADBG("resized to %dx%d: %s", width, height, a->bound ? "ok" : "FAILED");
 }
 
@@ -1225,7 +1254,8 @@ void _glfwWin32AcrylicPresent(_GLFWwindow *window) {
 
     // kitty has just finished drawing into the default framebuffer, which on a
     // window with no redirection surface presents nowhere. Copy it into the
-    // swapchain back buffer, which is what the composition tree shows.
+    // interop target, and from there into the swapchain back buffer, which is
+    // what the composition tree shows.
     //
     // The destination Y range is inverted on purpose. OpenGL puts the origin at
     // the bottom left, a DXGI texture puts it at the top left, so a
@@ -1245,6 +1275,15 @@ void _glfwWin32AcrylicPresent(_GLFWwindow *window) {
     a->gl.UnlockObjects(a->interopDevice, 1, &a->interopTexture);
     a->locked = false;
 
+    // Buffer 0 is asked for afresh every frame, since it names whichever back
+    // buffer is current now. See bindInteropTarget.
+    {
+        ID3D11Texture2D *backBuffer = NULL;
+        if (SUCCEEDED(IDXGISwapChain1_GetBuffer(a->swapChain, 0, &IID_ID3D11Texture2D, (void **)&backBuffer))) {
+            ID3D11DeviceContext_CopyResource(a->d3dContext, (ID3D11Resource *)backBuffer, (ID3D11Resource *)a->interopTarget);
+            ID3D11Texture2D_Release(backBuffer);
+        }
+    }
     IDXGISwapChain1_Present(a->swapChain, 0, 0);
 
     a->gl.LockObjects(a->interopDevice, 1, &a->interopTexture);

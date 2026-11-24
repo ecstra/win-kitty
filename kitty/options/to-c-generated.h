@@ -4,7 +4,6 @@
 #include "to-c.h"
 
 
-
 static void
 convert_from_python_font_size(PyObject *val, Options *opts) {
     opts->font_size = PyFloat_AsDouble(val);
@@ -119,6 +118,19 @@ convert_from_opts_text_composition_strategy(PyObject *py_opts, Options *opts) {
     PyObject *ret = PyObject_GetAttrString(py_opts, "text_composition_strategy");
     if (ret == NULL) return;
     convert_from_python_text_composition_strategy(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_text_fg_override_threshold(PyObject *val, Options *opts) {
+    opts->text_fg_override_threshold = text_fg_override_threshold(val);
+}
+
+static void
+convert_from_opts_text_fg_override_threshold(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "text_fg_override_threshold");
+    if (ret == NULL) return;
+    convert_from_python_text_fg_override_threshold(ret, opts);
     Py_DECREF(ret);
 }
 
@@ -604,6 +616,19 @@ convert_from_opts_detect_urls(PyObject *py_opts, Options *opts) {
 }
 
 static void
+convert_from_python_detect_url_regex(PyObject *val, Options *opts) {
+    detect_url_regex(val, opts);
+}
+
+static void
+convert_from_opts_detect_url_regex(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "detect_url_regex");
+    if (ret == NULL) return;
+    convert_from_python_detect_url_regex(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
 convert_from_python_url_excluded_characters(PyObject *val, Options *opts) {
     url_excluded_characters(val, opts);
 }
@@ -626,6 +651,19 @@ convert_from_opts_show_hyperlink_targets(PyObject *py_opts, Options *opts) {
     PyObject *ret = PyObject_GetAttrString(py_opts, "show_hyperlink_targets");
     if (ret == NULL) return;
     convert_from_python_show_hyperlink_targets(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_hyperlink_target_position(PyObject *val, Options *opts) {
+    opts->hyperlink_target_position = hyperlink_target_position(val);
+}
+
+static void
+convert_from_opts_hyperlink_target_position(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "hyperlink_target_position");
+    if (ret == NULL) return;
+    convert_from_python_hyperlink_target_position(ret, opts);
     Py_DECREF(ret);
 }
 
@@ -860,6 +898,19 @@ convert_from_opts_linux_bell_theme(PyObject *py_opts, Options *opts) {
     PyObject *ret = PyObject_GetAttrString(py_opts, "linux_bell_theme");
     if (ret == NULL) return;
     convert_from_python_linux_bell_theme(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_padding_fill_strategy(PyObject *val, Options *opts) {
+    opts->padding_fill_strategy = padding_fill_strategy(val);
+}
+
+static void
+convert_from_opts_padding_fill_strategy(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "padding_fill_strategy");
+    if (ret == NULL) return;
+    convert_from_python_padding_fill_strategy(ret, opts);
     Py_DECREF(ret);
 }
 
@@ -1526,6 +1577,19 @@ convert_from_opts_wayland_enable_ime(PyObject *py_opts, Options *opts) {
     Py_DECREF(ret);
 }
 
+static void
+convert_from_python_remap_modifiers(PyObject *val, Options *opts) {
+    remap_modifiers(val, opts);
+}
+
+static void
+convert_from_opts_remap_modifiers(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "remap_modifiers");
+    if (ret == NULL) return;
+    convert_from_python_remap_modifiers(ret, opts);
+    Py_DECREF(ret);
+}
+
 static bool
 convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     convert_from_opts_font_size(py_opts, opts);
@@ -1545,6 +1609,8 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     convert_from_opts_underline_exclusion(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_text_composition_strategy(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_text_fg_override_threshold(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_cursor_shape(py_opts, opts);
     if (PyErr_Occurred()) return false;
@@ -1620,9 +1686,13 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     if (PyErr_Occurred()) return false;
     convert_from_opts_detect_urls(py_opts, opts);
     if (PyErr_Occurred()) return false;
+    convert_from_opts_detect_url_regex(py_opts, opts);
+    if (PyErr_Occurred()) return false;
     convert_from_opts_url_excluded_characters(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_show_hyperlink_targets(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_hyperlink_target_position(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_underline_hyperlinks(py_opts, opts);
     if (PyErr_Occurred()) return false;
@@ -1659,6 +1729,8 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     convert_from_opts_bell_path(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_linux_bell_theme(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_padding_fill_strategy(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_active_border_color(py_opts, opts);
     if (PyErr_Occurred()) return false;
@@ -1761,6 +1833,8 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     convert_from_opts_macos_colorspace(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_wayland_enable_ime(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_remap_modifiers(py_opts, opts);
     if (PyErr_Occurred()) return false;
     return true;
 }

@@ -20,5 +20,10 @@ if __name__ == '__main__':
         for _fn in ('geteuid', 'getuid', 'getegid', 'getgid'):
             if not hasattr(os, _fn):
                 setattr(os, _fn, lambda: 0)
+        # kitty passes O_CLOEXEC to os.open(). Windows calls it O_NOINHERIT, as
+        # kitty/wincompat/fcntl.h maps it for the C side.
+        if not hasattr(os, 'O_CLOEXEC'):
+            os.O_CLOEXEC = os.O_NOINHERIT  # ty: ignore[unresolved-attribute]
     from kitty.entry_points import main
+
     main()

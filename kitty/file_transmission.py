@@ -51,15 +51,13 @@ def as_unicode(x: str | bytes) -> str:
 
 def encode_bypass(request_id: str, bypass: str) -> str:
     import hashlib
+
     q = request_id + ';' + bypass
     return 'sha256:' + hashlib.sha256(q.encode('utf-8', 'replace')).hexdigest()
 
 
 def split_for_transfer(
-    data: bytes | bytearray | memoryview,
-    session_id: str = '', file_id: str = '',
-    mark_last: bool = False,
-    chunk_size: int = 4096
+    data: bytes | bytearray | memoryview, session_id: str = '', file_id: str = '', mark_last: bool = False, chunk_size: int = 4096
 ) -> Iterator['FileTransmissionCommand']:
     if isinstance(data, (bytes, bytearray)):
         data = memoryview(data)
@@ -90,8 +88,15 @@ def iter_file_metadata(file_specs: Iterable[tuple[str, str]]) -> Iterator[Union[
         else:
             raise ValueError('Not an appropriate file type')
         ans = FileTransmissionCommand(
-            action=Action.file, file_id=spec_id, mtime=sr.st_mtime_ns, permissions=stat.S_IMODE(sr.st_mode),
-            name=path, status=str(next(counter)), size=sr.st_size, ftype=ftype, parent=parent
+            action=Action.file,
+            file_id=spec_id,
+            mtime=sr.st_mtime_ns,
+            permissions=stat.S_IMODE(sr.st_mode),
+            name=path,
+            status=str(next(counter)),
+            size=sr.st_size,
+            ftype=ftype,
+            parent=parent,
         )
         file_map[skey(sr)].append(ans)
         return ans
@@ -162,7 +167,6 @@ def iter_file_metadata(file_specs: Iterable[tuple[str, str]]) -> Iterator[Union[
 
 
 class NameReprEnum(Enum):
-
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__}.{self.name}>'
 
@@ -208,9 +212,9 @@ ErrorCode = Enum('ErrorCode', 'OK STARTED CANCELED PROGRESS EINVAL EPERM EISDIR 
 
 
 class TransmissionError(Exception):
-
     def __init__(
-        self, code: ErrorCode | str = ErrorCode.EINVAL,
+        self,
+        code: ErrorCode | str = ErrorCode.EINVAL,
         msg: str = 'Generic error',
         transmit: bool = True,
         file_id: str = '',
@@ -231,9 +235,7 @@ class TransmissionError(Exception):
         name = self.code if isinstance(self.code, str) else self.code.name
         if self.human_msg:
             name += ':' + self.human_msg
-        return FileTransmissionCommand(
-            action=Action.status, id=request_id, file_id=self.file_id, status=name, name=self.name, size=self.size, ttype=self.ttype
-        )
+        return FileTransmissionCommand(action=Action.status, id=request_id, file_id=self.file_id, status=name, name=self.name, size=self.size, ttype=self.ttype)
 
 
 @run_once
@@ -254,7 +256,6 @@ def serialized_to_field_map() -> dict[bytes | memoryview, 'Field[Any]']:
 
 @dataclass
 class FileTransmissionCommand:
-
     action: Action = field(default=Action.invalid, metadata={'sname': 'ac'})
     compression: Compression = field(default=Compression.none, metadata={'sname': 'zip'})
     ftype: FileType = field(default=FileType.regular, metadata={'sname': 'ft'})
@@ -340,7 +341,7 @@ class FileTransmissionCommand:
             if field is None:
                 return
             if inspect.isclass(field.type) and issubclass(field.type, Enum):
-                setattr(ans, field.name, field.type[str(val, "utf-8")])
+                setattr(ans, field.name, field.type[str(val, 'utf-8')])
             elif field.type == bytes | memoryview:
                 setattr(ans, field.name, base64_decode(val))
             elif field.type is int:
@@ -349,7 +350,7 @@ class FileTransmissionCommand:
                 if field.metadata.get('base64'):
                     sval = base64_decode(val).decode('utf-8')
                 else:
-                    sval = safe_string(str(val, "utf-8"))
+                    sval = safe_string(str(val, 'utf-8'))
                 setattr(ans, field.name, sval)
 
         parse_ftc(data, handle_item)
@@ -360,15 +361,14 @@ class FileTransmissionCommand:
 
 
 class IdentityDecompressor:
-
     def __call__(self, data: bytes | memoryview, is_last: bool = False) -> bytes:
         return bytes(data)
 
 
 class ZlibDecompressor:
-
     def __init__(self) -> None:
         import zlib
+
         self.d = zlib.decompressobj(wbits=0)
 
     def __call__(self, data: bytes | memoryview, is_last: bool = False) -> bytes:
@@ -379,9 +379,9 @@ class ZlibDecompressor:
 
 
 class PatchFile:
-
     def __init__(self, path: str, expected_size: int):
         from kittens.transfer.rsync import Patcher
+
         self.patcher = Patcher(expected_size)
         self.block_buffer = memoryview(bytearray(self.patcher.block_size))
         self.path = path
@@ -393,7 +393,10 @@ class PatchFile:
     @property
     def dest_file(self) -> IO[bytes]:
         if self._dest_file is None:
-            self._dest_file = tempfile.NamedTemporaryFile(mode='wb', dir=os.path.dirname(os.path.abspath(os.path.realpath(self.path))), delete=False)
+            # Note: deliberately no realpath() here, the temporary file must be
+            # created next to the destination itself, not next to whatever a
+            # symlink at the destination happens to point to.
+            self._dest_file = tempfile.NamedTemporaryFile(mode='wb', dir=os.path.dirname(os.path.abspath(self.path)), delete=False)
         return self._dest_file
 
     def close(self) -> None:
@@ -406,7 +409,7 @@ class PatchFile:
             self._dest_file.close()
             p.finish_delta_data()
             if self.src_file is not None:
-                os.replace(self.dest_file.name, self.src_file.name)
+                os.replace(self.dest_file.name, self.path)
         if self.src_file is not None and not self.src_file.closed:
             self.src_file.close()
 
@@ -431,7 +434,10 @@ class PatchFile:
         if self.signature_done:
             return 0
         if self.src_file is None:
-            self.src_file = open(self.path, 'rb')
+            # O_NOFOLLOW so that a symlink planted at the destination cannot be
+            # used to read some other file and leak its signature to the sender
+            flags = os.O_RDONLY | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+            self.src_file = open(os.open(self.path, flags), mode='rb', closefd=True)
             return self.patcher.signature_header(buf)
         n = self.src_file.readinto(self.block_buffer)
         if n > 0:
@@ -443,8 +449,10 @@ class PatchFile:
 
 
 class DestFile:
-
-    def __init__(self, ftc: FileTransmissionCommand) -> None:
+    def __init__(self, ftc: FileTransmissionCommand, created_symlinks: set[tuple[int, int]] | None = None) -> None:
+        # (st_dev, st_ino) of the symlinks created so far by the transfer this
+        # file is part of, shared between all files in the transfer
+        self.created_symlinks: set[tuple[int, int]] = set() if created_symlinks is None else created_symlinks
         self.name = ftc.name
         if not os.path.isabs(self.name):
             self.name = expand_home(self.name)
@@ -470,6 +478,15 @@ class DestFile:
         self.failed = False
         self.bytes_written = 0
 
+    @property
+    def can_patch_in_place(self) -> bool:
+        # A differential (rsync) transfer reads the existing file and renames a
+        # temporary file over it, bypassing the unlink and O_NOFOLLOW defences
+        # in write_data(). So only allow it when the destination is a plain
+        # regular file with no other links to it.
+        es = self.existing_stat
+        return es is not None and not self.needs_unlink and stat.S_ISREG(es.st_mode)
+
     def signature_iterator(self) -> PatchFile:
         self.actual_file = PatchFile(self.name, self.existing_stat.st_size if self.existing_stat is not None else 0)
         return self.actual_file
@@ -484,10 +501,51 @@ class DestFile:
                 self.actual_file.close()
                 self.actual_file = None
 
+    def check_parents(self) -> None:
+        # O_NOFOLLOW and friends only protect the final path component. Refuse
+        # to create anything whose path passes through a symlink created
+        # earlier in this same transfer, as otherwise a sender could plant a
+        # symlink and then use it to redirect subsequent entries elsewhere.
+        if not self.created_symlinks:
+            return
+        drive, rest = os.path.splitdrive(self.name)
+        components = [c for c in rest.replace(os.altsep or os.sep, os.sep).split(os.sep) if c]
+        prefix = drive + (os.sep if os.path.isabs(self.name) else '')
+        for c in components[:-1]:
+            prefix = os.path.join(prefix, c)
+            try:
+                st = os.stat(prefix, follow_symlinks=False)
+            except OSError:
+                return  # nothing below a non-existent path can exist either
+            if stat.S_ISLNK(st.st_mode) and (st.st_dev, st.st_ino) in self.created_symlinks:
+                raise TransmissionError(
+                    code=ErrorCode.EPERM, file_id=self.file_id, msg=f'Refusing to write {self.name} via the symlink {prefix} created earlier in this transfer'
+                )
+
+    def check_destination(self) -> None:
+        self.check_parents()
+        if self.ftype is FileType.directory or self.existing_stat is None:
+            return
+        is_dir = stat.S_ISDIR(self.existing_stat.st_mode)
+        if not is_dir and self.ftype is FileType.regular and stat.S_ISLNK(self.existing_stat.st_mode):
+            # Replacing a symlink to a directory with a regular file is almost
+            # certainly not what the user intended, so refuse. Symlinks and
+            # hard links are still allowed to replace such symlinks.
+            with suppress(OSError):
+                is_dir = stat.S_ISDIR(os.stat(self.name).st_mode)
+        if is_dir:
+            raise TransmissionError(code=ErrorCode.EISDIR, file_id=self.file_id, msg=f'Cannot replace the existing directory {self.name} with a file')
+
     def make_parent_dirs(self) -> str:
+        self.check_parents()
         d = os.path.dirname(self.name)
         if d:
-            os.makedirs(d, exist_ok=True)
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError as err:
+                code = errno.errorcode.get(err.errno, 'EFAIL') if err.errno is not None else 'EFAIL'
+                path = err.filename if isinstance(err.filename, str) else d
+                raise TransmissionError(code=code, file_id=self.file_id, msg=f'Failed to create the directory {path}: {err.strerror or err}') from err
         return d
 
     def apply_metadata(self, is_symlink: bool = False) -> None:
@@ -538,6 +596,8 @@ class DestFile:
                     raise TransmissionError(msg='Unknown link target type', file_id=self.file_id)
                 if self.ftype is FileType.symlink:
                     os.symlink(lt, self.name)
+                    st = os.stat(self.name, follow_symlinks=False)
+                    self.created_symlinks.add((st.st_dev, st.st_ino))
                 else:
                     os.link(lt, self.name)
                 self.close()
@@ -559,6 +619,11 @@ class DestFile:
 
 
 def check_bypass(password: str, request_id: str, bypass_data: str) -> bool:
+    if not password:
+        # No bypass password configured, so bypassing confirmation is never allowed.
+        # Note that the remote side knows the request id and can perform ECDH using
+        # KITTY_PUBLIC_KEY, so an empty password provides no authentication at all.
+        return False
     protocol, sep, bypass_data = bypass_data.partition(':')
     if protocol == 'kitty-1':
         try:
@@ -578,7 +643,7 @@ def check_bypass(password: str, request_id: str, bypass_data: str) -> bool:
             log_error(f'Invalid file transmission bypass data received: {err}')
             return False
     elif protocol == 'sha256':
-        return hmac.compare_digest(encode_bypass(request_id, password), bypass_data) if password else False
+        return hmac.compare_digest(encode_bypass(request_id, password), f'{protocol}:{bypass_data}')
     else:
         log_error(f'Invalid file transmission bypass data received with protocol: {protocol}')
     return False
@@ -599,6 +664,7 @@ class ActiveReceive:
         self.last_activity_at = monotonic()
         self.send_acknowledgements = quiet < 1
         self.send_errors = quiet < 2
+        self.created_symlinks: set[tuple[int, int]] = set()
         self.pending_files_to_transmit_signature_of: Deque[tuple[PatchFile, str]] = deque()
         self.signature_pending_chunks: Deque[FileTransmissionCommand] = deque()
 
@@ -621,7 +687,14 @@ class ActiveReceive:
                 msg=f'The file_id {ftc.file_id} already exists',
                 file_id=ftc.file_id,
             )
-        self.files[ftc.file_id] = df = DestFile(ftc)
+        self.files[ftc.file_id] = df = DestFile(ftc, self.created_symlinks)
+        try:
+            df.check_destination()
+        except TransmissionError:
+            # keep the file registered so that any data sent for it is discarded
+            df.failed = True
+            df.close()
+            raise
         return df
 
     def add_data(self, ftc: FileTransmissionCommand) -> DestFile:
@@ -649,7 +722,6 @@ class ActiveReceive:
 
 
 class SourceFile:
-
     def __init__(self, ftc: FileTransmissionCommand):
         self.file_id = ftc.file_id
         self.path = ftc.name
@@ -669,12 +741,13 @@ class SourceFile:
             if ftc.compression is Compression.zlib:
                 self.compressor = ZlibCompressor()
         from kittens.transfer import rsync
+
         self.differ = rsync.Differ() if self.waiting_for_signature else None
         self.buf = bytearray()
         self.write_pos = 0
 
     def write(self, b: ReadableBuffer) -> None:
-        self.buf[self.write_pos:self.write_pos+len(b)] = b
+        self.buf[self.write_pos : self.write_pos + len(b)] = b
         self.write_pos += len(b)
 
     @property
@@ -704,7 +777,7 @@ class SourceFile:
                 else:
                     self.write_pos = 0
                     has_more = self.differ.next_op(self.open_file.readinto, self.write)
-                    data = memoryview(self.buf)[:self.write_pos]
+                    data = memoryview(self.buf)[: self.write_pos]
                     if not has_more:
                         self.transmitted = True
         uncompressed_sz = len(data)
@@ -717,7 +790,6 @@ class SourceFile:
 
 
 class ActiveSend:
-
     def __init__(self, request_id: str, quiet: int, bypass: str, num_of_args: int) -> None:
         self.id = request_id
         self.expected_num_of_args = num_of_args
@@ -806,7 +878,6 @@ class ActiveSend:
 
 
 class FileTransmission:
-
     def __init__(self, window_id: int):
         self.window_id = window_id
         self.active_receives: dict[str, ActiveReceive] = {}
@@ -1029,8 +1100,11 @@ class FileTransmission:
                 else:
                     if ar.send_acknowledgements:
                         sz = df.existing_stat.st_size if df.existing_stat is not None else -1
-                        ttype = TransmissionType.rsync \
-                            if sz > -1 and df.ttype is TransmissionType.rsync and df.ftype is FileType.regular else TransmissionType.simple
+                        ttype = (
+                            TransmissionType.rsync
+                            if sz > -1 and df.ttype is TransmissionType.rsync and df.ftype is FileType.regular and df.can_patch_in_place
+                            else TransmissionType.simple
+                        )
                         self.send_status_response(code=ErrorCode.STARTED, request_id=ar.id, file_id=df.file_id, name=df.name, size=sz, ttype=ttype)
                         df.ttype = ttype
                         if ttype is TransmissionType.rsync:
@@ -1052,16 +1126,15 @@ class FileTransmission:
                     return
                 if ar.send_acknowledgements:
                     if df.closed:
-                        self.send_status_response(
-                            code=ErrorCode.OK, request_id=ar.id, file_id=df.file_id, name=df.name, size=df.bytes_written)
+                        self.send_status_response(code=ErrorCode.OK, request_id=ar.id, file_id=df.file_id, name=df.name, size=df.bytes_written)
                     elif df.bytes_written > before:
-                        self.send_status_response(
-                            code=ErrorCode.PROGRESS, request_id=ar.id, file_id=df.file_id, size=df.bytes_written)
+                        self.send_status_response(code=ErrorCode.PROGRESS, request_id=ar.id, file_id=df.file_id, size=df.bytes_written)
             except TransmissionError as err:
                 if ar.send_errors:
                     self.send_transmission_error(ar.id, err)
             except Exception as err:
                 import traceback
+
                 st = traceback.format_exc()
                 log_error(f'Transmission protocol failed to write data to file with error: {st}')
                 if ar.send_errors:
@@ -1134,9 +1207,13 @@ class FileTransmission:
         self.callback_after(partial(self.transmit_rsync_signature, receive_id))
 
     def send_status_response(
-        self, code: ErrorCode | str = ErrorCode.EINVAL,
-        request_id: str = '', file_id: str = '', msg: str = '',
-        name: str = '', size: int = -1,
+        self,
+        code: ErrorCode | str = ErrorCode.EINVAL,
+        request_id: str = '',
+        file_id: str = '',
+        msg: str = '',
+        name: str = '',
+        size: int = -1,
         ttype: TransmissionType = TransmissionType.simple,
     ) -> bool:
         err = TransmissionError(code=code, msg=msg, file_id=file_id, name=name, size=size, ttype=ttype)
@@ -1171,10 +1248,14 @@ class FileTransmission:
         boss = get_boss()
         window = boss.window_id_map.get(self.window_id)
         if window is not None:
-            boss.confirm(_(
-                'The remote machine wants to read some files from this computer.'
-                ' Only allow transfers to computers you trust. Do you want to allow the transfer?'),
-                self.handle_receive_confirmation, asd_id, window=window,
+            boss.confirm(
+                _(
+                    'The remote machine wants to read some files from this computer.'
+                    ' Only allow transfers to computers you trust. Do you want to allow the transfer?'
+                ),
+                self.handle_receive_confirmation,
+                asd_id,
+                window=window,
             )
 
     def handle_receive_confirmation(self, confirmed: bool, cmd_id: str) -> None:
@@ -1202,10 +1283,14 @@ class FileTransmission:
         boss = get_boss()
         window = boss.window_id_map.get(self.window_id)
         if window is not None:
-            boss.confirm(_(
-                'The remote machine wants to send some files to this computer.'
-                ' Only allow transfers from computers you trust. Do you want to allow the transfer?'),
-                self.handle_send_confirmation, ar_id, window=window,
+            boss.confirm(
+                _(
+                    'The remote machine wants to send some files to this computer.'
+                    ' Only allow transfers from computers you trust. Do you want to allow the transfer?'
+                ),
+                self.handle_send_confirmation,
+                ar_id,
+                window=window,
             )
 
     def handle_send_confirmation(self, confirmed: bool, cmd_id: str) -> None:
@@ -1234,7 +1319,6 @@ class FileTransmission:
 
 
 class TestFileTransmission(FileTransmission):
-
     def __init__(self, allow: bool = True) -> None:
         super().__init__(0)
         self.test_responses: list[dict[str, str | int | bytes]] = []

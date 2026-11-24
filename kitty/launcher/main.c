@@ -29,14 +29,17 @@
 #define KITTY_LIB_DIR_NAME "lib"
 #endif
 
-static void cleanup_free(void *p) { free(*(void**) p); }
+static void
+cleanup_free(void *p) {
+    free(*(void **)p);
+}
 #define RAII_ALLOC(type, name, initializer) __attribute__((cleanup(cleanup_free))) type *name = initializer
 
 static bool being_tested = false;
 
 #ifndef __FreeBSD__
 static bool
-safe_realpath(const char* src, char *buf, size_t buf_sz) {
+safe_realpath(const char *src, char *buf, size_t buf_sz) {
     RAII_ALLOC(char, ans, realpath(src, NULL));
     if (ans == NULL) return false;
     safe_snprintf(buf, buf_sz, "%s", ans);
@@ -53,13 +56,36 @@ typedef struct {
 static bool
 set_kitty_run_data(RunData *run_data, bool from_source, wchar_t *extensions_dir) {
     PyObject *ans = PyDict_New();
-    if (!ans) { PyErr_Print(); return false; }
+    if (!ans) {
+        PyErr_Print();
+        return false;
+    }
     PyObject *exe_dir = PyUnicode_DecodeFSDefaultAndSize(run_data->exe_dir, strlen(run_data->exe_dir));
-    if (exe_dir == NULL) { fprintf(stderr, "Fatal error: cannot decode exe_dir: %s\n", run_data->exe_dir); PyErr_Print(); Py_CLEAR(ans); return false; }
-#define S(key, val) { if (!val) { PyErr_Print(); Py_CLEAR(ans); return false; } int ret = PyDict_SetItemString(ans, #key, val); Py_CLEAR(val); if (ret != 0) { PyErr_Print(); Py_CLEAR(ans); return false; } }
+    if (exe_dir == NULL) {
+        fprintf(stderr, "Fatal error: cannot decode exe_dir: %s\n", run_data->exe_dir);
+        PyErr_Print();
+        Py_CLEAR(ans);
+        return false;
+    }
+#define S(key, val)                                     \
+    {                                                   \
+        if (!val) {                                     \
+            PyErr_Print();                              \
+            Py_CLEAR(ans);                              \
+            return false;                               \
+        }                                               \
+        int ret = PyDict_SetItemString(ans, #key, val); \
+        Py_CLEAR(val);                                  \
+        if (ret != 0) {                                 \
+            PyErr_Print();                              \
+            Py_CLEAR(ans);                              \
+            return false;                               \
+        }                                               \
+    }
     S(bundle_exe_dir, exe_dir);
     if (from_source) {
-        PyObject *one = Py_True; Py_INCREF(one);
+        PyObject *one = Py_True;
+        Py_INCREF(one);
         S(from_source, one);
     }
     if (run_data->lc_ctype) {
@@ -83,7 +109,10 @@ set_kitty_run_data(RunData *run_data, bool from_source, wchar_t *extensions_dir)
     }
     if (run_data->config_dir) {
         PyObject *cdir = PyUnicode_DecodeFSDefaultAndSize(run_data->config_dir, strlen(run_data->config_dir));
-        if (!cdir) { PyErr_Print(); return false; }
+        if (!cdir) {
+            PyErr_Print();
+            return false;
+        }
         S(config_dir, cdir);
     }
     PyObject *cli_flags = cli_parse_result_as_python(run_data->cli_spec);
@@ -96,7 +125,10 @@ set_kitty_run_data(RunData *run_data, bool from_source, wchar_t *extensions_dir)
 #undef S
     int ret = PySys_SetObject("kitty_run_data", ans);
     Py_CLEAR(ans);
-    if (ret != 0) { PyErr_Print(); return false; }
+    if (ret != 0) {
+        PyErr_Print();
+        return false;
+    }
     return true;
 }
 
@@ -110,13 +142,13 @@ canonicalize_path_wide(const char *srcpath, wchar_t *dest, size_t sz) {
     lexical_absolute_path(srcpath, buf, sz);
     buf[sz] = 0;
     mbstowcs(dest, buf, sz - 1);
-    dest[sz-1] = 0;
+    dest[sz - 1] = 0;
 }
 
 static int
 run_embedded(RunData *run_data) {
     bypy_pre_initialize_interpreter(false);
-    char extensions_dir_full[PATH_MAX+1] = {0}, python_home_full[PATH_MAX+1] = {0};
+    char extensions_dir_full[PATH_MAX + 1] = {0}, python_home_full[PATH_MAX + 1] = {0};
 #ifdef __APPLE__
     const char *python_relpath = "../Resources/Python/lib";
 #else
@@ -128,8 +160,7 @@ run_embedded(RunData *run_data) {
     safe_snprintf(python_home_full, PATH_MAX, "%s/%s/python%s", run_data->exe_dir, python_relpath, PYVER);
     wchar_t python_home[PATH_MAX];
     canonicalize_path_wide(python_home_full, python_home, PATH_MAX);
-    bypy_initialize_interpreter(
-            L"kitty", python_home, L"kitty_main", extensions_dir, run_data->cli_spec->original_argc, run_data->cli_spec->original_argv);
+    bypy_initialize_interpreter(L"kitty", python_home, L"kitty_main", extensions_dir, run_data->cli_spec->original_argc, run_data->cli_spec->original_argv);
     if (!set_kitty_run_data(run_data, false, extensions_dir)) return 1;
     set_sys_bool("frozen", true);
     return bypy_run_interpreter();
@@ -173,7 +204,7 @@ run_embedded(RunData *run_data) {
     config.isolated = 1;
 #endif
     status = Py_InitializeFromConfig(&config);
-    if (PyStatus_Exception(status))  goto fail;
+    if (PyStatus_Exception(status)) goto fail;
     PyConfig_Clear(&config);
     if (!set_kitty_run_data(run_data, from_source, NULL)) return 1;
     PySys_SetObject("frozen", Py_False);
@@ -193,9 +224,15 @@ static bool
 read_exe_path(char *exe, size_t buf_sz) {
     (void)buf_sz;
     uint32_t size = PATH_MAX;
-    char apple[PATH_MAX+1] = {0};
-    if (_NSGetExecutablePath(apple, &size) != 0) { fprintf(stderr, "Failed to get path to executable\n"); return false; }
-    if (!safe_realpath(apple, exe, buf_sz)) { fprintf(stderr, "realpath() failed on the executable's path\n"); return false; }
+    char apple[PATH_MAX + 1] = {0};
+    if (_NSGetExecutablePath(apple, &size) != 0) {
+        fprintf(stderr, "Failed to get path to executable\n");
+        return false;
+    }
+    if (!safe_realpath(apple, exe, buf_sz)) {
+        fprintf(stderr, "realpath() failed on the executable's path\n");
+        return false;
+    }
     return true;
 }
 #elif defined(__FreeBSD__)
@@ -204,7 +241,7 @@ read_exe_path(char *exe, size_t buf_sz) {
 
 static bool
 read_exe_path(char *exe, size_t buf_sz) {
-    int name[] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 };
+    int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
     size_t length = buf_sz;
     int error = sysctl(name, 4, exe, &length, NULL, 0);
     if (error < 0 || length <= 1) {
@@ -217,7 +254,10 @@ read_exe_path(char *exe, size_t buf_sz) {
 
 static bool
 read_exe_path(char *exe, size_t buf_sz) {
-    if (!safe_realpath("/proc/curproc/exe", exe, buf_sz)) { fprintf(stderr, "Failed to read /proc/curproc/exe\n"); return false; }
+    if (!safe_realpath("/proc/curproc/exe", exe, buf_sz)) {
+        fprintf(stderr, "Failed to read /proc/curproc/exe\n");
+        return false;
+    }
     return true;
 }
 
@@ -225,7 +265,10 @@ read_exe_path(char *exe, size_t buf_sz) {
 static bool
 read_exe_path(char *exe, size_t buf_sz) {
     const char *path = getenv("PATH");
-    if (!path) { fprintf(stderr, "No PATH environment variable set, aborting\n"); return false; }
+    if (!path) {
+        fprintf(stderr, "No PATH environment variable set, aborting\n");
+        return false;
+    }
     char buf[PATH_MAX + 1] = {0};
     strncpy(buf, path, PATH_MAX);
     char *token = strtok(buf, ":");
@@ -245,8 +288,14 @@ static bool
 read_exe_path(char *exe, size_t buf_sz) {
     wchar_t wpath[4096];
     DWORD n = GetModuleFileNameW(NULL, wpath, 4096);
-    if (n == 0 || n >= 4096) { fprintf(stderr, "GetModuleFileName failed\n"); return false; }
-    if (WideCharToMultiByte(CP_UTF8, 0, wpath, -1, exe, (int) buf_sz, NULL, NULL) == 0) { fprintf(stderr, "Failed to convert exe path to UTF-8\n"); return false; }
+    if (n == 0 || n >= 4096) {
+        fprintf(stderr, "GetModuleFileName failed\n");
+        return false;
+    }
+    if (WideCharToMultiByte(CP_UTF8, 0, wpath, -1, exe, (int)buf_sz, NULL, NULL) == 0) {
+        fprintf(stderr, "Failed to convert exe path to UTF-8\n");
+        return false;
+    }
     return true;
 }
 
@@ -254,26 +303,23 @@ read_exe_path(char *exe, size_t buf_sz) {
 
 static bool
 read_exe_path(char *exe, size_t buf_sz) {
-    if (!safe_realpath("/proc/self/exe", exe, buf_sz)) { fprintf(stderr, "Failed to read /proc/self/exe\n"); return false; }
+    if (!safe_realpath("/proc/self/exe", exe, buf_sz)) {
+        fprintf(stderr, "Failed to read /proc/self/exe\n");
+        return false;
+    }
     return true;
 }
 #endif // }}}
 
 static bool
-is_valid_fd(int fd)
-{
+is_valid_fd(int fd) {
     // This is copied from the python source code as we need the exact same semantics
     // to prevent python from giving us None for sys.stdout and friends.
-#if defined(F_GETFD) && ( \
-        defined(__linux__) || \
-        defined(__APPLE__) || \
-        defined(__wasm__))
+#if defined(F_GETFD) && (defined(__linux__) || defined(__APPLE__) || defined(__wasm__))
     return fcntl(fd, F_GETFD) >= 0;
 #elif defined(__linux__)
     int fd2 = dup(fd);
-    if (fd2 >= 0) {
-        close(fd2);
-    }
+    if (fd2 >= 0) { close(fd2); }
     return (fd2 >= 0);
 #else
     struct stat st;
@@ -305,41 +351,43 @@ ensure_working_stdio(void) {
     // handle can also be inherited yet unusable (a GUI parent like the PATH
     // shim passes stale values), so validate with GetFileType rather than
     // testing for NULL alone.
-#define usable(which) (GetStdHandle(which) != NULL && GetStdHandle(which) != INVALID_HANDLE_VALUE \
-                       && GetFileType(GetStdHandle(which)) != FILE_TYPE_UNKNOWN)
+#define usable(which) (GetStdHandle(which) != NULL && GetStdHandle(which) != INVALID_HANDLE_VALUE && GetFileType(GetStdHandle(which)) != FILE_TYPE_UNKNOWN)
     bool no_in = !usable(STD_INPUT_HANDLE);
     bool no_out = !usable(STD_OUTPUT_HANDLE);
     bool no_err = !usable(STD_ERROR_HANDLE);
 #undef usable
     if (GetConsoleWindow() == NULL) AttachConsole(ATTACH_PARENT_PROCESS);
-    if (GetConsoleWindow() != NULL) {  // attached now, or inherited from the parent
+    if (GetConsoleWindow() != NULL) { // attached now, or inherited from the parent
         if (no_in) freopen("CONIN$", "r", stdin);
         if (no_out) freopen("CONOUT$", "w", stdout);
         if (no_err) freopen("CONOUT$", "w", stderr);
     }
     return true;
 #endif
-#define C(which, mode) { \
-    int fd = fileno(which); \
-    if (fd < 0) { if (!reopen_to_null(mode, which)) return false; } \
-    else if (!is_valid_fd(fd)) { \
-        close(fd); if (!reopen_to_null(mode, which)) return false; \
-    }}
-    C(stdin, "r") C(stdout, "w") C(stderr, "w")
-    return true;
+#define C(which, mode)                                      \
+    {                                                       \
+        int fd = fileno(which);                             \
+        if (fd < 0) {                                       \
+            if (!reopen_to_null(mode, which)) return false; \
+        } else if (!is_valid_fd(fd)) {                      \
+            close(fd);                                      \
+            if (!reopen_to_null(mode, which)) return false; \
+        }                                                   \
+    }
+    C(stdin, "r") C(stdout, "w") C(stderr, "w") return true;
 #undef C
 }
 
 static bool
 is_wrapped_kitten(const char *arg) {
     char buf[64];
-    safe_snprintf(buf, sizeof(buf)-1, " %s ", arg);
+    safe_snprintf(buf, sizeof(buf) - 1, " %s ", arg);
     return strstr(" " WRAPPED_KITTENS " ", buf);
 }
 
 static void
 exec_kitten(int argc, char *argv[], char *exe_dir) {
-    char exe[PATH_MAX+1] = {0};
+    char exe[PATH_MAX + 1] = {0};
     safe_snprintf(exe, PATH_MAX, "%s/kitten", exe_dir);
     argv[0] = "kitten";
     if (being_tested) {
@@ -392,14 +440,17 @@ offset_for_plus_subcommand(int argc, char **argv, const char *name) {
     return offset;
 }
 
+// full_argc/full_argv are the complete command line, used to re-exec on
+// --detach. They differ from cli_spec->original_argv for +kitten panel, where
+// original_argv starts at "panel", not at the executable.
 static void
-handle_fast_commandline(CLISpec *cli_spec, const char *instance_group_prefix) {
+handle_fast_commandline(CLISpec *cli_spec, const char *instance_group_prefix, int full_argc, char **full_argv) {
     CLIOptions opts = {0};
     RAII_CLISpec(subcommand_cli_spec);
-#define swap_cli_spec \
-            subcommand_cli_spec.original_argc = cli_spec->original_argc; \
-            subcommand_cli_spec.original_argv = cli_spec->original_argv; \
-            cli_spec = &subcommand_cli_spec;
+#define swap_cli_spec                                            \
+    subcommand_cli_spec.original_argc = cli_spec->original_argc; \
+    subcommand_cli_spec.original_argv = cli_spec->original_argv; \
+    cli_spec = &subcommand_cli_spec;
     if (instance_group_prefix == NULL) {
         // Look for +open
         int offset = offset_for_plus_subcommand(cli_spec->original_argc, cli_spec->original_argv, "open");
@@ -410,8 +461,7 @@ handle_fast_commandline(CLISpec *cli_spec, const char *instance_group_prefix) {
             opts.open_urls = cli_spec->argv;
         }
     } else {
-        parse_and_check_panel_kitten_cli(
-            &subcommand_cli_spec, cli_spec->original_argc, cli_spec->original_argv);
+        parse_and_check_panel_kitten_cli(&subcommand_cli_spec, cli_spec->original_argc, cli_spec->original_argv);
         swap_cli_spec;
     }
     if (get_bool_cli_val(cli_spec, "help")) {
@@ -440,9 +490,10 @@ handle_fast_commandline(CLISpec *cli_spec, const char *instance_group_prefix) {
         // --version itself and exits. Truecolor is emitted in the semicolon
         // form because conhost mangles the colon form and drops the colour.
         if (isatty(STDOUT_FILENO)) {
-            printf("\x1b[3mWindows native port by \x1b[23m"
-                   "\x1b[38;2;253;151;31mecstra\x1b[39m "
-                   "\x1b[2m<\x1b[22m\x1b[96mgotham47g@gmail.com\x1b[39m\x1b[2m>\x1b[22m\n");
+            printf(
+                "\x1b[3mWindows native port by \x1b[23m"
+                "\x1b[38;2;253;151;31mecstra\x1b[39m "
+                "\x1b[2m<\x1b[22m\x1b[96mgotham47g@gmail.com\x1b[39m\x1b[2m>\x1b[22m\n");
         } else {
             printf("Windows native port by ecstra <gotham47g@gmail.com>\n");
         }
@@ -465,14 +516,27 @@ handle_fast_commandline(CLISpec *cli_spec, const char *instance_group_prefix) {
             printf("detach: true\n");
             printf("detached_log: %s\n", detached_log ? detached_log : "");
             printf("session: %s\n", opts.session ? opts.session : "");
+            output_argv("detach_exec_argv", full_argc, full_argv);
             exit(0);
         } else {
             int fds[2] = {0};
             if (pipe(fds) == -1) {
-                perror("failed to create a pipe"); exit(1);
+                perror("failed to create a pipe");
+                exit(1);
             }
 
-#define reopen_or_fail(path, mode, which) { errno = 0; if (freopen(path, mode, which) == NULL) { int s = errno; fprintf(stderr, "Failed to redirect %s to %s with error: ", #which, path); errno = s; perror(NULL); exit(1); } setlinebuf(which); }
+#define reopen_or_fail(path, mode, which)                                              \
+    {                                                                                  \
+        errno = 0;                                                                     \
+        if (freopen(path, mode, which) == NULL) {                                      \
+            int s = errno;                                                             \
+            fprintf(stderr, "Failed to redirect %s to %s with error: ", #which, path); \
+            errno = s;                                                                 \
+            perror(NULL);                                                              \
+            exit(1);                                                                   \
+        }                                                                              \
+        setlinebuf(which);                                                             \
+    }
             if (!(opts.session && ((opts.session[0] == '-' && opts.session[1] == 0) || strcmp(opts.session, "/dev/stdin") == 0)))
                 reopen_or_fail("/dev/null", "rb", stdin);
             if (!detached_log || !detached_log[0]) detached_log = "/dev/null";
@@ -483,13 +547,17 @@ handle_fast_commandline(CLISpec *cli_spec, const char *instance_group_prefix) {
                 // wait until child has done setsid() before exiting so that it doesnt get a SIGHUP,
                 // see: https://github.com/kovidgoyal/kitty/issues/8680
                 char buf[4];
-                errno = 0; while (close(fds[1]) != 0 && errno == EINTR);
-                errno = 0; while(read(fds[0], buf, sizeof(buf)) == -1 && errno == EINTR);
+                errno = 0;
+                while (close(fds[1]) != 0 && errno == EINTR);
+                errno = 0;
+                while (read(fds[0], buf, sizeof(buf)) == -1 && errno == EINTR);
                 exit(0);
             }
-            errno = 0; while (close(fds[0]) != 0 && errno == EINTR);
+            errno = 0;
+            while (close(fds[0]) != 0 && errno == EINTR);
             setsid();
-            errno = 0; while (close(fds[1]) != 0 && errno == EINTR);
+            errno = 0;
+            while (close(fds[1]) != 0 && errno == EINTR);
 #ifdef __APPLE__
             // fork() without exec() is unsafe on macOS. It used to work since
             // in this case we havent yet loaded any major Cocoa libraries but
@@ -498,7 +566,7 @@ handle_fast_commandline(CLISpec *cli_spec, const char *instance_group_prefix) {
             setenv("KITTY_EXEC_FOR_DETACH", pid_str, 1);
             char exe_path[PATH_MAX] = {0};
             read_exe_path(exe_path, PATH_MAX);
-            execv(exe_path, cli_spec->original_argv);
+            execv(exe_path, full_argv);
             fprintf(stderr, "Failed to execv() for --detach with exe_path: %s\n", exe_path);
             exit(1);
 #endif
@@ -533,16 +601,16 @@ handle_fast_commandline(CLISpec *cli_spec, const char *instance_group_prefix) {
 }
 
 static bool
-delegate_to_kitten_if_possible(int argc, char **argv, char* exe_dir) {
+delegate_to_kitten_if_possible(int argc, char **argv, char *exe_dir) {
     if (argc > 1 && argv[1][0] == '@') exec_kitten(argc, argv, exe_dir);
     int offset = offset_for_plus_subcommand(argc, argv, "kitten");
-    if (offset && argc > offset+1) {
+    if (offset && argc > offset + 1) {
         const char *kitten = argv[offset + 1];
         if (is_wrapped_kitten(kitten)) exec_kitten(argc - offset, argv + offset, exe_dir);
         if (strcmp(kitten, "panel") == 0) {
             offset++;
-            CLISpec t = {.original_argv = argv + offset, .original_argc=argc - offset};
-            handle_fast_commandline(&t, "panel");
+            CLISpec t = {.original_argv = argv + offset, .original_argc = argc - offset};
+            handle_fast_commandline(&t, "panel", argc, argv);
             return true;
         }
     }
@@ -570,16 +638,19 @@ output_test_data(RunData *rd) {
 }
 
 int
-main(int argc_, char *argv_[], char* envp[]) {
-    if (argc_ < 1 || !argv_) { fprintf(stderr, "Invalid argc/argv\n"); return 1; }
+main(int argc_, char *argv_[], char *envp[]) {
+    if (argc_ < 1 || !argv_) {
+        fprintf(stderr, "Invalid argc/argv\n");
+        return 1;
+    }
     if (argc_ > 1 && strcmp(argv_[1], "+testing-launcher-code") == 0) {
         being_tested = true;
         memmove(argv_ + 1, argv_ + 2, (--argc_ - 1) * sizeof(argv_[0]));
     }
     if (!ensure_working_stdio()) return 1;
-    char exe[PATH_MAX+1] = {0};
+    char exe[PATH_MAX + 1] = {0};
     if (!read_exe_path(exe, sizeof(exe))) return 1;
-    char exe_dir_buf[PATH_MAX+1] = {0};
+    char exe_dir_buf[PATH_MAX + 1] = {0};
     strncpy(exe_dir_buf, exe, sizeof(exe_dir_buf));
     char *exe_dir = dirname(exe_dir_buf);
 
@@ -591,7 +662,7 @@ main(int argc_, char *argv_[], char* envp[]) {
 #ifdef __APPLE__
     lc_ctype = getenv("LC_CTYPE");
     if (lc_ctype) lc_ctype = strdup(lc_ctype);
-    char abuf[PATH_MAX+1];
+    char abuf[PATH_MAX + 1];
     is_quick_access_terminal = endswith(exe, "/kitty-quick-access");
     if (getenv("KITTY_LAUNCHED_BY_LAUNCH_SERVICES")) {
         launched_by_launch_services = true;
@@ -601,7 +672,8 @@ main(int argc_, char *argv_[], char* envp[]) {
         if (launched_by_launch_services && config_dir[0]) {
             char cbuf[PATH_MAX];
             safe_snprintf(cbuf, sizeof(cbuf), "%s/macos-launch-services-cmdline", config_dir);
-            int orig_argc = argc_; char **orig_argv = argv_;
+            int orig_argc = argc_;
+            char **orig_argv = argv_;
             if (!get_argv_from(cbuf, argva.argv[0], &argva)) exit(1);
             // If the file was loaded (argva replaced), append any extra args passed via open --args
             if (argva.needs_free) {
@@ -624,17 +696,23 @@ main(int argc_, char *argv_[], char* envp[]) {
     bool handle_fast_commandline_called = delegate_to_kitten_if_possible(argva.count, argva.argv, exe_dir);
     bool ok = parse_and_check_kitty_cli(&cli_spec, argva.count, argva.argv);
     if (!ok) return 1;
-    if (!handle_fast_commandline_called) handle_fast_commandline(&cli_spec, NULL);
-    int ret=0;
-    char lib[PATH_MAX+1] = {0};
+    if (!handle_fast_commandline_called) handle_fast_commandline(&cli_spec, NULL, argva.count, argva.argv);
+    int ret = 0;
+    char lib[PATH_MAX + 1] = {0};
     if (KITTY_LIB_PATH[0] == '/') {
         safe_snprintf(lib, PATH_MAX, "%s", KITTY_LIB_PATH);
     } else {
         safe_snprintf(lib, PATH_MAX, "%s/%s", exe_dir, KITTY_LIB_PATH);
     }
     RunData run_data = {
-        .exe = exe, .exe_dir = exe_dir, .lib_dir = lib, .cli_spec = &cli_spec, .lc_ctype = lc_ctype,
-        .launched_by_launch_services=launched_by_launch_services, .config_dir = config_dir, .is_quick_access_terminal=is_quick_access_terminal,
+        .exe = exe,
+        .exe_dir = exe_dir,
+        .lib_dir = lib,
+        .cli_spec = &cli_spec,
+        .lc_ctype = lc_ctype,
+        .launched_by_launch_services = launched_by_launch_services,
+        .config_dir = config_dir,
+        .is_quick_access_terminal = is_quick_access_terminal,
     };
     if (being_tested) output_test_data(&run_data);
     else ret = run_embedded(&run_data);

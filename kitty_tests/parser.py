@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
+import random
 from binascii import hexlify
 from functools import partial
 
@@ -10,12 +11,16 @@ from kitty.fast_data_types import (
     base64_decode,
     base64_encode,
     has_avx2,
+    has_avx512,
     has_sse4_2,
+    test_blend_pixels,
     test_find_either_of_two_bytes,
+    test_printable_ascii_run_length,
     test_utf8_decode_to_sentinel,
+    test_xor64,
 )
 
-from . import BaseTest, parse_bytes
+from .base import BaseTest, parse_bytes
 
 
 def cnv(x):
@@ -25,7 +30,6 @@ def cnv(x):
 
 
 class CmdDump(list):
-
     def __call__(self, window_id, *a):
         if a and a[0] == 'bytes':
             return
@@ -50,7 +54,6 @@ class CmdDump(list):
 
 
 class TestParser(BaseTest):
-
     def create_write_buffer(self, screen):
         return screen.test_create_write_buffer()
 
@@ -156,6 +159,11 @@ class TestParser(BaseTest):
             self.ae(base64_decode(src.encode()), expected.encode(), f'Decoding of {src} failed')
             self.ae(base64_decode(src.replace('=', '').encode()), expected.encode(), f'Decoding of {src} failed')
             self.ae(base64_encode(expected.encode()), src.replace('=', '').encode(), f'Encoding of {expected} failed')
+            self.ae(base64_decode(src.encode(), True), expected.encode(), f'Strict decoding of {src} failed')
+        # in strict mode characters outside the base64 alphabet and missing padding are rejected
+        for invalid in ('bGlnaHQgdw=', 'bGlnaHQgdw', 'bGln!!Qgdw==', 'bGlnaHQgdw==\n', '!!!!', 'bGl'):
+            self.assertRaises(ValueError, base64_decode, invalid.encode(), True)
+        self.ae(base64_decode(b'', True), b'')
 
     def test_simple_parsing(self):
         s = self.create_screen()
@@ -187,7 +195,7 @@ class TestParser(BaseTest):
 
     def test_utf8_simd_decode(self):
         def unsupported(which):
-            return (which == 2 and not has_sse4_2) or (which == 3 and not has_avx2)
+            return (which == 2 and not has_sse4_2) or (which == 3 and not has_avx2) or (which == 4 and not has_avx512)
 
         def reset_state():
             test_utf8_decode_to_sentinel(b'', -1)
@@ -221,13 +229,14 @@ class TestParser(BaseTest):
             return actual
 
         def double_test(x):
-            for which in (2, 3):
+            for which in (2, 3, 4):
                 t(x, which=which)
-            t(x*2, which=3)
+            t(x * 2, which=3)
+            t(x * 4, which=4)
             reset_state()
 
         # incomplete trailer at end of vector
-        t("a"*10 + "😸😸" + "b"*15)
+        t('a' * 10 + '😸😸' + 'b' * 15)
 
         x = double_test
         x('2:α3')
@@ -237,7 +246,7 @@ class TestParser(BaseTest):
         x('abc\x1bd1234efgh5678')
         x('abcd1234efgh5678ijklABCDmnopEFGH')
 
-        for which in (2, 3):
+        for which in (2, 3, 4):
             x = partial(t, which=which)
             x('abcdef', 'ghijk')
             x('2:α3', ':≤4:😸|')
@@ -259,7 +268,7 @@ class TestParser(BaseTest):
             expected = 'filler' + expected
             self.ae(expected, actual, f'Failed for: {src!r} with {which=}')
 
-        for which in (1, 2, 3):
+        for which in (1, 2, 3, 4):
             pb = partial(test_expected, which=which)
             pb('ニチ', 'ニチ')
             pb('\x84\x85', '\x84\x85')
@@ -267,7 +276,7 @@ class TestParser(BaseTest):
             pb('\uf4df', '\uf4df')
             pb('\uffff', '\uffff')
             pb('\0', '\0')
-            pb(chr(0x10ffff), chr(0x10ffff))
+            pb(chr(0x10FFFF), chr(0x10FFFF))
             # Kitty's UTF-8 decoding uses `U+FFFD substitution of maximal subparts
             # <https://www.unicode.org/versions/Unicode16.0.0/core-spec/chapter-3/#G66453>`_,
             # same as in the WHATWG Encoding Standard.
@@ -636,6 +645,104 @@ class TestParser(BaseTest):
             # Boundary case: too large codepoint (> U+10FFFF)
             pb(b'"\xf5\x80\x80\x80"', '"\ufffd\ufffd\ufffd\ufffd"')
 
+        # The tests below compare SIMD implementations against the scalar one via t().
+        # SIMD chunks are 16 (SSE), 32 (AVX2) or 64 (AVX-512) bytes and implementations
+        # may compact bytes within 16-byte lanes, so slide multi-byte sequences across
+        # every lane and chunk boundary.
+        simd_impls = 2, 3, 4
+        multibyte = '\xb5'.encode(), 'α'.encode(), '≤'.encode(), '\U0001f638'.encode()
+        for which in simd_impls:
+            for mb in multibyte:
+                for filler_len in range(70):
+                    t(b'a' * filler_len + mb + b'b' * 40, which=which)
+                    t(b'a' * filler_len + mb * 3 + b'b' * 40, which=which)
+
+        # ESC at and around lane/chunk boundaries, adjacent to multi-byte sequences
+        # and cutting off incomplete sequences
+        for which in simd_impls:
+            for esc_pos in (0, 1, 14, 15, 16, 17, 30, 31, 32, 33, 47, 48, 63, 64, 65):
+                buf = bytearray(b'x' * 80)
+                buf[esc_pos] = 0x1B
+                t(bytes(buf), which=which)
+                t(b'y' * esc_pos + '≤'.encode() + b'\x1b' + '\u03c6'.encode(), which=which)
+                t(b'y' * esc_pos + b'\xe2\x89\x1b' + b'z' * 8, which=which)
+                t(b'y' * esc_pos + b'\xf0\x9f\x98\x1b', which=which)
+
+        # Invalid/incomplete sequences sliding across lane/chunk boundaries, both
+        # followed by more data and truncated at the end of input
+        bad_seqs = (
+            b'\x80',
+            b'\xbf\xbf',
+            b'\xc0\x80',
+            b'\xc1\xbf',
+            b'\xe0\x80\x80',
+            b'\xe0\x9f\x80',
+            b'\xed\xa0\x80',
+            b'\xf0\x8f\x80\x80',
+            b'\xf4\x90\x80\x80',
+            b'\xf5\x81\x82\x83',
+            b'\xfe',
+            b'\xff',
+            b'\xc2',
+            b'\xe2\x89',
+            b'\xf0\x9f\x98',
+        )
+        for which in simd_impls:
+            for bad in bad_seqs:
+                for pos in (0, 13, 14, 15, 16, 17, 29, 30, 31, 32, 33, 62, 63, 64):
+                    t(b'k' * pos + bad + b'm' * 9, which=which)
+                    t(b'k' * pos + bad, which=which)
+
+        # Overlapping sequences at the end of a chunk. These make counts[last] > 1,
+        # triggering the incomplete-trailing-sequence check, without there being an
+        # actual incomplete trailing sequence.
+        for which in simd_impls:
+            for sz in (16, 32, 64, 128):
+                for pattern in (b'\xc0\xefh\x7f', b'\xc2\xefh\x7f', b'\xc0\xefhq', b'\xe0\xa0\xc2\xe2\x89'[:4]):
+                    t(b'k' * (sz - 4) + pattern, which=which)
+                    t(b'k' * (sz - 4) + pattern + b'more data', which=which)
+
+        # Dense/alternating sequence widths (maximum compaction churn) and exact
+        # chunk-multiple sizes
+        for which in simd_impls:
+            t(b'\x80' * 32, which=which)
+            t(b'\xbf' * 64, which=which)
+            t(('α' * 32).encode(), which=which)
+            t(('aα' * 24).encode(), which=which)
+            t(('≤' * 22).encode(), which=which)
+            t(('\U0001f638' * 17).encode(), which=which)
+            t(('a\U0001f638' * 13).encode(), which=which)
+            t(('α≤\U0001f638' * 11).encode(), which=which)
+            t(b'a' * 32, which=which)
+            t(b'a' * 33, which=which)
+            t(b'a' * 64, which=which)
+            t(b'a' * 65, which=which)
+            t(b'a' * 128, which=which)
+            t(b'a' * 129, which=which)
+            t(('α' * 16).encode() + b'\x1b[m', which=which)
+            t(('α' * 32).encode() + b'\x1b[m', which=which)
+
+        # Seeded random fuzzing against the scalar implementation, including
+        # split inputs to exercise cross-call state carry-over
+        rng = random.Random(0x1BADF00D)
+        interesting = 0x1B, 0x00, 0x7F, 0x80, 0xBF, 0xC0, 0xC1, 0xC2, 0xDF, 0xE0, 0xED, 0xEE, 0xEF, 0xF0, 0xF4, 0xF5, 0xFF
+        valid_chars = 'a', '\xb5', 'α', '≤', '\U0001f638', '\u07ff', '\u0800', '\ud7ff', '\ue000', '\uffff', '\U00010000', '\U0010ffff'
+        for which in simd_impls:
+            for _ in range(300):
+                parts = []
+                for _ in range(rng.randint(1, 80)):
+                    r = rng.random()
+                    if r < 0.5:
+                        parts.append(rng.choice(valid_chars).encode())
+                    elif r < 0.8:
+                        parts.append(bytes((rng.choice(interesting),)))
+                    else:
+                        parts.append(bytes((rng.randint(0, 255),)))
+                data = b''.join(parts)
+                t(data, which=which)
+                if len(data) > 2:
+                    cut = rng.randint(1, len(data) - 1)
+                    t(data[:cut], data[cut:], which=which)
 
     def test_find_either_of_two_bytes(self):
         sizes = []
@@ -643,6 +750,8 @@ class TestParser(BaseTest):
             sizes.append(2)
         if has_avx2:
             sizes.append(3)
+        if has_avx512:
+            sizes.append(4)
         sizes.append(0)
 
         def test(buf, a, b, align_offset=0):
@@ -653,7 +762,7 @@ class TestParser(BaseTest):
                 self.ae(expected, actual, f'Failed for: {buf!r} {a=} {b=} at {sz=} and {align_offset=}')
 
         q = 'abc'
-        for off in range(32):
+        for off in range(64):
             test(q, '<', '>', off)
             test(q, ' ', 'b', off)
             test(q, '<', 'a', off)
@@ -661,18 +770,108 @@ class TestParser(BaseTest):
             test(q, 'c', '>', off)
 
         def tests(buf, a, b):
-            for sz in (0, 16, 32, 64, 79):
+            for sz in (0, 16, 32, 64, 79, 128, 133):
                 buf = (' ' * sz) + buf
-                for align_offset in range(32):
+                for align_offset in range(64):
                     test(buf, a, b, align_offset)
-        tests("", '<', '>')
-        tests("a", '\0', '\0')
-        tests("a", '<', '>')
-        tests("dsdfsfa", '1', 'a')
-        tests("xa", 'a', 'a')
-        tests("bbb", 'a', '1')
-        tests("bba", 'a', '<')
-        tests("baa", '>', 'a')
+
+        tests('', '<', '>')
+        tests('a', '\0', '\0')
+        tests('a', '<', '>')
+        tests('dsdfsfa', '1', 'a')
+        tests('xa', 'a', 'a')
+        tests('bbb', 'a', '1')
+        tests('bba', 'a', '<')
+        tests('baa', '>', 'a')
+
+    def test_printable_ascii_run_length(self):
+        impls = [1]
+        if has_sse4_2:
+            impls.append(2)
+        if has_avx2:
+            impls.append(3)
+        if has_avx512:
+            impls.append(4)
+        impls.append(0)
+
+        def test(text):
+            expected = 0
+            while expected < len(text) and ' ' <= text[expected] <= '~':
+                expected += 1
+            for impl in impls:
+                actual = test_printable_ascii_run_length(text, impl)
+                self.ae(expected, actual, f'Failed for: {text!r} at {impl=}')
+
+        for prefix_len in (0, 1, 3, 4, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 100):
+            prefix = 'a' * prefix_len
+            test(prefix)
+            for bad in ('\x1b', '\n', '\x00', '\x7f', '\x1f', 'ü', '中', '😀', '\U0010ffff'):
+                test(prefix + bad)
+                test(prefix + bad + 'xyz')
+                test(prefix + bad * 3 + prefix)
+
+    def test_xor_data64(self):
+        # varying bytes in the key and data so that alignment/key rotation bugs are caught
+        base_data = bytes(range(64))
+        key = bytes(range(101, 165))
+        sizes = []
+        if has_sse4_2:
+            sizes.append(2)
+        if has_avx2:
+            sizes.append(3)
+        if has_avx512:
+            sizes.append(4)
+        sizes.append(0)
+
+        def t(key, data, align_offset=0):
+            expected = test_xor64(key, data, 1, 0)
+            for which_function in sizes:
+                actual = test_xor64(key, data, which_function, align_offset)
+                self.ae(expected, actual, f'{align_offset=} {len(data)=}')
+
+        t(key, b'')
+
+        for base in (b'abc', base_data, base_data * 2):
+            for extra in range(len(base_data)):
+                for align_offset in range(64):
+                    data = base + base_data[:extra]
+                    t(key, data, align_offset)
+
+    def test_blend_pixels(self):
+        rng = random.Random(0x1B7F5)
+        impls = []
+        if has_sse4_2:
+            impls.append(2)
+        if has_avx2:
+            impls.append(3)
+        if has_avx512:
+            impls.append(4)
+        impls.append(0)
+
+        def t(kind, dst, src, color=0xFFFFFF, align_offsets=(0, 1, 2, 3, 7, 13)):
+            expected = test_blend_pixels(kind, dst, src, 1, color, 0)
+            for which_function in impls:
+                for align_offset in align_offsets:
+                    actual = test_blend_pixels(kind, dst, src, which_function, color, align_offset)
+                    self.ae(expected, actual, f'{kind=} {which_function=} {align_offset=} num_pixels={len(src) // 4}')
+
+        for num_pixels in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, 257):
+            src = bytearray(rng.getrandbits(8) for _ in range(4 * num_pixels))
+            # ensure fully transparent and fully opaque source pixels are well represented
+            for i in range(num_pixels):
+                if i % 5 == 0:
+                    src[4 * i + 3] = 0
+                elif i % 5 == 1:
+                    src[4 * i + 3] = 255
+            src = bytes(src)
+            dst4 = bytes(rng.getrandbits(8) for _ in range(4 * num_pixels))
+            dst3 = bytes(rng.getrandbits(8) for _ in range(3 * num_pixels))
+            mask = bytes(rng.getrandbits(8) for _ in range(num_pixels))
+            t('straight', dst4, src)
+            t('opaque', dst4, src)
+            t('opaque3', dst3, src)
+            # keep the destination pixels 4-byte aligned for the mask variant
+            t('mask', dst4, mask, color=0x123456, align_offsets=(0, 4, 12, 36))
 
     def test_esc_codes(self):
         s = self.create_screen()
@@ -681,7 +880,7 @@ class TestParser(BaseTest):
         self.ae(str(s.line(0)), '12')
         self.ae(str(s.line(1)), '  a')
         pb('\033xa', ('Unknown char after ESC: 0x%x' % ord('x'),), 'a')
-        pb('\033c123', ('screen_reset', ), '123')
+        pb('\033c123', ('screen_reset',), '123')
         self.ae(str(s.line(0)), '123')
         pb('\033.\033a', ('Unhandled charset related escape code: 0x2e 0x1b',), 'a')
 
@@ -741,8 +940,12 @@ class TestParser(BaseTest):
         pb('\033[58;2;1;2;3m', ('select_graphic_rendition', '58:2:1:2:3'))
         pb('\033[38;2;1;2;3m', ('select_graphic_rendition', '38:2:1:2:3'))
         pb('\033[1001:2:1:2:3m', ('select_graphic_rendition', '1001:2:1:2:3'))
-        pb('\033[38:2:1:2:3;48:5:9;58;5;7m', (
-            'select_graphic_rendition', '38:2:1:2:3'), ('select_graphic_rendition', '48:5:9'), ('select_graphic_rendition', '58:5:7'))
+        pb(
+            '\033[38:2:1:2:3;48:5:9;58;5;7m',
+            ('select_graphic_rendition', '38:2:1:2:3'),
+            ('select_graphic_rendition', '48:5:9'),
+            ('select_graphic_rendition', '58:5:7'),
+        )
         s.reset()
         pb('\033[1;2;3;4:5;7;9;34;44m', *sgr('1;2;3', '4:5', '7;9;34;44'))
         for attr in 'bold italic reverse strikethrough dim'.split():
@@ -799,6 +1002,33 @@ class TestParser(BaseTest):
         pb('\033[?2026$p', ('report_mode_status', 2026, 1))
         self.ae(c.wtcbuf, b'\x1b[?2026;2$y')
 
+        c.clear()
+        pb('\033[?998n', ('report_device_status', 998, 1))
+        self.ae(c.wtcbuf, b'\x1b[?999;1n')
+        c.clear()
+        pb('\033[?2033h', ('screen_set_mode', 2033, 1))
+        self.ae(c.wtcbuf, b'\x1b[?999;1n')
+        c.clear()
+        pb('\033[?2033$p', ('report_mode_status', 2033, 1))
+        self.ae(c.wtcbuf, b'\x1b[?2033;1$y')
+        pb('\033[?2033l', ('screen_reset_mode', 2033, 1))
+
+    def test_malformed_csi_subparam_does_not_corrupt_sgr(self):
+        # Regression for #10434: \e[?:m sets is_sub_param[0]=true in the CSI
+        # state. reset_csi must clear that flag so the next SGR isn't rejected.
+        s = self.create_screen()
+        parse_bytes(s, b'\033[?:m\033[31m')
+        self.ae(s.cursor.fg, 1 << 8 | 1)  # red (ANSI color 1)
+
+    def test_csi_separator_after_max_params(self):
+        # A ':' or ';' immediately after the last allowed CSI parameter must
+        # not write past the end of is_sub_param
+        s = self.create_screen()
+        pb = partial(self.parse_bytes_dump, s)
+        too_many = ('CSI escape code has too many parameters, ignoring it',)
+        pb('\033[' + '1;' * 255 + '1:2m\033[31m', too_many, ('select_graphic_rendition', '31'))
+        pb('\033[' + '1;' * 256 + 'm\033[31m', ('select_graphic_rendition', ';'.join('1' * 256)), ('select_graphic_rendition', '31'))
+
     def test_csi_code_rep(self):
         s = self.create_screen(8)
         pb = partial(self.parse_bytes_dump, s)
@@ -850,6 +1080,7 @@ class TestParser(BaseTest):
         pb('\033]8;moo\x07', ('Ignoring malformed OSC 8 code',))
         pb('\033]8;id=xyz;\x07', ('set_active_hyperlink', 'xyz', None))
         pb('\033]8;moo:x=z:id=xyz:id=abc;http://yay;.com\x07', ('set_active_hyperlink', 'xyz', 'http://yay;.com'))
+        pb(b'\033]8;id=a\xffb;http://x/\xffa\xe4\xb8b\xe4\xb8\x07', ('set_active_hyperlink', 'a\ufffdb', 'http://x/\ufffda\ufffdb\ufffd'))
         c.clear()
         payload = '1' * 1024
         pb(f'\033]52;p;{payload}\x07', ('clipboard_control', 52, f'p;{payload}'))
@@ -857,6 +1088,10 @@ class TestParser(BaseTest):
         pb('\033]52;p;xyz\x07', ('clipboard_control', 52, 'p;xyz'))
         c.clear()
         pb('\033]22;?__current__\x07', ('set_dynamic_color', 22, '?__current__'))
+        c.clear()
+        pb('\033]7501;?\033\\', ('program_status_report', '?'))
+        pb('\033]7501;state=working:progress=40\x07', ('program_status_report', 'state=working:progress=40'))
+        self.ae(c.program_status_reports, ['?', 'state=working:progress=40'])
 
     def test_dcs_codes(self):
         s = self.create_screen()
@@ -881,6 +1116,12 @@ class TestParser(BaseTest):
         c.clear()
         pb('\033P$qr\033\\', ('screen_request_capabilities', ord('$'), 'r'))
         self.ae(c.wtcbuf, f'\033P1$r{s.margin_top + 1};{s.margin_bottom + 1}r\033\\'.encode('ascii'))
+        c.clear()
+        # Invalid DECRQSS queries must not be echoed back (CVE-2008-2383)
+        malicious_query = 'm\033[6n'
+        pb(f'\033P$q{malicious_query}\033\\', ('screen_request_capabilities', ord('$'), malicious_query))
+        self.ae(c.wtcbuf, b'\033P0$r\033\\')
+        self.assertNotIn(malicious_query.encode('ascii'), c.wtcbuf)
         pb('\033P@kitty-cmd{abc\033\\', ('handle_remote_cmd', '{abc'))
         p = base64_encode('abcd').decode()
         pb(f'\033P@kitty-print|{p}\033\\', ('handle_remote_print', p))
@@ -897,7 +1138,6 @@ class TestParser(BaseTest):
         c.clear()
         pb('\033[?2026$p', ('report_mode_status', 2026, 1))
         self.ae(c.wtcbuf, b'\x1b[?2026;2$y')
-
 
     def test_oth_codes(self):
         s = self.create_screen()
@@ -916,11 +1156,12 @@ class TestParser(BaseTest):
             for p, v in tuple(k.items()):
                 if isinstance(v, str) and p != 'payload':
                     k[p] = v.encode('ascii')
-            for f in 'action delete_action transmission_type compressed'.split():
+            for f in 'action delete_action transmission_type compressed report_supported'.split():
                 k.setdefault(f, b'\0')
-            for f in ('format more id data_sz data_offset width height x_offset y_offset data_height data_width cursor_movement'
-                      ' num_cells num_lines cell_x_offset cell_y_offset z_index placement_id image_number quiet unicode_placement'
-                      ' parent_id parent_placement_id usage_hints offset_from_parent_x offset_from_parent_y'
+            for f in (
+                'format more id data_sz data_offset width height x_offset y_offset data_height data_width cursor_movement'
+                ' num_cells num_lines cell_x_offset cell_y_offset z_index placement_id image_number quiet unicode_placement'
+                ' parent_id parent_placement_id usage_hints offset_from_parent_x offset_from_parent_y'
             ).split():
                 k.setdefault(f, 0)
             p = k.pop('payload', '')
@@ -944,6 +1185,7 @@ class TestParser(BaseTest):
         t('a=t,t=d,s=100,z=9', payload='payload', action='t', transmission_type='d', data_width=100, z_index=9)
         t('a=t,t=d,s=100,z=9,q=2', action='t', transmission_type='d', data_width=100, z_index=9, quiet=2)
         t('N=1', usage_hints=1)
+        t('a=q,e=f', action='q', report_supported='f')
         e(',s=1', 'Malformed GraphicsCommand control block, invalid key character: 0x2c')
         e('W=1', 'Malformed GraphicsCommand control block, invalid key character: 0x57')
         e('1=1', 'Malformed GraphicsCommand control block, invalid key character: 0x31')
@@ -957,8 +1199,13 @@ class TestParser(BaseTest):
         s = self.create_screen()
         pb = partial(self.parse_bytes_dump, s)
         pb('\033[$r', ('deccara', '0;0;0;0;0'))
-        pb('\033[;;;;4:3;38:5:10;48:2:1:2:3;1$r',
-           ('deccara', '0;0;0;0;4:3'), ('deccara', '0;0;0;0;38:5:10'), ('deccara', '0;0;0;0;48:2:1:2:3'), ('deccara', '0;0;0;0;1'))
+        pb(
+            '\033[;;;;4:3;38:5:10;48:2:1:2:3;1$r',
+            ('deccara', '0;0;0;0;4:3'),
+            ('deccara', '0;0;0;0;38:5:10'),
+            ('deccara', '0;0;0;0;48:2:1:2:3'),
+            ('deccara', '0;0;0;0;1'),
+        )
         for y in range(s.lines):
             line = s.line(y)
             for x in range(s.columns):
@@ -986,3 +1233,16 @@ class TestParser(BaseTest):
             line = s.line(y)
             for x in range(s.columns):
                 self.ae(line.cursor_from(x).fg, (10 << 8 | 1) if x < 1 or x > 2 else (4 << 8) | 1)
+        # out of range or inverted single line regions must not touch anything
+        before = [[s.line(y).cursor_from(x).bold for x in range(s.columns)] for y in range(s.lines)]
+        for seq in ('\033[100;1;100;5;22$r', '\033[99999999;1;99999999;5;22$r', '\033[10;20;10;2;22$r', '\033[3;4;3;2;22$r'):
+            parse_bytes(s, seq.encode())
+            after = [[s.line(y).cursor_from(x).bold for x in range(s.columns)] for y in range(s.lines)]
+            self.ae(before, after, seq)
+
+    def test_cht_large_count(self):
+        s = self.create_screen(cols=80)
+        parse_bytes(s, b'\033[3I')
+        self.ae(s.cursor.x, 24)
+        parse_bytes(s, b'\033[2147483647I')
+        self.ae(s.cursor.x, s.columns - 1)

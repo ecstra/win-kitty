@@ -5,16 +5,15 @@
 import os
 import subprocess
 
-from kitty.constants import kitten_exe
+from kitty.constants import is_macos, kitten_exe
 from kitty.fast_data_types import shm_unlink
 from kitty.shm import SharedMemory
 
-from . import BaseTest, skip_on_windows
+from .base import BaseTest, skip_on_windows
 
 
 @skip_on_windows('POSIX shared memory, which Windows has no equivalent of')
 class SHMTest(BaseTest):
-
     def test_shm_with_kitten(self):
         data = os.urandom(333)
         with SharedMemory(size=363) as shm:
@@ -29,3 +28,16 @@ class SHMTest(BaseTest):
         with SharedMemory(name=name, unlink_on_exit=True) as shm:
             q = shm.read_data_with_size()
             self.assertEqual(data, q)
+
+    def test_shm_ownership_verification(self):
+        if is_macos:
+            self.skipTest('macOS does not support fchmod() for shm files')
+        with SharedMemory(size=64, unlink_on_exit=True) as shm:
+            shm.verify_owner_and_mode()
+            for mode in (0o644, 0o400, 0o660):
+                os.fchmod(shm.fileno(), mode)
+                with SharedMemory(name=shm.name, readonly=True) as shm2:
+                    self.assertRaises(ValueError, shm2.verify_owner_and_mode)
+            os.fchmod(shm.fileno(), 0o600)
+            with SharedMemory(name=shm.name, readonly=True) as shm2:
+                shm2.verify_owner_and_mode()

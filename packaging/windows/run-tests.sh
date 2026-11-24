@@ -19,13 +19,15 @@ PY="${PY:-python}"
 # under a minute, so anything approaching this is wrong rather than slow.
 TIMEOUT="${TIMEOUT:-900}"
 
-if timeout "$TIMEOUT" "$PY" test.py; then
+timeout "$TIMEOUT" "$PY" test.py
+# Read the status straight after the run. Read after an if block instead, it
+# is the if's own status, which is 0 when no branch ran, so failures passed.
+rc=$?
+if [ "$rc" -eq 0 ]; then
     echo
     echo "Test suite passed"
     exit 0
 fi
-
-rc=$?
 echo
 if [ "$rc" -eq 124 ]; then
     echo "TIMED OUT after ${TIMEOUT}s"

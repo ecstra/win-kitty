@@ -9,8 +9,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kovidgoyal/kitty/tools/tty"
 	"golang.org/x/sys/unix"
 )
+
+type terminal_attributes = unix.Termios
+
+func get_terminal_attributes(term *tty.Term, t *terminal_attributes) error {
+	return term.Tcgetattr(t)
+}
+
+func set_terminal_attributes(term *tty.Term, t *terminal_attributes) error {
+	return term.Tcsetattr(tty.TCSANOW, t)
+}
 
 func check_shm_owner(s fs.FileInfo) error {
 	if stat, ok := s.Sys().(syscall.Stat_t); ok {

@@ -188,22 +188,36 @@ socketpair(int domain, int type, int protocol, int sv[2]) {
 }
 
 /* ---- positioned / partial I/O -------------------------------------------- */
-ssize_t
-pread(int fd, void *buf, size_t count, off_t offset) {
-    __int64 cur = _lseeki64(fd, 0, SEEK_CUR);
-    if (_lseeki64(fd, offset, SEEK_SET) < 0) return -1;
-    int n = _read(fd, buf, (unsigned)count);
-    _lseeki64(fd, cur, SEEK_SET);
-    return n;
+/* POSIX pread()/pwrite(): binary, at an offset, leaving the file position as it
+ * was. _read()/_write() apply the CRT's text mode to fds opened without
+ * O_BINARY, which ends a read at the first 0x1a byte and turns LF into CRLF on
+ * a write, so the OS handle is used directly. */
+static ssize_t
+positioned_io(int fd, void *buf, size_t count, off_t offset, int writing) {
+    if (offset < 0) { errno = EINVAL; return -1; }
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) { errno = EBADF; return -1; }
+    LARGE_INTEGER zero = {0}, cur;
+    if (!SetFilePointerEx(h, zero, &cur, FILE_CURRENT)) { errno = ESPIPE; return -1; }
+    const unsigned long long off = (unsigned long long)offset;
+    OVERLAPPED ov = {0};
+    ov.Offset = (DWORD)(off & 0xffffffffu);
+    ov.OffsetHigh = (DWORD)(off >> 32);
+    DWORD n = 0, want = count > MAXDWORD ? MAXDWORD : (DWORD)count;
+    BOOL ok = writing ? WriteFile(h, buf, want, &n, &ov) : ReadFile(h, buf, want, &n, &ov);
+    DWORD err = ok ? 0 : GetLastError();
+    SetFilePointerEx(h, cur, NULL, FILE_BEGIN);
+    if (!ok) {
+        if (!writing && err == ERROR_HANDLE_EOF) return 0;
+        errno = err == ERROR_ACCESS_DENIED ? EACCES : EIO;
+        return -1;
+    }
+    return (ssize_t)n;
 }
 ssize_t
-pwrite(int fd, const void *buf, size_t count, off_t offset) {
-    __int64 cur = _lseeki64(fd, 0, SEEK_CUR);
-    if (_lseeki64(fd, offset, SEEK_SET) < 0) return -1;
-    int n = _write(fd, buf, (unsigned)count);
-    _lseeki64(fd, cur, SEEK_SET);
-    return n;
-}
+pread(int fd, void *buf, size_t count, off_t offset) { return positioned_io(fd, buf, count, offset, 0); }
+ssize_t
+pwrite(int fd, const void *buf, size_t count, off_t offset) { return positioned_io(fd, (void *)buf, count, offset, 1); }
 
 /* ---- memory --------------------------------------------------------------- */
 char *

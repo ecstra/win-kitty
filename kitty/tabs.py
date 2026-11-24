@@ -12,18 +12,22 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import suppress
 from functools import wraps
 from gettext import gettext as _
-from typing import Any, Concatenate, Deque, Literal, NamedTuple, Optional, ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Concatenate, Deque, Literal, NamedTuple, Optional, ParamSpec, TypeVar, cast
 
 from .borders import Border, Borders
-from .child import Child
+from .child import Child, process_data_cache
 from .cli_stub import CLIOptions, SaveAsSessionOptions
-from .constants import appname
+from .constants import appname, is_wayland
 from .fast_data_types import (
     GLFW_MOUSE_BUTTON_LEFT,
     GLFW_MOUSE_BUTTON_MIDDLE,
     GLFW_PRESS,
     GLFW_RELEASE,
+    WINDOW_FULLSCREEN,
+    WINDOW_MAXIMIZED,
+    WINDOW_MINIMIZED,
     add_tab,
+    add_timer,
     attach_window,
     buffer_keys_in_window,
     current_focused_os_window_id,
@@ -32,18 +36,20 @@ from .fast_data_types import (
     get_boss,
     get_click_interval,
     get_options,
+    get_os_window_geometry,
     get_tab_being_dragged,
     get_window_being_dragged,
     is_tab_bar_visible,
     last_focused_os_window_id,
     mark_tab_bar_dirty,
     monotonic,
+    move_window_to_tab,
     next_window_id,
     remove_tab,
+    remove_timer,
     remove_window,
     reorder_tabs,
     replace_c0_codes_except_nl_space_tab,
-    request_callback_with_thumbnail,
     ring_bell,
     set_active_tab,
     set_active_window,
@@ -54,15 +60,19 @@ from .fast_data_types import (
     swap_tabs,
     sync_os_window_title,
 )
+from .launch_wrapper import LaunchRequest, user_launch_request
 from .layout.base import DragOverlayMode, Layout
-from .layout.interface import create_layout_object_for, evict_cached_layouts
+from .layout.interface import all_layouts, create_layout_object_for, evict_cached_layouts
 from .progress import ProgressState
-from .tab_bar import TabBar, TabBarData, apply_title_template
-from .types import ac
+from .tab_bar import TabBar, TabBarData, WindowDropTarget, apply_title_template
+from .types import CloseEvent, DockSpec, WindowResizeDragData, ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
-from .utils import cmdline_for_hold, color_as_int, log_error, platform_window_id, resolved_shell, shlex_split, which
+from .utils import cmdline_for_hold, color_as_int, log_error, natsort_key, platform_window_id, resolved_shell, shlex_split, which
 from .window import CwdRequest, Watchers, Window, WindowCreationSpec, WindowDict, global_watchers
-from .window_list import WindowList
+from .window_list import WindowGroup, WindowList
+
+if TYPE_CHECKING:
+    from .fast_data_types import OSWindowGeometry
 
 P = ParamSpec('P')
 T = TypeVar('T')
@@ -79,6 +89,7 @@ def update_tab_bar_visibility(func: Callable[Concatenate['TabManager', P], T]) -
                 if not self.tab_bar_hidden:
                     self.layout_tab_bar()
                     self.resize(only_tabs=True)
+
     return cast(Callable[Concatenate['TabManager', P], T], wrapper)
 
 
@@ -97,14 +108,16 @@ class MouseEvent(NamedTuple):
     def is_click(self, prev: 'MouseEvent') -> bool:
         cur = self
         return (
-            cur.button == prev.button and prev.is_press and not cur.is_press and
-            cur.distance_squared(prev) < 25 and
-            cur.object_id == prev.object_id and cur.at - prev.at <= get_click_interval()
+            cur.button == prev.button
+            and prev.is_press
+            and not cur.is_press
+            and cur.distance_squared(prev) < 25
+            and cur.object_id == prev.object_id
+            and cur.at - prev.at <= get_click_interval()
         )
 
 
 class MouseEvents(deque[MouseEvent]):
-
     def add(self, button: int, modifiers: int, action: int, x: float, y: float, object_id: int) -> None:
         super().append(MouseEvent(button, modifiers, action != GLFW_RELEASE, monotonic(), x, y, object_id))
         if len(self) > 5:
@@ -112,8 +125,12 @@ class MouseEvents(deque[MouseEvent]):
 
     def click_count(self, button: int = GLFW_MOUSE_BUTTON_LEFT) -> Literal[0, 1, 2]:
         if len(self) > 1 and self[-1].button == button and self[-1].is_click(self[-2]):
-            if len(self) > 3 and self[-3].is_click(self[-4]) and \
-                    self[-1].at - self[-4].at <= 2 * get_click_interval() and self[-2].distance_squared(self[-3]) < 2:
+            if (
+                len(self) > 3
+                and self[-3].is_click(self[-4])
+                and self[-1].at - self[-4].at <= 2 * get_click_interval()
+                and self[-2].distance_squared(self[-3]) < 2
+            ):
                 return 2
             return 1
         return 0
@@ -149,6 +166,8 @@ class SpecialWindowInstance(NamedTuple):
     watchers: Watchers | None
     overlay_behind: bool
     hold: bool
+    # Set for windows launched at the user's request, see launch_wrapper.py
+    launch_request: LaunchRequest | None = None
 
 
 def SpecialWindow(
@@ -162,8 +181,32 @@ def SpecialWindow(
     watchers: Watchers | None = None,
     overlay_behind: bool = False,
     hold: bool = False,
+    launch_request: LaunchRequest | None = None,
 ) -> SpecialWindowInstance:
-    return SpecialWindowInstance(cmd, stdin, override_title, cwd_from, cwd, overlay_for, env, watchers, overlay_behind, hold)
+    return SpecialWindowInstance(cmd, stdin, override_title, cwd_from, cwd, overlay_for, env, watchers, overlay_behind, hold, launch_request)
+
+
+def os_window_geometry_as_session(g: 'OSWindowGeometry', include_position: bool = True) -> list[str]:
+    ans = [f'os_window_size {g["width"]} {g["height"]}']
+    if include_position:
+        ans.append(f'os_window_position {g["x"]}x{g["y"]}')
+    state = {WINDOW_FULLSCREEN: 'fullscreen', WINDOW_MAXIMIZED: 'maximized', WINDOW_MINIMIZED: 'minimized'}.get(g['state'], 'normal')
+    ans.append(f'os_window_state {state}')
+    return ans
+
+
+def index_of_tab_to_focus_in_session(active_tab_idx: int, last_focused_at: Sequence[float]) -> int:
+    """
+    The focus_tab index for a saved session, which counts only the tabs the session
+    creates. active_tab_idx is the index of the active tab among the saved tabs, or
+    -1 if it was not saved, in which case the saved tab with the most recently
+    focused saved window is used. With --match=session:NAME that is the tab
+    goto_session switches to while the session is open. last_focused_at has one
+    entry per saved tab.
+    """
+    if 0 <= active_tab_idx < len(last_focused_at):
+        return active_tab_idx
+    return max(range(len(last_focused_at)), key=last_focused_at.__getitem__, default=0)
 
 
 def add_active_id_to_history(items: Deque[int], item_id: int, maxlen: int = 64) -> None:
@@ -174,8 +217,39 @@ def add_active_id_to_history(items: Deque[int], item_id: int, maxlen: int = 64) 
         items.popleft()
 
 
-class Tab:  # {{{
+def tab_title_sort_key(title: str) -> tuple[tuple[tuple[int, str], ...], str]:
+    # natural, case insensitive ordering, so that tab 10 comes after tab 9, ties broken by the exact title
+    return natsort_key(title, case_sensitive=False), title
 
+
+def index_for_new_tab(existing_titles: Sequence[str], active_idx: int, location: str, title: str = '') -> int:
+    """Return the position, among the existing tabs, at which to insert a new tab.
+    A return value of len(existing_titles) means the new tab is appended."""
+    n = len(existing_titles)
+    match location:
+        case 'first':
+            return 0
+        case 'before':
+            return min(active_idx, n)
+        case 'after' | 'neighbor':
+            return min(active_idx + 1, n)
+        case 'by-title':
+            if title:
+                key = tab_title_sort_key(title)
+                for i, q in enumerate(existing_titles):
+                    if tab_title_sort_key(q) > key:
+                        return i
+    return n
+
+
+class DetachedGroup(NamedTuple):
+    "The windows of a group removed from a tab, along with its docks"
+
+    windows: tuple[Window, ...]
+    docks: tuple[tuple[DockSpec, tuple[Window, ...]], ...] = ()
+
+
+class Tab:  # {{{
     active_fg: int | None = None
     active_bg: int | None = None
     inactive_fg: int | None = None
@@ -208,9 +282,12 @@ class Tab:  # {{{
         self.name = getattr(session_tab, 'name', '')
         self.enabled_layouts = [x.lower() for x in getattr(session_tab, 'enabled_layouts', None) or get_options().enabled_layouts]
         self.borders = Borders(self.os_window_id, self.id)
-        self.windows: WindowList = WindowList(self)
+        self.windows: WindowList = WindowList(self, tab_manager.os_window_docks)
         self._last_used_layout: str | None = None
         self._current_layout_name: str | None = None
+        # Layouts this tab has used, by name. Their state is preserved when
+        # switching away, so it can be saved to a session as well.
+        self._used_layouts: dict[str, Layout] = {}
         self.cwd = self.args.directory
         if no_initial_window:
             self._set_current_layout(self.enabled_layouts[0])
@@ -218,7 +295,7 @@ class Tab:  # {{{
             sl = self.enabled_layouts[0]
             self._set_current_layout(sl)
             if special_window is None:
-                self.new_window(cwd_from=cwd_from)
+                self.new_window(cwd_from=cwd_from, launch_request=user_launch_request('tab', cwd_from))
             else:
                 self.new_special_window(special_window)
         else:
@@ -233,7 +310,7 @@ class Tab:  # {{{
         self.total_progress = 0
         self.last_focused_window_with_progress_id = 0
         self.has_indeterminate_progress = False
-        focused_at = 0.
+        focused_at = 0.0
         for window in self:
             p = window.progress
             if p.state is ProgressState.unset:
@@ -252,12 +329,15 @@ class Tab:  # {{{
             tm.update_progress()
 
     def has_single_window_visible(self) -> bool:
-        if self.current_layout.only_active_window_visible:
-            return True
-        for i, g in enumerate(self.windows.iter_all_layoutable_groups(only_visible=True)):
-            if i > 0:
-                return False
-        return True
+        if not self.current_layout.only_active_window_visible:
+            for i, g in enumerate(self.windows.iter_all_layoutable_groups(only_visible=True)):
+                if i > 0:
+                    return False
+        # Docks are shown alongside the windows of the layout, so a tab with
+        # docks never shows a single window. This keeps the spacing of the docks,
+        # and hence their size, independent of the number of windows in the tab,
+        # and the same in every tab for the OS window docks.
+        return not self.windows.has_docks
 
     def set_enabled_layouts(self, val: Iterable[str]) -> None:
         self.enabled_layouts = [x.lower() for x in val] or ['tall']
@@ -271,8 +351,22 @@ class Tab:  # {{{
             window.apply_options(is_active and aw is window)
         self.set_enabled_layouts(get_options().enabled_layouts)
 
+    def os_window_docks_changed(self) -> None:
+        "Re-layout the other tabs in the OS window, as the space they reserve for the OS window docks has changed"
+        if (tm := self.tab_manager_ref()) is not None:
+            for tab in tm:
+                if tab is not self:
+                    tab.relayout()
+
     def take_over_from(self, other_tab: 'Tab') -> None:
-        self.name, self.cwd = other_tab.name, other_tab.cwd
+        # The OS window docks stay in their OS windows, so take them out of both
+        # tabs before the windows of other_tab are moved, see TabManager.sync_os_window_docks()
+        tm, other_tm = self.tab_manager_ref(), other_tab.tab_manager_ref()
+        if other_tm is not None:
+            other_tm.park_os_window_docks(other_tab)
+        if tm is not None:
+            tm.park_os_window_docks(self)
+        self.name, self.cwd, self.created_in_session_name = other_tab.name, other_tab.cwd, other_tab.created_in_session_name
         self.enabled_layouts = list(other_tab.enabled_layouts)
         self._last_used_layout = other_tab._last_used_layout
         if clname := other_tab._current_layout_name:
@@ -284,19 +378,27 @@ class Tab:  # {{{
             self.mark_tab_bar_dirty()
         for window in other_tab.windows:
             detach_window(other_tab.os_window_id, other_tab.id, window.id)
+        # Each WindowList must keep referring to the OS window docks of the OS window its tab is in
+        own_os_window_docks, other_os_window_docks = self.windows.os_window_docks, other_tab.windows.os_window_docks
         self.windows = other_tab.windows
         self.windows.change_tab(self)
-        other_tab.windows = WindowList(other_tab)
+        self.windows.os_window_docks = own_os_window_docks
+        other_tab.windows = WindowList(other_tab, other_os_window_docks)
         for window in self.windows:
             window.change_tab(self)
             attach_window(self.os_window_id, self.id, window.id)
         self.active_window_changed()
         self.relayout()
+        if other_tm is not None:
+            other_tm.sync_os_window_docks()
+        if tm is not None:
+            tm.sync_os_window_docks()
 
     def _set_current_layout(self, layout_name: str) -> None:
         self._last_used_layout = self._current_layout_name
         self.current_layout = self.create_layout_object(layout_name)
         self._current_layout_name = layout_name
+        self._used_layouts[layout_name] = self.current_layout
         self.mark_tab_bar_dirty()
 
     def startup(self, session_tab: SessionTab) -> None:
@@ -322,10 +424,18 @@ class Tab:  # {{{
                     launched_window.created_in_session_name = self.created_in_session_name
             else:
                 from .launch import launch
+
                 spec.opts.add_to_session = self.created_in_session_name
                 launched_window = launch(
-                    boss, spec.opts, spec.args, target_tab=target_tab, force_target_tab=True,
-                    startup_command_via_shell_integration=window.run_command_at_shell_startup)
+                    boss,
+                    spec.opts,
+                    spec.args,
+                    target_tab=target_tab,
+                    force_target_tab=True,
+                    startup_command_via_shell_integration=window.run_command_at_shell_startup,
+                    restored_scrollback=window.restored_scrollback,
+                )
+                window.restored_scrollback = b''  # free the memory, it is no longer needed
                 if launched_window is not None:
                     launched_window.serialized_id = window.serialized_id
             if launched_window is not None:
@@ -341,9 +451,7 @@ class Tab:  # {{{
                 all_windows = list(boss.all_windows)
                 awq = {w.id for w in all_windows}
                 all_windows.extend(w for w in self if w.id not in awq)
-                for w in boss.match_windows(
-                    window.focus_matching_window_spec, launched_window or boss.active_window, all_windows
-                ):
+                for w in boss.match_windows(window.focus_matching_window_spec, launched_window or boss.active_window, all_windows):
                     tab = w.tabref()
                     if tab:
                         did_focus_matching_spec = True
@@ -361,7 +469,24 @@ class Tab:  # {{{
         if active_window_id and not did_focus_matching_spec:
             self.windows.set_active_window_group_for(active_window_id)
         if session_tab.layout_state:
-            self.current_layout.unserialize(session_tab.layout_state, self.windows)
+            self.unserialize_layout_state_from_session(session_tab.layout_state)
+
+    def unserialize_layout_state_from_session(self, layout_state: dict[str, Any]) -> None:
+        self.current_layout.unserialize(layout_state, self.windows)
+        # Restore the state of layouts that were not active when the session was
+        # saved, so that switching to them gives back their saved arrangement
+        # rather than a freshly built one.
+        for name, state in (layout_state.get('other_layouts') or {}).items():
+            if name == self._current_layout_name:
+                continue
+            if name.partition(':')[0] not in all_layouts:
+                continue
+            layout = self.create_layout_object(name)
+            if layout.unserialize(state, self.windows, apply_to_window_list=False):
+                self._used_layouts[name] = layout
+        last_used = layout_state.get('last_used_layout')
+        if last_used and last_used != self._current_layout_name and last_used in self.enabled_layouts:
+            self._last_used_layout = last_used
 
     def serialize_state(self) -> dict[str, Any]:
         return {
@@ -375,33 +500,84 @@ class Tab:  # {{{
             'name': self.name,
         }
 
-    def serialize_state_as_session(self, session_path: str, matched_windows: frozenset[Window] | None, ser_opts: SaveAsSessionOptions) -> list[str]:
-        import shlex
+    def serialize_state_as_session(
+        self,
+        session_path: str,
+        matched_windows: frozenset[Window] | None,
+        ser_opts: SaveAsSessionOptions,
+        saved_windows: list[Window] | None = None,
+        os_window_docks: Sequence[WindowGroup] = (),
+    ) -> list[str]:
+        """
+        If saved_windows is not None, the windows written to the session are
+        appended to it. The os_window_docks are written after the windows of this
+        tab, but only if this tab has some windows to write.
+        """
+        from .session import is_safe_for_session_line, sanitize_for_session_line, session_launch_line
+
         launch_cmds = []
-        active_idx = self.windows.active_group_idx
-        groups = tuple(self.windows.iter_all_layoutable_groups())
+        active_group = self.windows.active_group
+        # Docks are launched immediately after the group they are docked to, so
+        # that it is the active group when they are created. Tab docks come
+        # next, followed by the OS window docks.
+        groups: list[WindowGroup] = []
+        dock_args: dict[int, list[str]] = {}
+        for g in self.windows.groups:
+            groups.append(g)
+            for d in g.docks:
+                if d.dock is not None:
+                    groups.append(d)
+                    dock_args[d.id] = d.dock.as_launch_args('window')
+        for d in self.windows.tab_docks:
+            if d.dock is not None:
+                groups.append(d)
+                dock_args[d.id] = d.dock.as_launch_args('tab')
+        os_window_dock_ids: set[int] = set()
+        for d in os_window_docks:
+            if d.dock is not None:
+                groups.append(d)
+                dock_args[d.id] = d.dock.as_launch_args('os-window')
+                os_window_dock_ids.add(d.id)
         session_base_dir = os.path.dirname(session_path) if session_path else ''
+
         def make_relative(cwd: str) -> str:
             if session_base_dir and ser_opts.relocatable:
                 cwd = os.path.relpath(cwd, session_base_dir)
             return cwd
+
         most_common_cwd = ''
         cwds = {w.id: make_relative(w.cwd_for_serialization) for g in groups for w in g}
-        if cwds:
+        # The OS window docks do not belong to this tab, so they do not influence its cwd
+        # The tab cwd is written as is in a cd line, so only cwds that are safe
+        # for that are eligible. Windows with other cwds get an explicit,
+        # quoted --cwd in their launch command.
+        if tab_cwds := [cwds[w.id] for g in groups if g.id not in os_window_dock_ids for w in g if is_safe_for_session_line(cwds[w.id])]:
             from collections import Counter
-            most_common_cwd, _ = Counter(cwds.values()).most_common(1)[0]
-        for i, g in enumerate(groups):
+
+            most_common_cwd, _ = Counter(tab_cwds).most_common(1)[0]
+        emitted_group_ids: set[int] = set()
+        for g in groups:
+            if (owner := self.windows.dock_owner(g)) is not None and owner.id not in emitted_group_ids:
+                # cannot dock to a group that is not in the session
+                continue
+            if g.id in os_window_dock_ids and not launch_cmds:
+                break
             gw: list[str] = []
             for window in g:
                 if matched_windows is not None and window not in matched_windows:
                     continue
                 cwd = cwds[window.id]
-                lc = window.as_launch_command(ser_opts, '' if cwd == most_common_cwd else cwd, is_overlay=bool(gw))
+                lc = window.as_launch_command(
+                    ser_opts, '' if cwd == most_common_cwd else cwd, is_overlay=bool(gw), extra_launch_args=() if gw else dock_args.get(g.id, ())
+                )
                 if lc:
-                    gw.append(shlex.join(lc))
+                    gw.append(session_launch_line(lc))
+                    if saved_windows is not None:
+                        saved_windows.append(window)
             if gw:
+                emitted_group_ids.add(g.id)
                 launch_cmds.extend(gw)
-                if i == active_idx:
+                if g is active_group:
                     launch_cmds.append('focus')
         if launch_cmds:
             enabled_layouts = list(self.enabled_layouts)
@@ -410,14 +586,29 @@ class Tab:  # {{{
                 enabled_layouts.append(layout)
             return [
                 '',
-                f'new_tab {self.name}'.rstrip(),
+                f'new_tab {sanitize_for_session_line(self.name)}'.rstrip(),
                 f'layout {layout}',
                 f'enabled_layouts {",".join(enabled_layouts)}',
-                f'set_layout_state {json.dumps(self.current_layout.serialize(self.windows))}',
+                f'set_layout_state {json.dumps(self.serialize_layout_state_for_session())}',
                 f'cd {most_common_cwd}',
-                ''
+                '',
             ] + launch_cmds
         return []
+
+    def serialize_layout_state_for_session(self) -> dict[str, Any]:
+        """
+        The state of the current layout, with the state of any other layouts this tab
+        has used nested under other_layouts. Nesting rather than adding new session
+        commands keeps the file readable by older versions of kitty, which ignore
+        unknown keys in this dict but abort on unknown commands.
+        """
+        ans = self.current_layout.serialize(self.windows)
+        others = {name: layout.serialize(self.windows) for name, layout in self._used_layouts.items() if name != self._current_layout_name}
+        if others:
+            ans['other_layouts'] = others
+        if self._last_used_layout:
+            ans['last_used_layout'] = self._last_used_layout
+        return ans
 
     def data_for_tab_bar(self, is_active: bool) -> TabBarData:
         t = self
@@ -430,20 +621,37 @@ class Tab:  # {{{
             if w.has_activity_since_last_focus:
                 has_activity_since_last_focus = True
         return TabBarData(
-            title, is_active, needs_attention, t.id, t.os_window_id,
-            len(t), t.num_window_groups, t.current_layout.name or '',
-            has_activity_since_last_focus, t.active_fg, t.active_bg,
-            t.inactive_fg, t.inactive_bg, t.num_of_windows_with_progress,
-            t.total_progress, t.last_focused_window_with_progress_id,
-            t.created_in_session_name, t.active_session_name,
+            title,
+            is_active,
+            needs_attention,
+            t.id,
+            t.os_window_id,
+            len(t),
+            t.num_window_groups,
+            t.current_layout.name or '',
+            has_activity_since_last_focus,
+            t.active_fg,
+            t.active_bg,
+            t.inactive_fg,
+            t.inactive_bg,
+            t.num_of_windows_with_progress,
+            t.total_progress,
+            t.last_focused_window_with_progress_id,
+            t.created_in_session_name,
+            t.active_session_name,
         )
 
     def active_window_changed(self) -> None:
         w = self.active_window
         set_active_window(self.os_window_id, self.id, 0 if w is None else w.id)
         self.mark_tab_bar_dirty()
-        self.relayout_borders()
-        self.current_layout.update_visibility(self.windows)
+        if self.current_layout.only_active_window_visible and any(g.docks for g in self.windows.groups):
+            # Which docks are visible depends on the active window, and
+            # the blank areas around them need to be recalculated
+            self.relayout()
+        else:
+            self.relayout_borders()
+            self.current_layout.update_visibility(self.windows)
         tm = self.tab_manager_ref()
         if tm is not None and tm.active_tab is self:
             get_boss().sync_tab_bar_and_chrome_bg(tm)
@@ -484,10 +692,16 @@ class Tab:  # {{{
 
     def update_window_title_bars(self) -> None:
         active_group = self.windows.active_group
-        for wg in self.windows.iter_all_layoutable_groups(only_visible=True):
-            is_active = wg is active_group
-            for w in wg.windows:
-                w.update_title_bar(is_active=is_active)
+        # {window.wd} in the title bar template needs the process group map,
+        # share it between windows and rapid updates as the render loop does
+        prev = process_data_cache.start_caching()
+        try:
+            for wg in self.windows.iter_all_layoutable_groups(only_visible=True):
+                is_active = wg is active_group
+                for w in wg.windows:
+                    w.update_title_bar(is_active=is_active)
+        finally:
+            process_data_cache.stop_caching(prev)
 
     def title_changed(self, window: Window) -> None:
         self.update_window_title_bars()
@@ -513,14 +727,9 @@ class Tab:  # {{{
             ly = self.current_layout
             opts = get_options()
             draw_borders = (
-                ly.must_draw_borders or opts.draw_window_borders_for_single_window or
-                (ly.needs_window_borders and self.windows.has_more_than_one_visible_group)
+                ly.must_draw_borders or opts.draw_window_borders_for_single_window or (ly.needs_window_borders and self.windows.has_more_than_one_visible_group)
             )
-            self.borders(
-                all_windows=self.windows,
-                current_layout=ly, tab_bar_rects=tm.tab_bar_rects,
-                draw_window_borders=draw_borders
-            )
+            self.borders(all_windows=self.windows, current_layout=ly, tab_bar_rects=tm.tab_bar_rects, draw_window_borders=draw_borders)
             self.update_window_title_bars()
 
     def create_layout_object(self, name: str) -> Layout:
@@ -548,7 +757,9 @@ class Tab:  # {{{
             self._set_current_layout(self._last_used_layout)
             self.relayout()
 
-    @ac('lay', '''
+    @ac(
+        'lay',
+        """
         Switch to the named layout
         In case there are multiple layouts with the same name and different options,
         specify the full layout definition or a unique prefix of the full definition.
@@ -557,7 +768,8 @@ class Tab:  # {{{
 
             map f1 goto_layout tall
             map f2 goto_layout fat:bias=20
-        ''')
+        """,
+    )
     def goto_layout(self, layout_name: str, raise_exception: bool = False) -> None:
         layout_name = layout_name.lower()
         q, has_colon, rest = layout_name.partition(':')
@@ -592,7 +804,9 @@ class Tab:  # {{{
                     raise ValueError(layout_name)
                 log_error(f'Multiple layouts match: {layout_name}')
 
-    @ac('lay', '''
+    @ac(
+        'lay',
+        """
         Toggle the named layout
 
         Switches to the named layout if another layout is current, otherwise
@@ -602,31 +816,80 @@ class Tab:  # {{{
         zoomed window. For example::
 
             map f1 toggle_layout stack
-        ''')
+        """,
+    )
     def toggle_layout(self, layout_name: str) -> None:
         if self._current_layout_name == layout_name:
             self.last_used_layout()
         else:
             self.goto_layout(layout_name)
 
-    def resize_window_by(self, window_id: int, increment: float, is_horizontal: bool) -> str | None:
+    def resize_window_by(self, window_id: int, increment: float, is_horizontal: bool, fraction: float = 0) -> str | None:
+        if (dock := self.windows.dock_for_window_id(window_id)) is not None and dock.dock is not None:
+            if is_horizontal == dock.dock.is_horizontal:
+                which = 'taller or shorter' if dock.dock.is_horizontal else 'wider or narrower'
+                return f'A dock at the {dock.dock.edge} edge can only be made {which}'
+            return None if self.resize_dock(dock, increment, fraction) else 'Could not resize'
         increment_as_percent = self.current_layout.bias_increment_for_cell(self.windows, is_horizontal) * increment
-        if self.current_layout.modify_size_of_window(self.windows, window_id, increment_as_percent, is_horizontal):
+        if fraction:
+            changed = self.current_layout.modify_size_of_window_by_fraction(self.windows, window_id, increment_as_percent, is_horizontal, fraction)
+        else:
+            changed = self.current_layout.modify_size_of_window(self.windows, window_id, increment_as_percent, is_horizontal)
+        if changed:
             self.relayout()
             return None
         return 'Could not resize'
 
-    def drag_resize_window(self, object_id: int, increment: float, is_horizontal: bool) -> bool:
-        increment_as_percent = self.current_layout.bias_increment_for_cell(self.windows, is_horizontal) * increment
-        if resized := self.current_layout.drag_resize_window(self.windows, object_id, increment_as_percent, is_horizontal):
+    def resize_dock(self, dock: WindowGroup, increment: float, fraction: float = 0, relayout_other_tabs: bool = True) -> int:
+        "Resize a docked group by a number of cells, see Layout.resize_dock()"
+        # Round away from zero, so that fractional increments still resize
+        cells = int(math.copysign(math.ceil(abs(increment)), increment))
+        is_os_window_dock = self.windows.is_os_window_dock(dock)
+        max_room: int | None = None
+        if is_os_window_dock and cells > 0 and dock.dock is not None and (tm := self.tab_manager_ref()) is not None:
+            # Growing an OS window dock must not shrink the tab docks of the other tabs either
+            is_horizontal = dock.dock.is_horizontal
+            max_room = min((t.current_layout.room_for_os_window_docks(t.windows, is_horizontal) for t in tm if t is not self), default=None)
+        applied = self.current_layout.resize_dock(self.windows, dock, cells, fraction, max_room)
+        if applied:
+            self.relayout()
+            if is_os_window_dock and relayout_other_tabs:
+                self.os_window_docks_changed()
+        return applied
+
+    def drag_resize_target_windows(self, window: Window, x: float, y: float, edges: int) -> WindowResizeDragData:
+        if (dock := self.windows.dock_for_window_id(window.id)) is None or dock.dock is None:
+            return self.current_layout.drag_resize_target_windows(window, x, y, edges, self.windows)
+        # A dock has a border only on its inner edge, its outer edges stay put
+        edge = dock.dock.edge
+        if dock.dock.is_horizontal:
+            return WindowResizeDragData(vertical_id=window.id, height_increases_downwards=edge == 'top', is_dock=True)
+        return WindowResizeDragData(horizontal_id=window.id, width_increases_rightwards=edge == 'left', is_dock=True)
+
+    def drag_resize_window(self, object_id: int, increment: float, is_horizontal: bool, is_dock: bool = False) -> float:
+        if is_dock:
+            # The other tabs are re-laid out once, when the drag ends, see drag_resize_ended()
+            dock = self.windows.dock_for_window_id(object_id)
+            return 0 if dock is None else self.resize_dock(dock, increment, relayout_other_tabs=False)
+        if resized := self.current_layout.drag_resize_window(self.windows, object_id, increment, is_horizontal):
             self.relayout()
         return resized
 
-    @ac('win', '''
+    def drag_resize_ended(self, data: WindowResizeDragData) -> None:
+        if data.is_dock:
+            for wid in (data.horizontal_id, data.vertical_id):
+                if wid is not None and (dock := self.windows.dock_for_window_id(wid)) is not None and self.windows.is_os_window_dock(dock):
+                    self.os_window_docks_changed()
+                    break
+
+    @ac(
+        'win',
+        """
         Resize the active window by the specified amount
 
         See :ref:`window_resizing` for details.
-        ''')
+        """,
+    )
     def resize_window(self, quality: str, increment: int) -> None:
         if quality == 'reset':
             self.reset_window_sizes()
@@ -636,8 +899,7 @@ class Tab:  # {{{
         is_horizontal = quality in ('wider', 'narrower')
         increment *= 1 if quality in ('wider', 'taller') else -1
         w = self.active_window
-        if w is not None and self.resize_window_by(
-                w.id, increment, is_horizontal) is not None:
+        if w is not None and self.resize_window_by(w.id, increment, is_horizontal) is not None:
             if get_options().enable_audio_bell:
                 ring_bell(self.os_window_id)
 
@@ -648,7 +910,8 @@ class Tab:  # {{{
 
     @ac('lay', 'Perform a layout specific action. See :doc:`layouts` for details')
     def layout_action(self, action_name: str, args: Sequence[str]) -> None:
-        ret = self.current_layout.layout_action(action_name, args, self.windows)
+        # Layouts only know about normal windows, not docked ones
+        ret = None if self.windows.active_dock is not None else self.current_layout.layout_action(action_name, args, self.windows)
         if ret is None:
             if get_options().enable_audio_bell:
                 ring_bell(self.os_window_id)
@@ -670,6 +933,7 @@ class Tab:  # {{{
         remote_control_fd: int = -1,
         hold_after_ssh: bool = False,
         startup_command_via_shell_integration: Sequence[str] | str = (),
+        launch_request: LaunchRequest | None = None,
     ) -> Child:
         check_for_suitability = True
         if cmd is None:
@@ -718,18 +982,49 @@ class Tab:  # {{{
         if pwid is not None:
             fenv['WINDOWID'] = str(pwid)
         ans = Child(
-                cmd, cwd or self.cwd, stdin, fenv, cwd_from, is_clone_launch=is_clone_launch,
-                add_listen_on_env_var=add_listen_on_env_var, hold=hold, pass_fds=pass_fds,
-                remote_control_fd=remote_control_fd, hold_after_ssh=hold_after_ssh,
-                startup_command_via_shell_integration=startup_command_via_shell_integration)
+            cmd,
+            cwd or self.cwd,
+            stdin,
+            fenv,
+            cwd_from,
+            is_clone_launch=is_clone_launch,
+            add_listen_on_env_var=add_listen_on_env_var,
+            hold=hold,
+            pass_fds=pass_fds,
+            remote_control_fd=remote_control_fd,
+            hold_after_ssh=hold_after_ssh,
+            startup_command_via_shell_integration=startup_command_via_shell_integration,
+            launch_request=launch_request,
+        )
         ans.fork()
         return ans
 
     def _add_window(
-        self, window: Window, location: str | None = None, overlay_for: int | None = None,
-        overlay_behind: bool = False, bias: float | None = None, next_to: Window | None = None,
+        self,
+        window: Window,
+        location: str | None = None,
+        overlay_for: int | None = None,
+        overlay_behind: bool = False,
+        bias: float | None = None,
+        next_to: Window | None = None,
+        dock: DockSpec | None = None,
+        dock_owner: WindowGroup | None = None,
+        os_window_dock: bool = False,
     ) -> None:
-        self.current_layout.add_window(self.windows, window, location, overlay_for, put_overlay_behind=overlay_behind, bias=bias, next_to=next_to)
+        self.current_layout.add_window(
+            self.windows,
+            window,
+            location,
+            overlay_for,
+            put_overlay_behind=overlay_behind,
+            bias=bias,
+            next_to=next_to,
+            dock=dock,
+            dock_owner=dock_owner,
+            os_window_dock=os_window_dock,
+        )
+        if os_window_dock:
+            self.os_window_docks_changed()
         if overlay_behind and (w := self.active_window):
             set_redirect_keys_to_overlay(self.os_window_id, self.id, w.id, window.id)
             buffer_keys_in_window(self.os_window_id, self.id, window.id, True)
@@ -762,63 +1057,125 @@ class Tab:  # {{{
         next_to: Window | None = None,
         hold_after_ssh: bool = False,
         startup_command_via_shell_integration: Sequence[str] | str = (),
+        dock: DockSpec | None = None,
+        dock_owner: WindowGroup | None = None,
+        restored_scrollback: bytes = b'',
+        os_window_dock: bool = False,
+        launch_request: LaunchRequest | None = None,
     ) -> Window:
+        """
+        Create a new window. When dock is specified, the window is docked to
+        dock_owner, or if dock_owner is None, to the OS window if os_window_dock
+        is True, otherwise to the tab. Docking to the OS window requires this
+        tab to host the OS window docks, see TabManager.host_os_window_docks_in().
+        """
         cs = WindowCreationSpec(
-            use_shell=use_shell, cmd=cmd, has_stdin=bool(stdin), override_title=override_title, cwd_from=cwd_from,
-            cwd=cwd, overlay_for=overlay_for, env=None if env is None else tuple(env.items()), location=location,
+            use_shell=use_shell,
+            cmd=cmd,
+            has_stdin=bool(stdin),
+            override_title=override_title,
+            cwd_from=cwd_from,
+            cwd=cwd,
+            overlay_for=overlay_for,
+            env=None if env is None else tuple(env.items()),
+            location=location,
             copy_colors_from=None if copy_colors_from is None else copy_colors_from.id,
             allow_remote_control=allow_remote_control,
             remote_control_passwords=None if remote_control_passwords is None else remote_control_passwords.copy(),
-            marker=marker, overlay_behind=overlay_behind, is_clone_launch=is_clone_launch, hold=hold, bias=bias,
+            marker=marker,
+            overlay_behind=overlay_behind,
+            is_clone_launch=is_clone_launch,
+            hold=hold,
+            bias=bias,
             hold_after_ssh=hold_after_ssh,
         )
         child = self.launch_child(
-            use_shell=use_shell, cmd=cmd, stdin=stdin, cwd_from=cwd_from, cwd=cwd, env=env,
-            is_clone_launch=is_clone_launch, add_listen_on_env_var=False if allow_remote_control and remote_control_passwords else True,
-            hold=hold, pass_fds=pass_fds, remote_control_fd=remote_control_fd, hold_after_ssh=hold_after_ssh,
+            use_shell=use_shell,
+            cmd=cmd,
+            stdin=stdin,
+            cwd_from=cwd_from,
+            cwd=cwd,
+            env=env,
+            is_clone_launch=is_clone_launch,
+            add_listen_on_env_var=False if allow_remote_control and remote_control_passwords else True,
+            hold=hold,
+            pass_fds=pass_fds,
+            remote_control_fd=remote_control_fd,
+            hold_after_ssh=hold_after_ssh,
             startup_command_via_shell_integration=startup_command_via_shell_integration,
+            launch_request=launch_request,
         )
         window = Window(
-            self, child, self.args, override_title=override_title,
-            copy_colors_from=copy_colors_from, watchers=watchers,
-            allow_remote_control=allow_remote_control, remote_control_passwords=remote_control_passwords
+            self,
+            child,
+            self.args,
+            override_title=override_title,
+            copy_colors_from=copy_colors_from,
+            watchers=watchers,
+            allow_remote_control=allow_remote_control,
+            remote_control_passwords=remote_control_passwords,
         )
         window.creation_spec = cs
+        window.restored_scrollback = restored_scrollback
         # Must add child before laying out so that resize_pty succeeds
         get_boss().add_child(window)
-        self._add_window(window, location=location, overlay_for=overlay_for, overlay_behind=overlay_behind, bias=bias, next_to=next_to)
+        self._add_window(
+            window,
+            location=location,
+            overlay_for=overlay_for,
+            overlay_behind=overlay_behind,
+            bias=bias,
+            next_to=next_to,
+            dock=dock,
+            dock_owner=dock_owner,
+            os_window_dock=os_window_dock,
+        )
         if marker:
             try:
                 window.set_marker(marker)
             except Exception:
                 import traceback
+
                 traceback.print_exc()
         return window
 
     def new_special_window(
-            self,
-            special_window: SpecialWindowInstance,
-            location: str | None = None,
-            copy_colors_from: Window | None = None,
-            allow_remote_control: bool = False,
-            remote_control_passwords: dict[str, Sequence[str]] | None = None,
-            pass_fds: tuple[int, ...] = (),
-            remote_control_fd: int = -1,
+        self,
+        special_window: SpecialWindowInstance,
+        location: str | None = None,
+        copy_colors_from: Window | None = None,
+        allow_remote_control: bool = False,
+        remote_control_passwords: dict[str, Sequence[str]] | None = None,
+        pass_fds: tuple[int, ...] = (),
+        remote_control_fd: int = -1,
     ) -> Window:
         return self.new_window(
-            use_shell=False, cmd=special_window.cmd, stdin=special_window.stdin,
+            use_shell=False,
+            cmd=special_window.cmd,
+            stdin=special_window.stdin,
             override_title=special_window.override_title,
-            cwd_from=special_window.cwd_from, cwd=special_window.cwd, overlay_for=special_window.overlay_for,
-            env=special_window.env, location=location, copy_colors_from=copy_colors_from,
-            allow_remote_control=allow_remote_control, watchers=special_window.watchers, overlay_behind=special_window.overlay_behind,
-            hold=special_window.hold, remote_control_passwords=remote_control_passwords, pass_fds=pass_fds, remote_control_fd=remote_control_fd,
+            cwd_from=special_window.cwd_from,
+            cwd=special_window.cwd,
+            overlay_for=special_window.overlay_for,
+            env=special_window.env,
+            location=location,
+            copy_colors_from=copy_colors_from,
+            allow_remote_control=allow_remote_control,
+            watchers=special_window.watchers,
+            overlay_behind=special_window.overlay_behind,
+            hold=special_window.hold,
+            remote_control_passwords=remote_control_passwords,
+            pass_fds=pass_fds,
+            remote_control_fd=remote_control_fd,
+            launch_request=special_window.launch_request,
         )
 
     @ac('win', 'Close all windows in the tab other than the currently active window')
     def close_other_windows_in_tab(self) -> None:
         if len(self.windows) > 1:
             active_window = self.active_window
-            for window in tuple(self.windows):
+            # The OS window docks do not belong to this tab
+            for window in tuple(self.windows.iter_tab_windows()):
                 if window is not active_window:
                     self.remove_window(window)
 
@@ -834,11 +1191,24 @@ class Tab:  # {{{
         return prev
 
     def remove_window(self, window: Window, destroy: bool = True, do_post_removal_update: bool = True) -> None:
+        had_normal_windows = bool(self.windows.groups)
+        orphans_before = list(self.windows.orphaned_docks)
+        num_os_window_docks = len(self.windows.os_window_docks)
         self.windows.remove_window(window)
+        if num_os_window_docks != len(self.windows.os_window_docks):
+            self.os_window_docks_changed()
         if destroy:
             remove_window(self.os_window_id, self.id, window.id)
         else:
             detach_window(self.os_window_id, self.id, window.id)
+        # Docks go away with whatever they are docked to
+        doomed = [w for d in self.windows.orphaned_docks if d not in orphans_before for w in d]
+        if had_normal_windows and not self.windows.groups:
+            doomed.extend(w for d in self.windows.tab_docks for w in d)
+        if doomed:
+            boss = get_boss()
+            for w in doomed:
+                boss.mark_window_for_close(w)
         if do_post_removal_update:
             self.post_window_removal_update()
 
@@ -853,23 +1223,66 @@ class Tab:  # {{{
             self.title_changed(active_window)
         set_active_window(self.os_window_id, self.id, active_window.id if active_window else 0)
 
-    def detach_window(self, window: Window) -> tuple[Window, ...]:
-        windows = list(self.windows.windows_in_group_of(window))
+    def detach_window(self, window: Window) -> DetachedGroup:
+        "Remove the group containing window from this tab, along with its docks. A docked group becomes a normal group when re-attached."
+        group = self.windows.group_for_window(window)
+        windows = tuple(self.windows.windows_in_group_of(window))
+        docks: list[tuple[DockSpec, tuple[Window, ...]]] = []
+        if group is not None and group.dock is None:
+            for d in tuple(group.docks):
+                dock_windows = tuple(d)
+                for w in reversed(dock_windows):
+                    self.remove_window(w, destroy=False, do_post_removal_update=False)
+                if d.dock is not None:
+                    docks.append((d.dock, dock_windows))
         for w in reversed(windows):
             self.remove_window(w, destroy=False, do_post_removal_update=False)
         self.post_window_removal_update()
-        return tuple(windows)
+        return DetachedGroup(windows, tuple(docks))
 
-    def attach_window(self, window: Window, overlay_for: int | None = None) -> None:
+    def _take_ownership_of_window(self, window: Window) -> None:
         window.change_tab(self)
         attach_window(self.os_window_id, self.id, window.id)
+
+    def attach_window(self, window: Window, overlay_for: int | None = None) -> None:
+        self._take_ownership_of_window(window)
         self._add_window(window, overlay_for=overlay_for)
 
-    def attach_windows(self, windows: Iterable[Window]) -> None:
+    def attach_window_at_edge(self, window: Window, next_to: Window, horizontal: bool, after: bool) -> None:
+        "Attach window as a new split at the specified edge of next_to, which must already be in this tab"
+        self._take_ownership_of_window(window)
+        # Create the group already in its final position and then let the layout
+        # place it. Adding it at the layout's default location and moving it
+        # afterwards would perturb the existing split proportions.
+        self.windows.add_window(window, next_to=next_to, before=not after)
+        self.current_layout.insert_window_next_to(self.windows, window, next_to, horizontal, after)
+        self.mark_tab_bar_dirty()
+        self.relayout()
+
+    def attach_windows(self, windows: Iterable[Window] | DetachedGroup, *, next_to: Window | None = None, horizontal: bool = True, after: bool = True) -> None:
+        docks: Sequence[tuple[DockSpec, tuple[Window, ...]]] = ()
+        if isinstance(windows, DetachedGroup):
+            windows, docks = windows.windows, windows.docks
+        if next_to is not None:
+            next_to = self.windows.main_window_for(next_to)
         overlay_for: int | None = None
         for window in windows:
-            self.attach_window(window, overlay_for)
+            if overlay_for is None and next_to is not None:
+                self.attach_window_at_edge(window, next_to, horizontal, after)
+            else:
+                self.attach_window(window, overlay_for)
             overlay_for = window.id
+        if docks and overlay_for is not None and (owner := self.windows.group_for_window(overlay_for)) is not None:
+            for spec, dock_windows in docks:
+                dock_overlay_for: int | None = None
+                for window in dock_windows:
+                    self._take_ownership_of_window(window)
+                    if dock_overlay_for is None:
+                        self._add_window(window, dock=spec, dock_owner=owner)
+                    else:
+                        self._add_window(window, overlay_for=dock_overlay_for)
+                    dock_overlay_for = window.id
+            self.set_active_window(overlay_for)
 
     def set_active_window(self, x: Window | int, for_keep_focus: Window | None = None) -> None:
         if (w := self.windows.window_for_id(x) if isinstance(x, int) else x) is not None:
@@ -881,7 +1294,9 @@ class Tab:  # {{{
             return self.current_layout.nth_window(self.windows, n)
         return None
 
-    @ac('win', '''
+    @ac(
+        'win',
+        """
         Focus the nth window if positive or the previously active windows if negative. When the number is larger
         than the number of windows focus the last window. For example::
 
@@ -889,7 +1304,8 @@ class Tab:  # {{{
             map ctrl+p nth_window -1
             # focus the first window
             map ctrl+1 nth_window 0
-        ''')
+        """,
+    )
     def nth_window(self, num: int = 0) -> None:
         if self.windows:
             if num < 0:
@@ -978,27 +1394,33 @@ class Tab:  # {{{
             return self.most_recent_group(candidates)
         return None
 
-    @ac('win', '''
+    @ac(
+        'win',
+        """
         Focus the neighboring window in the current tab
 
         For example::
 
             map ctrl+left neighboring_window left
             map ctrl+down neighboring_window bottom
-        ''')
+        """,
+    )
     def neighboring_window(self, which: EdgeLiteral) -> None:
         neighbor = self.neighboring_group_id(which)
         if neighbor:
             self.windows.set_active_group(neighbor)
 
-    @ac('win', '''
+    @ac(
+        'win',
+        """
         Move the window in the specified direction
 
         For example::
 
             map ctrl+left move_window left
             map ctrl+down move_window bottom
-        ''')
+        """,
+    )
     def move_window(self, delta: EdgeLiteral | int = 1) -> None:
         if isinstance(delta, int):
             if self.current_layout.move_window(self.windows, delta):
@@ -1025,10 +1447,13 @@ class Tab:  # {{{
             all_window_ids.discard(aw.id)
         return all_window_ids
 
-    @ac('win', '''
+    @ac(
+        'win',
+        """
         Focus a visible window by pressing the number of the window. Window numbers are displayed
         over the windows for easy selection in this mode. See :opt:`visual_window_select_characters`.
-        ''')
+        """,
+    )
     def focus_visible_window(self) -> None:
         def callback(tab: Tab | None, window: Window | None) -> None:
             if tab and window:
@@ -1041,7 +1466,9 @@ class Tab:  # {{{
         def callback(tab: Tab | None, window: Window | None) -> None:
             if tab and window:
                 tab.swap_active_window_with(window.id)
-        get_boss().visual_window_select_action(self, callback, 'Choose window to swap with', only_window_ids=self.all_window_ids_except_active_window)
+
+        docked = {w.id for g in self.windows.iter_dock_groups() for w in g}
+        get_boss().visual_window_select_action(self, callback, 'Choose window to swap with', only_window_ids=self.all_window_ids_except_active_window - docked)
 
     @ac('win', 'Move active window to the top (make it the first window)')
     def move_window_to_top(self) -> None:
@@ -1066,15 +1493,14 @@ class Tab:  # {{{
                     is_active=w is active_window,
                     is_focused=w.os_window_id == current_focused_os_window_id() and w is active_window,
                     is_self=w is self_window,
-                    neighbors_map=cl.neighbors_for_window(w, self.windows)
+                    neighbors_map=cl.neighbors_for_any_window(w, self.windows),
                 )
 
     def list_groups(self) -> list[dict[str, Any]]:
-        return [g.as_simple_dict() for g in self.windows.groups]
+        return [g.as_simple_dict() for g in self.windows.groups] + [g.as_simple_dict() for g in self.windows.iter_dock_groups()]
 
     def matches_query(
-        self, field: str, query: str, active_tab_manager: Optional['TabManager'] = None,
-        active_session: str = '', most_recent_session: str = ''
+        self, field: str, query: str, active_tab_manager: Optional['TabManager'] = None, active_session: str = '', most_recent_session: str = ''
     ) -> bool:
         match field:
             case 'title':
@@ -1115,8 +1541,9 @@ class Tab:  # {{{
                     case 'parent_active':
                         return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager
                     case 'parent_focused':
-                        return active_tab_manager is not None and \
-                                self.tab_manager_ref() is active_tab_manager and self.os_window_id == last_focused_os_window_id()
+                        return (
+                            active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager and self.os_window_id == last_focused_os_window_id()
+                        )
                     case 'focused_os_window':
                         return self.os_window_id == last_focused_os_window_id()
                 return False
@@ -1147,11 +1574,11 @@ class Tab:  # {{{
     def __contains__(self, window: Window) -> bool:
         return window in self.windows
 
-    def destroy(self) -> None:
+    def destroy(self, close_event: CloseEvent | None = None) -> None:
         evict_cached_layouts(self.id)
         for w in self.windows:
-            w.destroy()
-        self.windows = WindowList(self)
+            w.destroy(close_event)
+        self.windows = WindowList(self, self.windows.os_window_docks)
 
     def __repr__(self) -> str:
         return f'Tab(title={self.effective_title}, id={self.id})'
@@ -1168,23 +1595,44 @@ class Tab:  # {{{
             self.windows.set_active_window_group_for(window_a)
             self.current_layout.move_window_to_group(self.windows, wg_b.id)
             self.relayout()
+
+
 # }}}
 
 
 class TabBeingDropped(NamedTuple):
-    data: TabBarData
+    tab_id: int
     tab_ids: Sequence[int] = ()
-    last_drop_move_coordinate: int = -1
+
+
+class DragHover(NamedTuple):
+    "A tab to be switched to once the pointer has rested on it for a while during a drag"
+
+    tab_id: int
+    source_id: int  # The id of the window or tab being dragged
+    source_is_window: bool
+    deadline: float
+    timer: int
+
+
+DropDirection = Literal['left', 'right', 'top', 'bottom']
+quadrant_for_direction: dict[DropDirection, int] = {'left': 1, 'right': 2, 'top': 3, 'bottom': 4}
+SWAP_QUADRANT = 5  # the whole window and its title bar are highlighted
+WHOLE_WINDOW_QUADRANT = 6
 
 
 class WindowBeingDropped(NamedTuple):
     window_id: int  # the window whose title bar is currently highlighted as a drop target
     quadrant: int = 0  # 0=none, 1=left, 2=right, 3=top, 4=bottom, 5=full+titlebar, 6=full
+    # The edge of window_id the dragged window will be inserted at, None for quadrant 5 (swap).
+    # Needed because quadrant 6 highlights the whole window but still inserts directionally.
+    direction: DropDirection | None = None
 
 
 class TabManager:  # {{{
-
     confirm_close_window_id: int = 0
+    # Set when the user confirmed closing this OS window
+    close_confirmed: bool = False
     num_of_windows_with_progress: int = 0
     total_progress: int = 0
     has_indeterminate_progress: bool = False
@@ -1192,6 +1640,10 @@ class TabManager:  # {{{
     window_being_dropped: WindowBeingDropped | None = None
     window_drag_target_tab_id: int = 0
     window_drag_over_me: bool = False
+    drag_hover: DragHover | None = None
+    drag_hover_delay: float = 0.6
+    tab_drag_focus_before_hover: int = 0
+    tab_drag_history_before_hover: tuple[int, ...] = ()
 
     def __init__(self, os_window_id: int, args: CLIOptions, wm_class: str, wm_name: str, startup_session: SessionType | None = None):
         self.os_window_id = os_window_id
@@ -1206,6 +1658,13 @@ class TabManager:  # {{{
         self.active_tab_history: Deque[int] = deque()
         self.tab_bar = TabBar(self.os_window_id)
         self._active_tab_idx = 0
+        # The groups docked to the edges of this OS window, outermost first.
+        # They are shared by all its tabs, but their windows are present only in
+        # the host tab, which is kept equal to the active tab, see sync_os_window_docks()
+        self.os_window_docks: list[WindowGroup] = []
+        self._os_window_docks_host: weakref.ReferenceType[Tab] | None = None
+        # True when the windows of the OS window docks are in no tab, see park_os_window_docks()
+        self._os_window_docks_parked = False
 
         if startup_session is not None:
             self.add_tabs_from_session(startup_session)
@@ -1233,6 +1692,7 @@ class TabManager:  # {{{
             except ValueError:
                 # Not a plain number, treat as match expression
                 from .fast_data_types import get_boss
+
                 boss = get_boss()
                 matched_tabs = list(boss.match_tabs(spec, self.tabs))
                 if matched_tabs:
@@ -1308,11 +1768,74 @@ class TabManager:  # {{{
             self.active_tab_idx = idx
         else:
             self._active_tab_idx = idx
+        # Move the OS window docks before telling the C code about the new
+        # active tab, so that they are never reported as hidden to the
+        # programs running in them
+        self.sync_os_window_docks()
         set_active_tab(self.os_window_id, idx)
         # Re-sync the strip/titlebar background to the newly active tab's window (they
         # follow the terminal background), so a theme previewed in another tab does not
         # linger after switching away from it.
         get_boss().sync_tab_bar_and_chrome_bg(self)
+
+    @property
+    def os_window_docks_host(self) -> Tab | None:
+        "The tab containing the windows of the OS window docks"
+        return None if self._os_window_docks_host is None else self._os_window_docks_host()
+
+    def host_os_window_docks_in(self, tab: Tab) -> None:
+        """
+        Move the windows of the OS window docks into tab, which must belong to
+        this OS window. No focus change notifications are sent, the docks do
+        not have focus in tab after the move.
+        """
+        host = self.os_window_docks_host
+        if host is tab:
+            return
+        moved: list[Window] = []
+        if host is not None:
+            moved = host.windows.release_os_window_docks()
+            for w in moved:
+                if not move_window_to_tab(self.os_window_id, host.id, tab.id, w.id):
+                    log_error(f'Failed to move the OS window dock window {w.id} from tab {host.id} to tab {tab.id}, re-attaching it instead')
+                    detach_window(self.os_window_id, host.id, w.id)
+                    attach_window(self.os_window_id, tab.id, w.id)
+            if moved:
+                aw = host.active_window
+                set_active_window(self.os_window_id, host.id, aw.id if aw else 0)
+        elif self._os_window_docks_parked:
+            moved = [w for g in self.os_window_docks for w in g]
+            for w in moved:
+                attach_window(self.os_window_id, tab.id, w.id)
+        self._os_window_docks_parked = False
+        self._os_window_docks_host = weakref.ref(tab)
+        for w in moved:
+            w.change_tab(tab)
+        tab.windows.adopt_os_window_docks()
+        if moved:
+            # The space for the docks is reserved in every tab, so the other
+            # windows in tab are not resized, but the docks need to be placed
+            # and the borders and blank areas of tab need to include them
+            tab.relayout()
+
+    def park_os_window_docks(self, tab: Tab) -> None:
+        """
+        Take the windows of the OS window docks out of tab, if it hosts them.
+        Used when tab is about to be removed or have its windows replaced. The
+        windows are put into the active tab by the next call to sync_os_window_docks().
+        """
+        if self.os_window_docks_host is not tab:
+            return
+        self._os_window_docks_host = None
+        windows = tab.windows.release_os_window_docks()
+        for w in windows:
+            detach_window(self.os_window_id, tab.id, w.id)
+        self._os_window_docks_parked = bool(windows)
+
+    def sync_os_window_docks(self) -> None:
+        "Ensure the windows of the OS window docks are in the active tab"
+        if (at := self.active_tab) is not None:
+            self.host_os_window_docks_in(at)
 
     def layout_tab_bar(self) -> None:
         # set tab_bar_should_be_visible so that tab_bar.layout() gets correct dimensions
@@ -1449,9 +1972,7 @@ class TabManager:  # {{{
         return len(self.tabs)
 
     def list_tabs(
-        self, self_window: Window | None = None,
-        tab_filter: Callable[[Tab], bool] | None = None,
-        window_filter: Callable[[Window], bool] | None = None
+        self, self_window: Window | None = None, tab_filter: Callable[[Tab], bool] | None = None, window_filter: Callable[[Window], bool] | None = None
     ) -> Generator[TabDict, None, None]:
         active_tab = self.active_tab
         for tab in self:
@@ -1482,27 +2003,40 @@ class TabManager:  # {{{
         }
 
     def serialize_state_as_session(
-        self, session_path: str, matched_windows: frozenset[Window] | None, ser_opts: SaveAsSessionOptions,
-        is_first: bool = False
+        self, session_path: str, matched_windows: frozenset[Window] | None, ser_opts: SaveAsSessionOptions, is_first: bool = False
     ) -> list[str]:
-        ans = []
-        active_tab_index = -1
-        for i, tab in enumerate(self.tabs):
-            if tab is self.active_tab:
-                active_tab_index = i
-            ans.extend(tab.serialize_state_as_session(session_path, matched_windows, ser_opts))
+        ans: list[str] = []
+        active_tab_idx = -1
+        last_focused_at: list[float] = []
+        # The OS window docks are written in the first tab that has windows
+        # to write. When restored, they are moved to the active tab.
+        os_window_docks: Sequence[WindowGroup] = self.os_window_docks
+        for tab in self.tabs:
+            saved_windows: list[Window] = []
+            if lines := tab.serialize_state_as_session(session_path, matched_windows, ser_opts, saved_windows, os_window_docks):
+                os_window_docks = ()
+                if tab is self.active_tab:
+                    active_tab_idx = len(last_focused_at)
+                last_focused_at.append(max((w.last_focused_at for w in saved_windows), default=0))
+                ans.extend(lines)
         if ans:
             prefix = [] if is_first else ['', '', 'new_os_window']
+            from .session import sanitize_for_session_line
+
             if self.wm_class and self.wm_class != appname:
-                prefix.append(f'os_window_class {self.wm_class}')
+                prefix.append(f'os_window_class {sanitize_for_session_line(self.wm_class)}')
             if self.wm_name and self.wm_name != appname:
-                prefix.append(f'os_window_name {self.wm_name}')
+                prefix.append(f'os_window_name {sanitize_for_session_line(self.wm_name)}')
+            if ser_opts.os_window_geometry:
+                prefix.extend(self.serialize_geometry_as_session())
             ans = prefix + ans
-            # Add focus_tab command to preserve the active tab
-            if active_tab_index >= 0:
-                ans.append('')
-                ans.append(f'focus_tab {active_tab_index}')
+            ans.append('')
+            ans.append(f'focus_tab {index_of_tab_to_focus_in_session(active_tab_idx, last_focused_at)}')
         return ans
+
+    def serialize_geometry_as_session(self) -> list[str]:
+        g = get_os_window_geometry(self.os_window_id)
+        return [] if g is None else os_window_geometry_as_session(g, include_position=not is_wayland())
 
     @property
     def active_tab(self) -> Tab | None:
@@ -1544,39 +2078,33 @@ class TabManager:  # {{{
         as_neighbor: bool = False,
         empty_tab: bool = False,
         location: str = 'last',
+        title: str = '',
     ) -> Tab:
         idx = len(self.tabs)
         tabs = tuple(self.tabs_to_be_shown_in_tab_bar)
         orig_active_tab_idx = 0
         with suppress(ValueError):
             orig_active_tab_idx = tabs.index(self.active_tab)
-        session_name = ''
-        if cwd_from is not None and (sw := cwd_from.window):
-            session_name = sw.created_in_session_name
-            if not session_name and (sw_tab := sw.tabref()):
-                session_name = sw_tab.created_in_session_name
-        t = Tab(self, no_initial_window=True, session_name=session_name) if empty_tab else Tab(
-                self, special_window=special_window, cwd_from=cwd_from, session_name=session_name)
+        if as_neighbor:
+            location = 'after'
+        insert_at = index_for_new_tab(tuple(x.effective_title for x in tabs), orig_active_tab_idx, location, title)
+        session_name = sw.effective_session_name if cwd_from is not None and (sw := cwd_from.window) else ''
+        t = (
+            Tab(self, no_initial_window=True, session_name=session_name)
+            if empty_tab
+            else Tab(self, special_window=special_window, cwd_from=cwd_from, session_name=session_name)
+        )
         if not empty_tab and session_name:
             for w in t:
                 w.created_in_session_name = session_name
+        if title:
+            t.set_title(title)
         self.tabs.append(t)
-        tabs = tabs + (t,)
-        if as_neighbor:
-            location = 'after'
-        if location == 'neighbor':
-            location = 'after'
-        if location == 'default':
-            location = 'last'
-        if len(tabs) > 1 and location != 'last':
-            if location == 'first':
-                desired_idx = 0
-            else:
-                desired_idx = orig_active_tab_idx + (0 if location == 'before' else 1)
-            desired_idx = self.tabs.index(tabs[desired_idx])
+        if insert_at < len(tabs):
+            desired_idx = self.tabs.index(tabs[insert_at])
             if idx != desired_idx:
                 for i in range(idx, desired_idx, -1):
-                    self.swap_tabs(i, i-1)
+                    self.swap_tabs(i, i - 1)
                 idx = desired_idx
         self._set_active_tab(idx)
         self.mark_tab_bar_dirty()
@@ -1590,6 +2118,9 @@ class TabManager:  # {{{
             idx_before_removal = tabs.index(active_tab_before_removal)
         except Exception:
             idx_before_removal = -1
+        if len(self.tabs) > 1:
+            # The OS window docks outlive the tab, they move to the next active tab
+            self.park_os_window_docks(removed_tab)
         remove_tab(self.os_window_id, removed_tab.id)
         self.tabs.remove(removed_tab)
         while True:
@@ -1653,40 +2184,23 @@ class TabManager:  # {{{
                     self._set_active_tab(self.tabs.index(active_tab_before_removal), store_in_history=False)
             else:
                 self._active_tab_idx = 0
+        self.sync_os_window_docks()
         self.mark_tab_bar_dirty()
         removed_tab.destroy()
 
     @property
     def tab_bar_data(self) -> Sequence[TabBarData]:
         at = self.active_tab
-        tab_being_dragged_from_here = False
-        dragged_tab_id, drag_started = get_tab_being_dragged()[:2]
-        if drag_started:
-            tab_being_dragged_from_here = self.tab_for_id(dragged_tab_id) is not None
-        window_drag_active = get_window_being_dragged()[1]
-        if self.tab_being_dropped is None:
-            wdtt = self.window_drag_target_tab_id
-            if tab_being_dragged_from_here:
-                tabs = tuple(t.data_for_tab_bar(t is at or t.id == wdtt) for t in self.tabs_to_be_shown_in_tab_bar if t.id != dragged_tab_id)
-            else:
-                tabs = tuple(t.data_for_tab_bar(t is at or t.id == wdtt) for t in self.tabs_to_be_shown_in_tab_bar)
-            if window_drag_active or get_options().tab_bar_show_new_tab_button:
-                tabs = tabs + (TabBarData(
-                    title='+', is_active=self.window_drag_target_tab_id == -1, os_window_id=self.os_window_id),)
-            return tabs
-        tmap = {t.id:t for t in self.tabs}
-        at = self.active_tab
-        ans = []
-        for tid in self.tab_being_dropped.tab_ids:
-            if tid == dragged_tab_id:
-                ans.append(self.tab_being_dropped.data)
-            else:
-                tab = tmap[tid]
-                ans.append(tab.data_for_tab_bar(tab is at))
-        return ans
+        wdtt = self.window_drag_target_tab_id
+        # Drag previews only draw an insertion marker. Keeping the real tabs in
+        # place also keeps custom renderers' tab counts and hit testing stable.
+        tabs = tuple(t.data_for_tab_bar(t is at or t.id == wdtt) for t in self.tabs_to_be_shown_in_tab_bar)
+        if get_window_being_dragged()[1] or get_options().tab_bar_show_new_tab_button:
+            tabs += (TabBarData(title='+', is_active=wdtt == -1, os_window_id=self.os_window_id),)
+        return tabs
 
     def apply_tab_ordering(self, tab_ids: Sequence[int]) -> None:
-        id_map = {t.id:t for t in self.tabs}
+        id_map = {t.id: t for t in self.tabs}
         ordered_ids = frozenset(tab_ids)
         positions = (i for i, t in enumerate(self.tabs) if t.id in ordered_ids)
         for pos, tab_id in zip(positions, tab_ids):
@@ -1696,74 +2210,59 @@ class TabManager:  # {{{
     @update_tab_bar_visibility
     def on_tab_drop_move(self, tab_id: int = 0, is_dest: bool = False, x: int = 0, y: int = 0) -> None:
         if not is_dest:
+            self._cancel_drag_hover()
             if self.tab_being_dropped:
                 self.tab_being_dropped = None
+                self.tab_bar.tab_drop_insert_before = None
                 self.layout_tab_bar()
             return
-        if self.tab_bar_should_be_visible:
-            all_tabs = [t.tab_id for t in self.tab_bar.last_laid_out_tabs if t.tab_id >= 0]
-        else:
-            all_tabs = [t.tab_id for t in self.tab_bar_data if t.tab_id >= 0]
-        force_update = False
-        if self.tab_being_dropped is None:
-            tab = get_boss().tab_for_id(tab_id)
-            if tab is None:
-                return
-            tab_data = tab.data_for_tab_bar(tab is get_boss().active_tab)
-            if tab_id not in all_tabs:
-                all_tabs.append(tab_id)
-            _, _, start_x, start_y = get_tab_being_dragged()
-            start_coordinate = self.tab_bar.drag_axis_coordinate(int(start_x), int(start_y))
-            self.tab_being_dropped = TabBeingDropped(data=tab_data, tab_ids=all_tabs, last_drop_move_coordinate=start_coordinate)
-            force_update = True
-        coordinate = self.tab_bar.drag_axis_coordinate(x, y)
-        if coordinate == self.tab_being_dropped.last_drop_move_coordinate and not force_update:
+        if (tab := get_boss().tab_for_id(tab_id)) is None:
+            self.on_tab_drop_move()
             return
-        mouse_moved_towards_start = coordinate < self.tab_being_dropped.last_drop_move_coordinate
-        old_tab_ids = self.tab_being_dropped.tab_ids
-        idx_under_mouse = -1
-        if (tab_id_under_mouse := self.tab_bar.tab_id_at(x, y)):
-            with suppress(Exception):
-                idx_under_mouse = old_tab_ids.index(tab_id_under_mouse)
-        if idx_under_mouse < 0:
-            start = self.tab_bar.window_geometry.top if self.tab_bar.is_vertical else self.tab_bar.window_geometry.left
-            idx_under_mouse = 0 if coordinate < start else len(old_tab_ids) - 1
-        old_idx_under_mouse = old_tab_ids.index(tab_id)
-        idx_moved_towards_start = old_idx_under_mouse > idx_under_mouse
-        new_tab_ids = old_tab_ids
-        if mouse_moved_towards_start == idx_moved_towards_start:
-            new_tab_ids = list(old_tab_ids)
-            new_tab_ids[idx_under_mouse], new_tab_ids[old_idx_under_mouse] = new_tab_ids[old_idx_under_mouse], new_tab_ids[idx_under_mouse]
-        self.tab_being_dropped = self.tab_being_dropped._replace(last_drop_move_coordinate=coordinate, tab_ids=new_tab_ids)
-        if force_update or self.tab_being_dropped.tab_ids != old_tab_ids:
-            self.layout_tab_bar()
+        # Dropping a tab on the tab bar always re-orders. Hovering a single window
+        # tab over another tab switches to it, so that the window can then be
+        # dropped into that tab's content area.
+        hover_tab_id = 0
+        if tab.windows.num_groups == 1 and (target := self.tab_bar.window_drop_target_at(x, y).tab_id) != tab_id:
+            hover_tab_id = target
+        self._update_drag_hover(hover_tab_id, tab_id, source_is_window=False)
+        all_tabs = [t.id for t in self.tabs_to_be_shown_in_tab_bar]
+        before = self.tab_bar.tab_insertion_target_at(x, y)
+        idx = all_tabs.index(before) if before in all_tabs else len(all_tabs)
+        # Insert at the indicated boundary, preserving the order of every other tab.
+        order = [tid for tid in all_tabs[:idx] if tid != tab_id] + [tab_id] + [tid for tid in all_tabs[idx:] if tid != tab_id]
+        self.tab_being_dropped = TabBeingDropped(tab_id=tab_id, tab_ids=order)
+        if self.tab_bar.tab_drop_insert_before != before:
+            self.tab_bar.tab_drop_insert_before = before
+            self.mark_tab_bar_dirty()
 
     @update_tab_bar_visibility
     def on_tab_drop(self, x: int, y: int, bypass_move: bool = False) -> None:
         if (td := self.tab_being_dropped) is None:
             return
-        if (tab := get_boss().tab_for_id(td.data.tab_id)) is None:
-            self.tab_being_dropped = None
+        if (tab := get_boss().tab_for_id(td.tab_id)) is None:
+            self.on_tab_drop_move()
             set_tab_being_dragged()
-            self.layout_tab_bar()
             return
         if not bypass_move:
-            self.on_tab_drop_move(td.data.tab_id, True, x, y)
+            self.on_tab_drop_move(td.tab_id, True, x, y)
         if (td := self.tab_being_dropped) is None:
             return
         self.tab_being_dropped = None
-        atid = self.active_tab.id if self.active_tab else 0
+        self.tab_bar.tab_drop_insert_before = None
+        self._cancel_drag_hover()
+        active_tab_id = self.active_tab.id if self.active_tab else 0
         set_tab_being_dragged()
         if tab.os_window_id != self.os_window_id:
-            if (t := get_boss()._move_tab_to(tab, self.os_window_id)) is not None:
-                n = list(td.tab_ids)
-                idx = n.index(td.data.tab_id)
-                n[idx] = t.id
-                td = td._replace(tab_ids=n)
-        self.apply_tab_ordering(td.tab_ids)
-        if atid and tab.os_window_id == self.os_window_id and (tab := self.tab_for_id(atid)):
-            idx = self.tabs.index(tab)
-            self._set_active_tab(idx, store_in_history=False)
+            if (t := get_boss()._move_tab_to(tab, self.os_window_id)) is None:
+                self.layout_tab_bar()
+                return
+            td = td._replace(tab_ids=[t.id if tid == td.tab_id else tid for tid in td.tab_ids])
+            active_tab_id = t.id
+        self.apply_tab_ordering([tid for tid in td.tab_ids if self.tab_for_id(tid) is not None])
+        # Re-ordering leaves active_tab_idx pointing at whichever tab now occupies the old index
+        if active_tab_id and (at := self.tab_for_id(active_tab_id)) is not None:
+            self._set_active_tab(self.tabs.index(at), store_in_history=False)
         self.layout_tab_bar()
 
     def swap_tabs(self, idx: int, nidx: int) -> None:
@@ -1776,10 +2275,10 @@ class TabManager:  # {{{
         for i, tab in enumerate(self.tabs_to_be_shown_in_tab_bar):
             if tab.id == dragged_tab_id:
                 td = tab.data_for_tab_bar(tab is self.active_tab)
-                title = apply_title_template(self.tab_bar.draw_data, td, i+1)
+                title = apply_title_template(self.tab_bar.draw_data, td, i + 1)
                 title = re.sub(r'\x1b\[.+?[a-zA-Z]', '', title).strip()  # strip CSI codes ]
+                title = re.sub(r'[\n\r]', ' ', title)
                 title = replace_c0_codes_except_nl_space_tab(title.encode()).decode()
-                title = re.sub(r'\n', ' ', title)
                 opts = get_options()
                 if td.is_active:
                     fg = color_as_int(opts.active_tab_foreground)
@@ -1787,7 +2286,7 @@ class TabManager:  # {{{
                 else:
                     fg = color_as_int(opts.inactive_tab_foreground)
                     bg = color_as_int(opts.inactive_tab_background)
-                title_pixels, width = draw_single_line_of_text(self.os_window_id, title, 0xff000000 | fg, 0xff000000 | bg, width)
+                title_pixels, width = draw_single_line_of_text(self.os_window_id, title, 0xFF000000 | fg, 0xFF000000 | bg, width)
                 title_height = len(title_pixels) // (width * 4)
                 thumbnails = ((title_pixels, width, title_height), (title_pixels + pixels, width, title_height + height))
                 drag_data = {
@@ -1798,26 +2297,37 @@ class TabManager:  # {{{
                 except OSError as e:
                     log_error(f'Failed to start tab drag: {e}')
                     set_tab_being_dragged()
-                    self.mark_tab_bar_dirty()  # re-render the tab bar in case it was drawn without the dragged tab
+                    self.mark_tab_bar_dirty()
                 break
         else:
             set_tab_being_dragged()
 
     def handle_tab_bar_mouse(self, x: float, y: float, button: int, modifiers: int, action: int) -> None:
+        tab_bar = self.tab_bar
         if button == -1:  # motion
+            if tab_bar.selection is not None:
+                tab_bar.update_selection(x, y)
+                return
             dragged_tab_id, drag_started, start_x, start_y = get_tab_being_dragged()
             if dragged_tab_id and self.tab_for_id(dragged_tab_id) is not None and not drag_started:
                 threshold = get_options().drag_threshold
-                if threshold and math.sqrt((x-start_x)**2 + (y-start_y)**2) > threshold:
+                if threshold and math.sqrt((x - start_x) ** 2 + (y - start_y) ** 2) > threshold:
                     set_tab_being_dragged(dragged_tab_id, True, start_x, start_y)
-                    request_callback_with_thumbnail("start_tab_drag", self.os_window_id)
+                    get_boss().request_thumbnail(self.os_window_id, get_boss().start_tab_drag)
                     self.recent_tab_bar_mouse_events.clear()
             return
 
-        tab_id_at_pointer = self.tab_bar.tab_id_at(int(x), int(y))
+        is_left_release = button == GLFW_MOUSE_BUTTON_LEFT and action == GLFW_RELEASE
+        if action == GLFW_PRESS:
+            tab_bar.cancel_selection()  # left over, if the release that should have ended it was lost
+        elif is_left_release and tab_bar.selection is not None:
+            text = tab_bar.finish_selection()
+            if text:  # a drag, which must not count towards a double click
+                get_boss().copy_selected_text(text)
+                return
+        tab_id_at_pointer = tab_bar.tab_id_at(int(x), int(y))
         self.recent_tab_bar_mouse_events.add(button, modifiers, action, x, y, tab_id_at_pointer)
         drag_started = get_tab_being_dragged()[1]
-        is_left_release = button == GLFW_MOUSE_BUTTON_LEFT and action == GLFW_RELEASE
         if tab_id_at_pointer < 0:  # synthetic tab (e.g. "+" new-tab button)
             if is_left_release and not drag_started:
                 set_tab_being_dragged()  # clear potential drag from a press on a tab
@@ -1831,6 +2341,8 @@ class TabManager:  # {{{
         if tab is None:
             if is_left_release:
                 set_tab_being_dragged()  # clear potential drag from a press on a tab
+            elif button == GLFW_MOUSE_BUTTON_LEFT and action == GLFW_PRESS and tab_bar.contains(x, y):
+                tab_bar.start_selection(x, y)  # of text outside the tabs
             if self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 2:
                 self.new_tab()
                 self.recent_tab_bar_mouse_events.clear()
@@ -1863,10 +2375,10 @@ class TabManager:  # {{{
             dragged_window_id, drag_started, start_x, start_y = get_window_being_dragged()
             if dragged_window_id and not drag_started:
                 threshold = get_options().drag_threshold
-                dist_sq = (x - start_x)**2 + (y - start_y)**2
+                dist_sq = (x - start_x) ** 2 + (y - start_y) ** 2
                 if threshold and dist_sq > threshold * threshold:
                     set_window_being_dragged(dragged_window_id, True, start_x, start_y)
-                    request_callback_with_thumbnail("start_window_drag", self.os_window_id, dragged_window_id)
+                    boss.request_thumbnail(self.os_window_id, boss.start_window_drag, window_id=dragged_window_id)
                     self.recent_title_bar_mouse_events.clear()
             return
         self.recent_title_bar_mouse_events.add(button, modifiers, action, x, y, window_id)
@@ -1893,6 +2405,7 @@ class TabManager:  # {{{
         if (w := boss.window_id_map.get(window_id)) is None:
             set_window_being_dragged()
             return
+        boss.awaiting_window_drop = False
         opts = get_options()
         min_w = opts.window_title_bar_min_windows
         for tm in boss.all_tab_managers:
@@ -1905,7 +2418,7 @@ class TabManager:  # {{{
         title = str(w.title or '')
         fg = color_as_int(opts.window_title_bar_active_foreground or opts.active_tab_foreground)
         bg = color_as_int(opts.window_title_bar_active_background or opts.active_tab_background)
-        title_pixels, width = draw_single_line_of_text(self.os_window_id, title, 0xff000000 | fg, 0xff000000 | bg, width)
+        title_pixels, width = draw_single_line_of_text(self.os_window_id, title, 0xFF000000 | fg, 0xFF000000 | bg, width)
         title_height = len(title_pixels) // (width * 4)
         thumbnails = ((title_pixels + pixels, width, title_height + height),)
         drag_data = {f'application/net.kovidgoyal.kitty-window-{os.getpid()}': str(window_id).encode()}
@@ -1922,11 +2435,81 @@ class TabManager:  # {{{
         self.window_drag_target_tab_id = tab_id
         self.mark_tab_bar_dirty()
 
+    def _cancel_drag_hover(self) -> None:
+        if (h := self.drag_hover) is not None:
+            self.drag_hover = None
+            if h.timer:
+                remove_timer(h.timer)
+
+    def finish_tab_drag_hover(self, restore_focus: bool = True) -> None:
+        """Discard a tab drag's hover selection, restoring the previous tab if needed."""
+        tab_id = self.tab_drag_focus_before_hover
+        history = self.tab_drag_history_before_hover
+        self.tab_drag_focus_before_hover = 0
+        self.tab_drag_history_before_hover = ()
+        if restore_focus and tab_id and (tab := self.tab_for_id(tab_id)) is not None:
+            if tab is not self.active_tab:
+                self.set_active_tab(tab)
+            self.active_tab_history.clear()
+            self.active_tab_history.extend(tid for tid in history if self.tab_for_id(tid) is not None)
+
+    def _activate_drag_hover(self, timer_id: int | None = None) -> None:
+        if (h := self.drag_hover) is None or (timer_id is not None and timer_id != h.timer):
+            return
+        self.drag_hover = None
+        if timer_id is None and h.timer:
+            remove_timer(h.timer)  # activated by a drag event before the timer fired
+        if not self.window_drag_over_me:
+            return
+        if h.source_is_window:
+            if get_window_being_dragged()[:2] != (h.source_id, True):
+                return
+        else:
+            # Only a single window tab can be dropped into the content area of another tab
+            if get_tab_being_dragged()[:2] != (h.source_id, True):
+                return
+            source = get_boss().tab_for_id(h.source_id)
+            if source is None or source.windows.num_groups != 1 or source.id == h.tab_id:
+                return
+        if (tab := self.tab_for_id(h.tab_id)) is not None:
+            if not h.source_is_window and not self.tab_drag_focus_before_hover and self.active_tab is not None:
+                self.tab_drag_focus_before_hover = self.active_tab.id
+                self.tab_drag_history_before_hover = tuple(self.active_tab_history)
+            self.set_active_tab(tab)
+
+    def _update_drag_hover(self, tab_id: int, source_id: int, source_is_window: bool) -> None:
+        "Switch to tab_id once the pointer rests on it for drag_hover_delay seconds, zero cancels"
+        tab = self.tab_for_id(tab_id) if tab_id else None
+        if tab is None or tab is self.active_tab:
+            self._cancel_drag_hover()
+        elif (h := self.drag_hover) is None or (h.tab_id, h.source_id, h.source_is_window) != (tab_id, source_id, source_is_window):
+            self._cancel_drag_hover()
+            delay = self.drag_hover_delay
+            timer = add_timer(self._activate_drag_hover, delay, False)
+            self.drag_hover = DragHover(tab_id, source_id, source_is_window, monotonic() + delay, timer)
+        elif monotonic() >= h.deadline:
+            # Cocoa sends periodic drag updates even while stationary, including in
+            # tracking run loop modes where ordinary timers do not fire.
+            self._activate_drag_hover()
+
+    def _set_window_drop_tab_target(self, target: WindowDropTarget | None = None, window_id: int = 0) -> None:
+        before = target.before_tab_id if target is not None else None
+        if self.tab_bar.window_drop_insert_before != before:
+            self.tab_bar.window_drop_insert_before = before
+            self.mark_tab_bar_dirty()
+        tab_id = target.tab_id if target is not None else 0
+        # Highlight the "+" button only when appending, elsewhere the insertion marker is enough
+        self._set_drag_target_tab(-1 if before == 0 else tab_id)
+        # Tab drags clear the window preview before updating the tab preview on
+        # every drag event. Keep an existing tab hover timer across those events.
+        if tab_id or self.drag_hover is None or self.drag_hover.source_is_window:
+            self._update_drag_hover(tab_id, window_id, source_is_window=True)
+
     def _clear_force_show_title_bars(self) -> None:
         boss = get_boss()
         for tm in boss.all_tab_managers:
             tm._set_drag_target_window(0)
-            tm._set_drag_target_tab(0)
+            tm._set_window_drop_tab_target()
             for tab in tm:
                 if tab.force_show_title_bars:
                     tab.force_show_title_bars = False
@@ -1934,26 +2517,66 @@ class TabManager:  # {{{
 
     def _find_window_at(self, x: int, y: int) -> 'Window | None':
         from .fast_data_types import viewport_for_window
+
         central = viewport_for_window(self.os_window_id)[0]
         if not (central.left <= x < central.right and central.top <= y < central.bottom):
             return None
-        rel_x = x - central.left
-        rel_y = y - central.top
+        # Window geometry is already relative to the OS window.
+        rel_x, rel_y = x, y
         if (active_tab := self.active_tab) is None:
             return None
+        # Only visible windows can be drop targets. Overlaid windows and the
+        # inactive groups of a Stack layout share the geometry of the window
+        # covering them, so without this the hit test depends on iteration order.
         for win in active_tab:
+            if not win.is_visible_in_layout:
+                continue
             g = win.geometry
             if g.left <= rel_x < g.right and g.top <= rel_y < g.bottom:
                 return win
         return None
 
-    def _set_drag_target_window(self, window_id: int, quadrant: int = 0) -> None:
-        ''' Highlight window_id's title bar as the drop target; 0 clears. quadrant!=0 shows quadrant overlay instead '''
+    def _pointer_in_title_bar_of(self, win: 'Window', y: int) -> bool:
+        if not win.show_title_bar:
+            return False
+        from .fast_data_types import cell_size_for_window
+
+        _, ch = cell_size_for_window(self.os_window_id)
+        g = win.geometry
+        tb_top = g.top if get_options().window_title_bar == 'top' else g.bottom - ch
+        return tb_top <= y < tb_top + ch
+
+    def _drop_direction_for(self, dest_window: 'Window', x: int, y: int) -> DropDirection:
+        "The edge of dest_window that the pointer at x, y is closest to"
+        g = dest_window.geometry
+        dx = x - (g.left + g.right) / 2
+        dy = y - (g.top + g.bottom) / 2
+        return ('right' if dx > 0 else 'left') if abs(dx) >= abs(dy) else ('bottom' if dy > 0 else 'top')
+
+    def set_drag_over_me(self, over: bool) -> None:
+        """Keep the tab bar of this OS Window visible while a drag is over it, so that its "+"
+        button is reachable. Callers that classify a drop by position must do this before reading
+        the viewport regions, as it changes the size of the central region."""
+        if over == self.window_drag_over_me:
+            return
+        self.window_drag_over_me = over
+        if not self.tab_bar_hidden:
+            self.layout_tab_bar()
+            self.resize(only_tabs=True)
+
+    def _set_drag_target_window(self, window_id: int, quadrant: int = 0, direction: DropDirection | None = None) -> None:
+        """Highlight the area of window_id given by quadrant as the drop target, window_id 0 clears. The quadrant
+        is one of quadrant_for_direction for a half of the window, SWAP_QUADRANT for the whole window and its title
+        bar or WHOLE_WINDOW_QUADRANT. direction is the edge of window_id the dropped window is inserted at, None to
+        swap with it."""
         from .fast_data_types import set_window_drag_overlay
+
         boss = get_boss()
-        prev_id = self.window_being_dropped.window_id if self.window_being_dropped else 0
-        prev_quadrant = self.window_being_dropped.quadrant if self.window_being_dropped else 0
-        if prev_id == window_id and prev_quadrant == quadrant:
+        prev = self.window_being_dropped
+        prev_id = prev.window_id if prev else 0
+        prev_quadrant = prev.quadrant if prev else 0
+        prev_direction = prev.direction if prev else None
+        if prev_id == window_id and prev_quadrant == quadrant and prev_direction == direction:
             return
         if prev_id and (prev_w := boss.window_id_map.get(prev_id)):
             prev_w.is_drag_target = False
@@ -1962,132 +2585,149 @@ class TabManager:  # {{{
                 tab = prev_w.tabref()
                 prev_w.update_title_bar(is_active=tab is not None and tab.active_window is prev_w)
         if window_id and (new_w := boss.window_id_map.get(window_id)):
-            if quadrant == 5:
+            if quadrant == SWAP_QUADRANT:
                 new_w.is_drag_target = True
                 new_w.update_title_bar(is_active=True)
             set_window_drag_overlay(self.os_window_id, new_w.tab_id, window_id, quadrant)
-            self.window_being_dropped = WindowBeingDropped(window_id=window_id, quadrant=quadrant)
+            self.window_being_dropped = WindowBeingDropped(window_id=window_id, quadrant=quadrant, direction=direction)
         else:
             self.window_being_dropped = None
 
     def on_window_drop_move(self, window_id: int = 0, is_dest: bool = False, x: int = 0, y: int = 0) -> None:
+        """Update the drop preview drawn over this OS Window, is_dest False clears it. Tab bar
+        visibility is owned by set_drag_over_me(), which the caller must have already updated."""
         if not is_dest:
             self._set_drag_target_window(0)
-            self._set_drag_target_tab(0)
-            if self.window_drag_over_me:
-                self.window_drag_over_me = False
-                if not self.tab_bar_hidden:
-                    self.layout_tab_bar()
-                    self.resize(only_tabs=True)
+            self._set_window_drop_tab_target()
             return
-        if not self.window_drag_over_me:
-            self.window_drag_over_me = True
-            if not self.tab_bar_hidden:
-                self.layout_tab_bar()
-                self.resize(only_tabs=True)
         from .fast_data_types import viewport_for_window
+
         tab_bar = viewport_for_window(self.os_window_id)[1]
         if tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom:
             self._set_drag_target_window(0)
-            self._set_drag_target_tab(self.tab_bar.tab_id_at(x, y))
+            self._set_window_drop_tab_target(self.tab_bar.window_drop_target_at(x, y), window_id)
             return
-        self._set_drag_target_tab(0)
+        self._set_window_drop_tab_target()
         dest_window = self._find_window_at(x, y)
-        if dest_window and dest_window.id != window_id:
-            from .fast_data_types import viewport_for_window as _vfw
-            central = _vfw(self.os_window_id)[0]
-            rel_y = y - central.top
-            if dest_window.show_title_bar:
-                from .fast_data_types import cell_size_for_window
-                _, ch = cell_size_for_window(self.os_window_id)
-                g = dest_window.geometry
-                opts = get_options()
-                tb_top = g.top if opts.window_title_bar == 'top' else g.bottom - ch
-                if tb_top <= rel_y < tb_top + ch:
-                    # Title bar hover: full window + title bar highlight (swap)
-                    self._set_drag_target_window(dest_window.id, 5)
-                    return
-            active_tab = self.active_tab
-            if active_tab is not None:
-                rel_x = x - central.left
-                g = dest_window.geometry
-                dx = rel_x - (g.left + g.right) / 2
-                dy = rel_y - (g.top + g.bottom) / 2
-                quad_map = {'left': 1, 'right': 2, 'top': 3, 'bottom': 4}
-                match active_tab.current_layout.drag_overlay_mode:
-                    case DragOverlayMode.axis_y:
-                        direction = 'bottom' if dy > 0 else 'top'
-                    case DragOverlayMode.axis_x:
-                        direction = 'right' if dx > 0 else 'left'
-                    case DragOverlayMode.free:
-                        direction = ('right' if dx > 0 else 'left') if abs(dx) >= abs(dy) else ('bottom' if dy > 0 else 'top')
-                    case DragOverlayMode.full:
-                        self._set_drag_target_window(dest_window.id, 6)
-                        return
-                self._set_drag_target_window(dest_window.id, quad_map[direction])
+        if dest_window is not None and dest_window.id != window_id and (tab := self.active_tab) is not None:
+            if (target := self._window_drop_target(tab, window_id, dest_window, x, y)) is not None:
+                self._set_drag_target_window(dest_window.id, *target)
+                return
+        self._set_drag_target_window(0)
+
+    def _window_drop_target(self, tab: Tab, window_id: int, dest_window: 'Window', x: int, y: int) -> tuple[int, DropDirection | None] | None:
+        """The quadrant of dest_window to highlight for a window dropped at x, y, which is the part of
+        dest_window the window will be placed in, and the edge of dest_window it is placed at, None to swap
+        with dest_window. Returns None if dest_window is not a drop target."""
+        windows = tab.windows
+        dest = windows.group_for_window(dest_window)
+        w = get_boss().window_id_map.get(window_id)
+        src = None if w is None or w.tabref() is not tab else windows.group_for_window(w)
+        # Docks are outside the layout so windows cannot be swapped with or inserted next to them
+        if dest is None or dest.dock is not None or (src is not None and (src is dest or src.dock is not None)):
+            return None
+        if self._pointer_in_title_bar_of(dest_window, y):
+            return SWAP_QUADRANT, None
+        layout = tab.current_layout
+        mode = layout.drag_overlay_mode
+        if mode in (DragOverlayMode.axis_x, DragOverlayMode.axis_y):
+            # The windows can only be reordered, so the window takes the place of dest_window, moving the
+            # windows in between along, which is placing it after dest_window when moving it forward
+            after = src is not None and windows.groups.index(src) < windows.groups.index(dest)
+            if mode is DragOverlayMode.axis_y:
+                return WHOLE_WINDOW_QUADRANT, ('bottom' if after else 'top')
+            return WHOLE_WINDOW_QUADRANT, ('right' if after else 'left')
+        direction = self._drop_direction_for(dest_window, x, y)
+        if mode is DragOverlayMode.full:
+            # The whole window is highlighted, but the drop still inserts directionally
+            return WHOLE_WINDOW_QUADRANT, direction
+        if mode is DragOverlayMode.free:
+            if (
+                w is not None
+                and src is not None
+                and not layout.insert_window_next_to_changes_layout(windows, w, dest_window, direction in ('left', 'right'), direction in ('right', 'bottom'))
+            ):
+                # The window is already on this side of dest_window, all that is left is to swap them
+                return SWAP_QUADRANT, None
+        # The window is split off dest_window, which first takes over the space the window leaves if
+        # they are next to each other, so the dropped window gets that side of the enlarged dest_window
+        return quadrant_for_direction[direction], direction
+
+    def _insert_window_as_tab(self, window: Window, before_tab_id: int) -> None:
+        "Put window into a tab of its own, placed before the tab before_tab_id, or last if zero"
+        boss = get_boss()
+        if (src_tab := window.tabref()) is None:
+            return
+        if boss._sole_window_of_tab(src_tab) is window:
+            # The window already has a tab of its own, move that tab instead,
+            # preserving its title and layout
+            if src_tab.os_window_id == self.os_window_id:
+                tab: Tab | None = src_tab
             else:
-                self._set_drag_target_window(0)
+                tab = boss._move_tab_to(src_tab, self.os_window_id)
         else:
-            self._set_drag_target_window(0)
+            boss._move_window_to(window, target_tab_id='new', target_os_window_id=self.os_window_id)
+            tab = window.tabref()
+        if tab is None or tab.os_window_id != self.os_window_id:
+            return
+        order = [t.id for t in self.tabs if t is not tab]
+        idx = order.index(before_tab_id) if before_tab_id in order else len(order)
+        order.insert(idx, tab.id)
+        self.apply_tab_ordering(order)
+        self.set_active_tab(tab)
 
     def on_window_drop(self, x: int, y: int, window_id: int) -> None:
-        from .fast_data_types import cell_size_for_window, viewport_for_window
+        from .fast_data_types import viewport_for_window
+
         boss = get_boss()
         # A window is being dropped on this tab manager, so the tab bar must have been
         # visible to the user (showing the "+" button). Ensure it stays visible for the
         # drop position calculation. This is needed because on_drag_source_finished can
         # run before the on_drop data transfer completes, clearing window_drag_over_me
         # and hiding the tab bar for the single-tab case before we get here.
-        self.window_drag_over_me = True
+        self.set_drag_over_me(True)
+        central, tab_bar = viewport_for_window(self.os_window_id)[:2]
+        in_tab_bar = tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom
+        tab_target = self.tab_bar.window_drop_target_at(x, y) if in_tab_bar else None
+        in_central = central.left <= x < central.right and central.top <= y < central.bottom
+        # Classify the drop before hiding the title bars shown only for the drag, as
+        # hiding them changes the window geometry the preview was drawn against.
+        dest_window = self._find_window_at(x, y) if tab_target is None and in_central else None
+        target = None
+        if dest_window is not None and dest_window.id != window_id and (tab := self.active_tab) is not None:
+            target = self._window_drop_target(tab, window_id, dest_window, x, y)
+        if target is None:
+            # Not a drop target, treat it like a drop on empty space
+            dest_window = None
+        direction = None if target is None else target[1]
         self._clear_force_show_title_bars()
         w = boss.window_id_map.get(window_id)
         if w is None:
             return
         set_window_being_dragged()
         self.mark_tab_bar_dirty()
-        central, tab_bar = viewport_for_window(self.os_window_id)[:2]
-
         # Case 1: Drop on tab bar → move to that tab
-        in_tab_bar = tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom
-        if in_tab_bar:
-            if (tab_id := self.tab_bar.tab_id_at(x, y)) and (dest_tab := self.tab_for_id(tab_id)):
+        if tab_target is not None:
+            if tab_target.before_tab_id is not None:
+                self._insert_window_as_tab(w, tab_target.before_tab_id)
+            elif (dest_tab := self.tab_for_id(tab_target.tab_id)) is not None:
                 boss._move_window_to(w, target_tab_id=dest_tab.id)
-            else:
-                boss._move_window_to(w, target_tab_id='new')
             return
 
         # Case 2: Drop in central area
-        in_central = central.left <= x < central.right and central.top <= y < central.bottom
         if not in_central:
             return
 
-        rel_x = x - central.left
-        rel_y = y - central.top
         if (active_tab := self.active_tab) is None:
             return
 
-        dest_window = None
-        dest_in_title_bar = False
-        opts = get_options()
-        cw, ch = cell_size_for_window(self.os_window_id)
-        for win in active_tab:
-            g = win.geometry
-            if opts.window_title_bar == 'top':
-                tb_top, tb_bottom = g.top, g.top + ch
-            else:
-                tb_top, tb_bottom = g.bottom - ch, g.bottom
-            if g.left <= rel_x < g.right and g.top <= rel_y < g.bottom:
-                dest_window = win
-                dest_in_title_bar = getattr(win, 'show_title_bar', False) and (tb_top <= rel_y < tb_bottom)
-                break
-
-        if dest_window is None or dest_window.id == window_id:
+        if dest_window is None:
             # Dropped on empty space or self; if different tab, move there
             if active_tab is not w.tabref():
                 boss._move_window_to(w, target_tab_id=active_tab.id)
             return
 
-        if dest_in_title_bar:
+        if direction is None:
             if (src_tab := w.tabref()) is dest_window.tabref() and src_tab is not None:
                 # Same tab: swap positions
                 src_tab.swap_windows(w, dest_window)
@@ -2095,16 +2735,6 @@ class TabManager:  # {{{
                 # Cross-tab title bar drop: move to the destination tab
                 boss._move_window_to(w, target_tab_id=active_tab.id)
         else:
-            g = dest_window.geometry
-            dx = rel_x - (g.left + g.right) / 2
-            dy = rel_y - (g.top + g.bottom) / 2
-            match active_tab.current_layout.drag_overlay_mode:
-                case DragOverlayMode.axis_y:
-                    direction: Literal['left', 'right', 'top', 'bottom'] = 'bottom' if dy > 0 else 'top'
-                case DragOverlayMode.axis_x:
-                    direction = 'right' if dx > 0 else 'left'
-                case DragOverlayMode.free | DragOverlayMode.full:
-                    direction = ('right' if dx > 0 else 'left') if abs(dx) >= abs(dy) else ('bottom' if dy > 0 else 'top')
             boss._insert_window_in_direction(w, dest_window, direction)
 
     def update_progress(self) -> None:
@@ -2123,9 +2753,14 @@ class TabManager:  # {{{
     def tab_bar_rects(self) -> tuple[Border, ...]:
         return self.tab_bar.blank_rects if self.tab_bar_should_be_visible else ()
 
-    def destroy(self) -> None:
+    def destroy(self, close_event: CloseEvent | None = None) -> None:
+        if close_event is None:
+            close_event = {'reason': 'os_window', 'cause': 'closed', 'confirmed': self.close_confirmed}
+        self._cancel_drag_hover()
+        # Parked docks are destroyed along with the tab they are put back into
+        self.sync_os_window_docks()
         for t in self:
-            t.destroy()
+            t.destroy(close_event)
         self.tab_bar.destroy()
         del self.tab_bar
         del self.tabs
@@ -2138,4 +2773,6 @@ class TabManager:  # {{{
         self.tab_bar.apply_options()
         self.update_tab_bar_data()
         self.layout_tab_bar()
+
+
 # }}}

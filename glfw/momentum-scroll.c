@@ -20,25 +20,35 @@ typedef struct ScrollSample {
 typedef enum ScrollerState { NONE, PHYSICAL_EVENT_IN_PROGRESS, MOMENTUM_IN_PROGRESS } ScrollerState;
 
 typedef struct MomentumScroller {
-    double friction,  // Deceleration inverse factor (0-1, higher = longer coast)
-           min_velocity, // Minimum velocity before stopping
-           max_velocity, // Maximum velocity to prevent runaway scrolling
-           velocity_scale; // Scale factor for initial velocity
-    monotonic_t timer_interval;  // animation speed
+    double friction,            // Deceleration inverse factor (0-1, higher = longer coast)
+        min_velocity,           // Minimum velocity before stopping
+        max_velocity,           // Maximum velocity to prevent runaway scrolling
+        velocity_scale;         // Scale factor for initial velocity
+    monotonic_t timer_interval; // animation speed
 
     GLFWid timer_id, window_id;
     ScrollSamples samples;
     ScrollerState state;
     double scale;
-    struct { double x, y; } velocity;
+    struct {
+        double x, y;
+    } velocity;
     int keyboard_modifiers;
     struct {
         monotonic_t start, duration;
-        struct { double x, y; } displacement;
+        struct {
+            double x, y;
+        } displacement;
     } physical_event;
 } MomentumScroller;
 
-#define DEFAULTS { .friction = 0.96, .min_velocity = 0.5, .max_velocity = 100, .timer_interval = 10, }
+#define DEFAULTS              \
+    {                         \
+        .friction = 0.96,     \
+        .min_velocity = 0.5,  \
+        .max_velocity = 100,  \
+        .timer_interval = 10, \
+    }
 static const MomentumScroller defaults = DEFAULTS;
 static MomentumScroller s = DEFAULTS;
 #undef DEFAULTS
@@ -48,7 +58,8 @@ glfwConfigureMomentumScroller(double friction, double min_velocity, double max_v
     s.timer_interval = timer_interval_ms ? ms_to_monotonic_t(timer_interval_ms) : defaults.timer_interval;
     s.friction = friction < 0 ? defaults.friction : MAX(0, MIN(friction, 1));
 #define S(w) s.w = w >= 0 ? w : defaults.w
-    S(min_velocity); S(max_velocity);
+    S(min_velocity);
+    S(max_velocity);
 #undef S
 }
 
@@ -60,14 +71,16 @@ cancel_existing_scroll(bool reset_velocity) {
     }
     if (s.state == MOMENTUM_IN_PROGRESS) {
         _GLFWwindow *w = _glfwWindowForId(s.window_id);
-        if (w) _glfwInputScroll(
-            w, &(GLFWScrollEvent){.momentum_type=GLFW_MOMENTUM_PHASE_CANCELED, .keyboard_modifiers=s.keyboard_modifiers});
+        if (w) _glfwInputScroll(w, &(GLFWScrollEvent){.momentum_type = GLFW_MOMENTUM_PHASE_CANCELED, .keyboard_modifiers = s.keyboard_modifiers});
     }
     s.window_id = 0;
     s.keyboard_modifiers = 0;
     deque_clear(&s.samples);
     s.state = NONE;
-    if (reset_velocity) { s.velocity.x = 0; s.velocity.y = 0; }
+    if (reset_velocity) {
+        s.velocity.x = 0;
+        s.velocity.y = 0;
+    }
 }
 
 static void
@@ -78,15 +91,19 @@ add_sample(double dx, double dy, monotonic_t now) {
 static void
 last_sample_delta(double *dx, double *dy) {
     const ScrollSample *ss;
-    if ((ss = deque_peek_back(&s.samples))) { *dx = ss->dx; *dy = ss->dy; }
-    else { *dx = 0; *dy = 0; }
+    if ((ss = deque_peek_back(&s.samples))) {
+        *dx = ss->dx;
+        *dy = ss->dy;
+    } else {
+        *dx = 0;
+        *dy = 0;
+    }
 }
 
 static void
 trim_old_samples(monotonic_t now) {
     const ScrollSample *ss;
-    while ((ss = deque_peek_front(&s.samples)) && (now - ss->timestamp) > ms_to_monotonic_t(150))
-        deque_pop_front(&s.samples, NULL);
+    while ((ss = deque_peek_front(&s.samples)) && (now - ss->timestamp) > ms_to_monotonic_t(150)) deque_pop_front(&s.samples, NULL);
 }
 
 static void
@@ -105,8 +122,7 @@ set_velocity_from_samples(monotonic_t now) {
     trim_old_samples(now);
     ScrollSample ss;
     switch (deque_size(&s.samples)) {
-        case 0:
-            return;
+        case 0: return;
         case 1:
             deque_pop_front(&s.samples, &ss);
             add_velocity(ss.dx, ss.dy);
@@ -121,7 +137,8 @@ set_velocity_from_samples(monotonic_t now) {
     for (size_t i = 0; i < deque_size(&s.samples); i++) {
         const ScrollSample *ss = deque_at(&s.samples, i);
         double weight = 1.0 + (ss->timestamp - first_time) / time_span;
-        total_dx += ss->dx * weight; total_dy += ss->dy * weight;
+        total_dx += ss->dx * weight;
+        total_dy += ss->dy * weight;
         total_weight += weight;
     }
     deque_clear(&s.samples);
@@ -138,7 +155,8 @@ send_momentum_event(bool is_start) {
         cancel_existing_scroll(true);
         return;
     }
-    s.velocity.x *= s.friction; s.velocity.y *= s.friction;
+    s.velocity.x *= s.friction;
+    s.velocity.y *= s.friction;
     if (fabs(s.velocity.x) < s.min_velocity) s.velocity.x = 0;
     if (fabs(s.velocity.y) < s.min_velocity) s.velocity.y = 0;
 
@@ -150,9 +168,13 @@ send_momentum_event(bool is_start) {
         s.state = NONE;
     }
     GLFWScrollEvent e = {
-        .offset_type=GLFW_SCROLL_OFFEST_HIGHRES, .momentum_type=m, .unscaled.x=s.velocity.x, .unscaled.y=s.velocity.y,
-        .x_offset=s.scale * s.velocity.x, .y_offset=s.scale * s.velocity.y, .keyboard_modifiers=s.keyboard_modifiers
-    };
+        .offset_type = GLFW_SCROLL_OFFEST_HIGHRES,
+        .momentum_type = m,
+        .unscaled.x = s.velocity.x,
+        .unscaled.y = s.velocity.y,
+        .x_offset = s.scale * s.velocity.x,
+        .y_offset = s.scale * s.velocity.y,
+        .keyboard_modifiers = s.keyboard_modifiers};
     _glfwInputScroll(w, &e);
 }
 
@@ -170,10 +192,7 @@ start_momentum_scroll(monotonic_t now) {
 
 static bool
 is_suitable_for_momentum(void) {
-    return (
-        MAX(fabs(s.physical_event.displacement.x), fabs(s.physical_event.displacement.y)) > 10 &&
-        s.physical_event.duration > ms_to_monotonic_t(2)
-    );
+    return (MAX(fabs(s.physical_event.displacement.x), fabs(s.physical_event.displacement.y)) > 10 && s.physical_event.duration > ms_to_monotonic_t(2));
 }
 
 bool
@@ -181,18 +200,16 @@ glfw_is_momentum_scroll_enabled(void) {
     return s.friction > 0;
 }
 
-void
-glfw_handle_scroll_event_for_momentum(
-    _GLFWwindow *w, const GLFWScrollEvent *ev, bool stopped, bool is_finger_based
-) {
-    const bool is_synthetic_momentum_start_event = stopped && momentum_scroll_gesture_detection_timeout_ms;
-    if (!w) { cancel_existing_scroll(true); return; }
+static void
+handle_scroll_event(_GLFWwindow *w, const GLFWScrollEvent *ev, bool stopped, bool is_finger_based, monotonic_t now, bool is_synthetic_momentum_start_event) {
+    if (!w) {
+        cancel_existing_scroll(true);
+        return;
+    }
     if (!is_finger_based || ev->offset_type != GLFW_SCROLL_OFFEST_HIGHRES || !glfw_is_momentum_scroll_enabled()) {
         if (ev->x_offset != 0 || ev->y_offset != 0) _glfwInputScroll(w, ev);
         return;
     }
-    monotonic_t now = monotonic();
-    if (is_synthetic_momentum_start_event) now -= ms_to_monotonic_t(momentum_scroll_gesture_detection_timeout_ms);
     if (s.state == PHYSICAL_EVENT_IN_PROGRESS) {
         s.physical_event.displacement.x += ev->unscaled.x;
         s.physical_event.displacement.y += ev->unscaled.y;
@@ -204,13 +221,14 @@ glfw_handle_scroll_event_for_momentum(
         memset(&s.physical_event, 0, sizeof(s.physical_event));
         s.physical_event.start = now;
     }
-    if (ev->unscaled.y > 0) s.scale = ev->y_offset / ev->unscaled.y;
-    else if (ev->unscaled.x > 0) s.scale = ev->x_offset / ev->unscaled.x;
+    if (ev->unscaled.y != 0) s.scale = ev->y_offset / ev->unscaled.y;
+    else if (ev->unscaled.x != 0) s.scale = ev->x_offset / ev->unscaled.x;
     if (s.window_id && s.window_id != w->id) cancel_existing_scroll(true);
     if (s.state != PHYSICAL_EVENT_IN_PROGRESS) cancel_existing_scroll(false);
     if (!is_synthetic_momentum_start_event) {
         // Check for change in direction
-        double ldx, ldy; last_sample_delta(&ldx, &ldy);
+        double ldx, ldy;
+        last_sample_delta(&ldx, &ldy);
         if (ldx * ev->x_offset < 0 || ldy * ev->y_offset < 0) cancel_existing_scroll(true);
     }
     s.window_id = w->id;
@@ -224,4 +242,42 @@ glfw_handle_scroll_event_for_momentum(
     }
     if (s.state == MOMENTUM_IN_PROGRESS) start_momentum_scroll(now);
     else _glfwInputScroll(w, ev);
+}
+
+void
+glfw_handle_scroll_event_for_momentum(_GLFWwindow *w, const GLFWScrollEvent *ev, bool stopped, bool is_finger_based) {
+    const bool is_synthetic_momentum_start_event = stopped && momentum_scroll_gesture_detection_timeout_ms;
+    monotonic_t now = monotonic();
+    if (is_synthetic_momentum_start_event) now -= ms_to_monotonic_t(momentum_scroll_gesture_detection_timeout_ms);
+    handle_scroll_event(w, ev, stopped, is_finger_based, now, is_synthetic_momentum_start_event);
+}
+
+// Scrolls window by a finger driven movement, such as a drag on a touchscreen,
+// through the same momentum scroller that touchpad scrolling uses. dx and dy are
+// in logical pixels, with the same sign as GLFWScrollEvent offsets, which is the
+// direction the finger moved, so a finger displacement can be passed as is. Pass
+// stopped=true when the finger lifts, the scroll then coasts if the finger was
+// moving fast enough. timestamp is when the movement happened, on the clock of
+// monotonic(), or zero for now. If momentum scrolling is disabled, this sends
+// plain high resolution scroll events.
+GLFWAPI void
+glfwFeedMomentumScroller(GLFWwindow *handle, double dx, double dy, int keyboard_modifiers, bool stopped, monotonic_t timestamp) {
+    _GLFWwindow *w = (_GLFWwindow *)handle;
+    if (!w) return;
+    float xscale = 1, yscale = 1;
+    _glfwPlatformGetWindowContentScale(w, &xscale, &yscale);
+    const GLFWScrollEvent ev = {
+        .offset_type = GLFW_SCROLL_OFFEST_HIGHRES,
+        .unscaled = {.x = dx, .y = dy},
+        .x_offset = dx * (xscale > 0 ? xscale : 1),
+        .y_offset = dy * (yscale > 0 ? yscale : 1),
+        .keyboard_modifiers = keyboard_modifiers,
+    };
+    handle_scroll_event(w, &ev, stopped, true, timestamp > 0 ? timestamp : monotonic(), false);
+}
+
+// Stops any momentum scroll that is coasting
+GLFWAPI void
+glfwCancelMomentumScroll(void) {
+    glfw_cancel_momentum_scroll();
 }

@@ -8,18 +8,25 @@
 
 #include "data-types.h"
 
-PyObject* create_disk_cache(void);
+PyObject *create_disk_cache(void);
 bool add_to_disk_cache(PyObject *self, const void *key, size_t key_sz, const void *data, size_t data_sz, bool memory_only);
+// As above, but takes ownership of *data (which must be a malloc() allocated
+// pointer), setting it to NULL. Ownership is transferred only on success, on
+// failure the caller remains responsible for freeing it. Note that once
+// ownership has been transferred the data must not be read or written by the
+// caller, the cache write thread can modify it at any time.
+bool add_to_disk_cache_move(PyObject *self, const void *key, size_t key_sz, void **data, size_t data_sz, bool memory_only);
 bool remove_from_disk_cache(PyObject *self_, const void *key, size_t key_sz);
-void* read_from_disk_cache(PyObject *self_, const void *key, size_t key_sz, void*(allocator)(void*, size_t), void*, bool);
-PyObject* read_from_disk_cache_python(PyObject *self_, const void *key, size_t key_sz, bool);
+void *read_from_disk_cache(PyObject *self_, const void *key, size_t key_sz, void *(allocator)(void *, size_t), void *, bool);
+PyObject *read_from_disk_cache_python(PyObject *self_, const void *key, size_t key_sz, bool);
 bool disk_cache_wait_for_write(PyObject *self, monotonic_t timeout);
 size_t disk_cache_total_size(PyObject *self);
 size_t disk_cache_size_on_disk(PyObject *self);
 size_t disk_cache_num_cached_in_ram(PyObject *self_);
 
-static inline void* disk_cache_malloc_allocator(void *x, size_t sz) {
-    *((size_t*)x) = sz;
+static inline void *
+disk_cache_malloc_allocator(void *x, size_t sz) {
+    *((size_t *)x) = sz;
     return malloc(sz);
 }
 

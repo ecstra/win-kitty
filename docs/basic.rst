@@ -89,8 +89,11 @@ You can also define a shortcut to switch to the previously active window::
 :ac:`nth_window` will focus the nth window for positive numbers (starting from
 zero) and the previously active windows for negative numbers.
 
-To switch to the nth OS window, you can define :ac:`nth_os_window`. Only
-positive numbers are accepted, starting from one.
+To switch to the nth OS window, you can define :ac:`nth_os_window`. Positive
+numbers start from one, and numbers larger than the number of OS windows focus
+the last one. Negative numbers select previously active OS windows. Zero
+refocuses the current or most recently focused OS window, if the window manager
+allows applications to grab focus.
 
 .. _detach_window:
 
@@ -109,6 +112,16 @@ or another OS window::
     map ctrl+f3 detach_window new-tab-left
     # asks which tab to move the window into
     map ctrl+f4 detach_window ask
+
+The :ac:`detach_window` action also accepts the options of :program:`kitten @ detach-window`,
+which can be combined with :option:`launch --focus-existing` to use tabs like
+named workspaces, switching to a tab, or sending the current window to it,
+creating the tab if it does not exist::
+
+    # switch to the tab named 1, creating it if needed
+    map ctrl+1 launch --type=tab --tab-title=1 --location=by-title --focus-existing=@title
+    # move the current window to the tab named 1, creating it if needed
+    map ctrl+shift+1 detach_window --target-tab=@title --tab-title=1 --location=by-title --create-if-missing
 
 Similarly, you can detach the current tab, with::
 

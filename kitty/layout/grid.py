@@ -31,7 +31,6 @@ def calc_grid_size(n: int) -> tuple[int, int, int, int]:
 
 
 class Grid(Layout):
-
     name: str = 'grid'
     no_minimal_window_borders = True
     drag_overlay_mode = DragOverlayMode.axis_y
@@ -60,7 +59,7 @@ class Grid(Layout):
     def variable_layout(self, layout_func: Callable[..., LayoutDimension], num_windows: int, biased_map: dict[int, float]) -> LayoutDimension:
         return layout_func(num_windows, bias=biased_map if num_windows > 1 else None)
 
-    def position_for_window_idx(self, idx: int, num_windows: int, ncols:int , nrows: int, special_rows: int, special_col: int) -> tuple[int, int]:
+    def position_for_window_idx(self, idx: int, num_windows: int, ncols: int, nrows: int, special_rows: int, special_col: int) -> tuple[int, int]:
         row_num = col_num = 0
 
         def on_col_done(col_windows: list[int]) -> None:
@@ -68,8 +67,7 @@ class Grid(Layout):
             row_num = 0
             col_num += 1
 
-        for window_idx, xl, yl in self.layout_windows(
-                num_windows, nrows, ncols, special_rows, special_col, on_col_done):
+        for window_idx, xl, yl in self.layout_windows(num_windows, nrows, ncols, special_rows, special_col, on_col_done):
             if idx == window_idx:
                 return row_num, col_num
             row_num += 1
@@ -127,12 +125,24 @@ class Grid(Layout):
         setattr(self, attr, candidate)
         return True
 
+    def apply_fractional_bias(self, window_idx: int, increment: float, all_windows: WindowList, is_horizontal: bool) -> bool:
+        num = all_windows.num_groups
+        ncols, nrows, special_rows, special_col = calc_grid_size(num)
+
+        def geometry() -> tuple[tuple[LayoutData, LayoutData], ...]:
+            return tuple((x, y) for _, x, y in self.layout_windows(num, nrows, ncols, special_rows, special_col))
+
+        before = geometry()
+        before_rows, before_cols = self.biased_rows, self.biased_cols
+        if not self.apply_bias(window_idx, increment, all_windows, is_horizontal):
+            return False
+        if geometry() == before:
+            self.biased_rows, self.biased_cols = before_rows, before_cols
+            return False
+        return True
+
     def layout_windows(
-        self,
-        num_windows: int,
-        nrows: int, ncols: int,
-        special_rows: int, special_col: int,
-        on_col_done: Callable[[list[int]], None] = lambda col_windows: None
+        self, num_windows: int, nrows: int, ncols: int, special_rows: int, special_col: int, on_col_done: Callable[[list[int]], None] = lambda col_windows: None
     ) -> Generator[tuple[int, LayoutData, LayoutData], None, None]:
         # Distribute windows top-to-bottom, left-to-right (i.e. in columns)
         xlayout = self.variable_layout(self.column_layout, ncols, self.biased_cols)
@@ -169,28 +179,30 @@ class Grid(Layout):
             size = ld.space_before + ld.space_after + ld.content_size
             return start, size
 
-        def layout(ld: LayoutData, cell_length: int, before_dec: int, after_dec: int) -> LayoutData:
+        def layout(ld: LayoutData, cell_length: int, before_dec: int, after_dec: int, alignment: int) -> LayoutData:
             start, size = extents(ld)
             space_needed_for_decorations = before_dec + after_dec
             content_size = size - space_needed_for_decorations
             number_of_cells = content_size // cell_length
             cell_area = number_of_cells * cell_length
             extra = content_size - cell_area
-            if lgd.alignment_x == 0:  # center
-                before_dec += extra // 2
-            elif lgd.alignment_x > 0:  # end
-                before_dec += extra
-            return LayoutData(start + before_dec, number_of_cells, before_dec, size - cell_area - before_dec, cell_area)
+            compensatory_before = 0
+            if alignment == 0:  # center
+                compensatory_before = extra // 2
+            elif alignment > 0:  # end
+                compensatory_before = extra
+            space_before = before_dec + compensatory_before
+            space_after = size - cell_area - space_before
+            return LayoutData(start + space_before, number_of_cells, space_before, space_after, cell_area, compensatory_before, space_after - after_dec)
 
         def position_window_in_grid_cell(window_idx: int, xl: LayoutData, yl: LayoutData) -> None:
             wg = groups[window_idx]
             edges = Edges(wg.decoration('left'), wg.decoration('top'), wg.decoration('right'), wg.decoration('bottom'))
-            xl = layout(xl, lgd.cell_width, edges.left, edges.right)
-            yl = layout(yl, lgd.cell_height, edges.top, edges.bottom)
+            xl = layout(xl, lgd.cell_width, edges.left, edges.right, lgd.alignment_x)
+            yl = layout(yl, lgd.cell_height, edges.top, edges.bottom, lgd.alignment_y)
             self.set_window_group_geometry(wg, xl, yl)
 
-        for window_idx, xl, yl in self.layout_windows(
-                n, nrows, ncols, special_rows, special_col, on_col_done):
+        for window_idx, xl, yl in self.layout_windows(n, nrows, ncols, special_rows, special_col, on_col_done):
             position_window_in_grid_cell(window_idx, xl, yl)
 
     def minimal_borders(self, windows: WindowList) -> Iterator[BorderLine]:
@@ -227,7 +239,6 @@ class Grid(Layout):
             all_groups_in_order.append(wg)
             layout_data_map[wg.id] = xl, yl
         is_last_column = {groups[x].id for x in prev_col_windows}
-        active_group = windows.active_group
 
         def ends(yl: LayoutData) -> tuple[int, int]:
             return yl.content_pos - yl.space_before, yl.content_pos + yl.content_size + yl.space_after
@@ -254,7 +265,7 @@ class Grid(Layout):
         for wg in all_groups_in_order:
             color = BorderColor.inactive
             if needs_borders_map.get(wg.id):
-                color = BorderColor.active if wg is active_group else BorderColor.bell
+                color = BorderColor.bell if wg.needs_attention else BorderColor.active
             wid = wg.active_window_id
             yield from borders_for_window(wg.id, color, wid)
 
@@ -303,7 +314,7 @@ class Grid(Layout):
 
         ans: NeighborsMap = {}
         if row:
-            ans['top'] = neighbors(row-1, col)
+            ans['top'] = neighbors(row - 1, col)
         if bottom := neighbors(row + 1, col):
             ans['bottom'] = bottom
         if col and (left := side(row, col, -1)):
@@ -313,10 +324,7 @@ class Grid(Layout):
         return ans
 
     def layout_state(self) -> dict[str, Any]:
-        return {
-            'biased_cols': self.biased_cols,
-            'biased_rows': self.biased_rows
-        }
+        return {'biased_cols': self.biased_cols, 'biased_rows': self.biased_rows}
 
     def set_layout_state(self, layout_state: dict[str, Any], map_group_id: WindowMapper) -> bool:
         self.biased_rows = {int(k): v for k, v in layout_state['biased_rows'].items()}

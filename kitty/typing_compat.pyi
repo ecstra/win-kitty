@@ -46,7 +46,7 @@ UnderlineLiteral = Literal['straight', 'double', 'curly', 'dotted', 'dashed']
 MatchType = Literal['mime', 'ext', 'protocol', 'file', 'path', 'url', 'fragment_matches']
 PowerlineStyle = Literal['angled', 'slanted', 'round']
 GRT_a = Literal['t', 'T', 'q', 'p', 'd', 'f', 'a', 'c']
-GRT_f = Literal[24, 32, 100]
+GRT_f = Literal[8, 16, 24, 32, 100]
 GRT_t = Literal['d', 'f', 't', 's']
 GRT_o = Literal['z', 'z']  # two z's to workaround a bug in ruff
 GRT_m = Literal[0, 1]
@@ -55,21 +55,59 @@ GRT_d = Literal['a', 'A', 'c', 'C', 'i', 'I', 'p', 'P', 'q', 'Q', 'x', 'X', 'y',
 ReadableBuffer = bytes | bytearray | memoryview | array.array[int] | mmap.mmap
 WriteableBuffer = bytearray | memoryview | array.array[int] | mmap.mmap
 
-
-
 class WindowSystemMouseEvent(TypedDict):
     button: int
     count: int
     mods: int
 
-
 __all__ = (
-    'EdgeLiteral', 'MatchType', 'GRT_a', 'GRT_f', 'GRT_t', 'GRT_o', 'GRT_m', 'GRT_d',
-    'GraphicsCommandType', 'HandlerType', 'AbstractEventLoop', 'AddressFamily', 'Socket', 'CompletedProcess',
-    'PopenType', 'Protocol', 'TypedDict', 'MarkType', 'ImageManagerType', 'Debug', 'LoopType', 'MouseEvent',
-    'TermManagerType', 'BossType', 'ChildType', 'BadLineType', 'MouseButton', 'NotRequired',
-    'KeyActionType', 'KeyMap', 'KittyCommonOpts', 'AliasMap', 'CoreTextFont', 'WindowSystemMouseEvent',
-    'FontConfigPattern', 'ScreenType', 'StartupCtx', 'KeyEventType', 'LayoutType', 'PowerlineStyle',
-    'RemoteCommandType', 'SessionType', 'SessionTab', 'SpecialWindowInstance', 'TabType', 'ScreenSize', 'WindowType',
-    'ReadableBuffer', 'WriteableBuffer',
+    'EdgeLiteral',
+    'MatchType',
+    'GRT_a',
+    'GRT_f',
+    'GRT_t',
+    'GRT_o',
+    'GRT_m',
+    'GRT_d',
+    'GraphicsCommandType',
+    'HandlerType',
+    'AbstractEventLoop',
+    'AddressFamily',
+    'Socket',
+    'CompletedProcess',
+    'PopenType',
+    'Protocol',
+    'TypedDict',
+    'MarkType',
+    'ImageManagerType',
+    'Debug',
+    'LoopType',
+    'MouseEvent',
+    'TermManagerType',
+    'BossType',
+    'ChildType',
+    'BadLineType',
+    'MouseButton',
+    'NotRequired',
+    'KeyActionType',
+    'KeyMap',
+    'KittyCommonOpts',
+    'AliasMap',
+    'CoreTextFont',
+    'WindowSystemMouseEvent',
+    'FontConfigPattern',
+    'ScreenType',
+    'StartupCtx',
+    'KeyEventType',
+    'LayoutType',
+    'PowerlineStyle',
+    'RemoteCommandType',
+    'SessionType',
+    'SessionTab',
+    'SpecialWindowInstance',
+    'TabType',
+    'ScreenSize',
+    'WindowType',
+    'ReadableBuffer',
+    'WriteableBuffer',
 )

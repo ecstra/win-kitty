@@ -35,32 +35,52 @@ typedef struct {
     size_t data_sz;
     bool written_to_disk, uses_encryption, memory_only;
     off_t pos_in_cache_file;
+    // Incremented every time the data for an entry is replaced. Used to detect
+    // entries that were replaced/removed while their previous data was being
+    // written to disk by the write thread, see retire_currently_writing().
+    unsigned long long generation;
     uint8_t encryption_key[64];
 } CacheValue;
 
 #define NAME cache_map
 #define KEY_TY CacheKey
-#define VAL_TY CacheValue*
+#define VAL_TY CacheValue *
 static uint64_t key_hash(KEY_TY k);
 #define HASH_FN key_hash
-static bool keys_are_equal(CacheKey a, CacheKey b) { return a.hash_keylen == b.hash_keylen && memcmp(a.hash_key, b.hash_key, a.hash_keylen) == 0; }
+static bool
+keys_are_equal(CacheKey a, CacheKey b) {
+    return a.hash_keylen == b.hash_keylen && memcmp(a.hash_key, b.hash_key, a.hash_keylen) == 0;
+}
 #define CMPR_FN keys_are_equal
-static void free_cache_value(CacheValue *cv) {
+static void
+secure_zero(void *p, size_t sz) {
 #ifdef __APPLE__
-    memset_s(cv->encryption_key, sizeof(cv->encryption_key), 0, sizeof(cv->encryption_key));
+    memset_s(p, sz, 0, sz);
 #elif defined(__NetBSD__)
-    explicit_memset(cv->encryption_key, 0, sizeof(cv->encryption_key));
+    explicit_memset(p, 0, sz);
 #else
-    explicit_bzero(cv->encryption_key, sizeof(cv->encryption_key));
+    explicit_bzero(p, sz);
 #endif
-    free(cv->data); cv->data = NULL;
+}
+static void
+free_cache_value(CacheValue *cv) {
+    secure_zero(cv->encryption_key, sizeof(cv->encryption_key));
+    free(cv->data);
+    cv->data = NULL;
     free(cv);
 }
-static void free_cache_key(CacheKey cv) { free(cv.hash_key); cv.hash_key = NULL; }
+static void
+free_cache_key(CacheKey cv) {
+    free(cv.hash_key);
+    cv.hash_key = NULL;
+}
 #define KEY_DTOR_FN free_cache_key
 #define VAL_DTOR_FN free_cache_value
 #include "kitty-verstable.h"
-static uint64_t key_hash(CacheKey k) { return vt_hash_bytes(k.hash_key, k.hash_keylen); }
+static uint64_t
+key_hash(CacheKey k) {
+    return vt_hash_bytes(k.hash_key, k.hash_keylen);
+}
 #define cache_map_for_loop(i) vt_create_for_loop(cache_map_itr, i, &self->map)
 
 typedef struct Hole {
@@ -73,11 +93,17 @@ typedef struct Hole {
 #include "kitty-verstable.h"
 #define hole_pos_map_for_loop(i) vt_create_for_loop(hole_pos_map_itr, i, &self->holes.pos_map)
 
-typedef struct PosList { size_t count, capacity; off_t *positions; } PosList;
+typedef struct PosList {
+    size_t count, capacity;
+    off_t *positions;
+} PosList;
 #define NAME hole_size_map
 #define KEY_TY off_t
 #define VAL_TY PosList
-static void free_pos_list(PosList p) { free(p.positions); }
+static void
+free_pos_list(PosList p) {
+    free(p.positions);
+}
 #define VAL_DTOR_FN free_pos_list
 #include "kitty-verstable.h"
 #define hole_size_map_for_loop(i) vt_create_for_loop(hole_size_map_itr, i, &holes->size_map)
@@ -89,8 +115,7 @@ typedef struct Holes {
 } Holes;
 
 typedef struct {
-    PyObject_HEAD
-    char *cache_dir;
+    PyObject_HEAD char *cache_dir;
     int cache_file_fd;
     Py_ssize_t small_hole_threshold;
     unsigned int defrag_factor;
@@ -98,27 +123,36 @@ typedef struct {
     pthread_t write_thread;
     bool thread_started, lock_inited, loop_data_inited, shutting_down, fully_initialized;
     LoopData loop_data;
-    struct { CacheValue val; CacheKey key; } currently_writing;
+    struct {
+        CacheValue val; // val.data is always plaintext
+        CacheKey key;
+        uint8_t enc_key[64];
+        bool encrypted;
+    } currently_writing;
     cache_map map;
     Holes holes;
-    unsigned long long total_size;
+    unsigned long long total_size, generation_counter;
     off_t end_of_data_offset;
     bool needs_encryption;
+    struct {
+        // Testing only, see wait_while_writes_paused()
+        bool requested, active;
+    } pause_writes;
 } DiskCache;
 
 #define mutex(op) pthread_mutex_##op(&self->lock)
 
-static PyObject*
+static PyObject *
 new_diskcache_object(PyTypeObject *type, PyObject UNUSED *args, PyObject UNUSED *kwds) {
     DiskCache *self;
-    self = (DiskCache*)type->tp_alloc(type, 0);
+    self = (DiskCache *)type->tp_alloc(type, 0);
     if (self) {
         self->cache_file_fd = -1;
         self->small_hole_threshold = 512;
         self->defrag_factor = 2;
         self->needs_encryption = true;
     }
-    return (PyObject*) self;
+    return (PyObject *)self;
 }
 
 static int
@@ -127,12 +161,12 @@ open_cache_file_without_tmpfile(const char *cache_path) {
     static const char template[] = "%s/disk-cache-XXXXXXXXXXXX";
     const size_t sz = strlen(cache_path) + sizeof(template) + 4;
     RAII_ALLOC(char, buf, calloc(1, sz));
-    if (!buf) { errno = ENOMEM; return -1; }
-    snprintf(buf, sz - 1, template, cache_path);
-    while (fd < 0) {
-        fd = mkostemp(buf, O_CLOEXEC);
-        if (fd > -1 || errno != EINTR) break;
+    if (!buf) {
+        errno = ENOMEM;
+        return -1;
     }
+    snprintf(buf, sz - 1, template, cache_path);
+    fd = safe_mkstemp(buf);
     if (fd > -1) unlink(buf);
     return fd;
 }
@@ -160,11 +194,15 @@ typedef struct {
     CacheKey key;
     off_t old_offset, new_offset;
     size_t data_sz;
+    unsigned long long generation;
 } DefragEntry;
+
+static void wait_while_writes_paused(DiskCache *self);
+static void add_hole(DiskCache *self, const off_t pos, const off_t size);
 
 static CacheKey
 keydup(CacheKey k) {
-    CacheKey ans = {.hash_key=malloc(k.hash_keylen), .hash_keylen=k.hash_keylen};
+    CacheKey ans = {.hash_key = malloc(k.hash_keylen), .hash_keylen = k.hash_keylen};
     if (ans.hash_key) memcpy(ans.hash_key, k.hash_key, k.hash_keylen);
     return ans;
 }
@@ -183,6 +221,8 @@ defrag(DiskCache *self) {
     RAII_ALLOC(DefragEntry, defrag_entries, NULL);
     RAII_FreeFastFileCopyBuffer(fcb);
     bool lock_released = false, ok = false;
+    size_t num_entries_to_defrag = 0;
+    off_t current_pos = 0;
 
     off_t size_on_disk = self->end_of_data_offset;
     if (size_on_disk <= 0) goto cleanup;
@@ -196,16 +236,20 @@ defrag(DiskCache *self) {
     }
     defrag_entries = calloc(num_entries, sizeof(DefragEntry));
     if (!defrag_entries) goto cleanup;
-    size_t total_data_size = 0, num_entries_to_defrag = 0;
+    size_t total_data_size = 0;
     cache_map_for_loop(i) {
         CacheValue *s = i.data->val;
-        if (s->pos_in_cache_file > -1 && s->data_sz) {
+        if (s->written_to_disk && s->pos_in_cache_file > -1 && s->data_sz) {
             total_data_size += s->data_sz;
             DefragEntry *e = defrag_entries + num_entries_to_defrag++;
             e->old_offset = s->pos_in_cache_file;
             e->data_sz = s->data_sz;
-            e->key = keydup(i.data->key);  // have to dup the key as we release the mutex and another thread might free the underlying key.
-            if (!e->key.hash_key) { fprintf(stderr, "Failed to allocate space for keydup in defrag\n"); goto cleanup; }
+            e->generation = s->generation;
+            e->key = keydup(i.data->key); // have to dup the key as we release the mutex and another thread might free the underlying key.
+            if (!e->key.hash_key) {
+                fprintf(stderr, "Failed to allocate space for keydup in defrag\n");
+                goto cleanup;
+            }
         }
     }
     if (ftruncate(new_cache_file, total_data_size) != 0) {
@@ -214,9 +258,10 @@ defrag(DiskCache *self) {
     }
     lseek(new_cache_file, 0, SEEK_SET);
 
-    mutex(unlock); lock_released = true;
+    wait_while_writes_paused(self); // testing only
+    mutex(unlock);
+    lock_released = true;
 
-    off_t current_pos = 0;
     for (size_t i = 0; i < num_entries_to_defrag; i++) {
         DefragEntry *e = defrag_entries + i;
         if (!copy_between_files(self->cache_file_fd, new_cache_file, e->old_offset, e->data_sz, &fcb)) {
@@ -233,15 +278,22 @@ cleanup:
     if (ok) {
         cleanup_holes(&self->holes);
         safe_close(self->cache_file_fd, __FILE__, __LINE__);
-        self->cache_file_fd = new_cache_file; new_cache_file = -1;
+        self->cache_file_fd = new_cache_file;
+        new_cache_file = -1;
         for (size_t i = 0; i < num_entries_to_defrag; i++) {
             DefragEntry *e = defrag_entries + i;
-            cache_map_itr i = vt_get(&self->map, e->key);
-            if (!vt_is_end(i)) i.data->val->pos_in_cache_file = e->new_offset;
-            free(e->key.hash_key);
+            CacheValue *cv = NULL;
+            cache_map_itr itr = vt_get(&self->map, e->key);
+            if (!vt_is_end(itr)) cv = itr.data->val;
+            if (cv && cv->generation == e->generation && cv->written_to_disk && cv->pos_in_cache_file == e->old_offset) cv->pos_in_cache_file = e->new_offset;
+            else add_hole(self, e->new_offset, e->data_sz);
         }
-        self->end_of_data_offset = lseek(self->cache_file_fd, 0, SEEK_CUR);
+        self->end_of_data_offset = current_pos;
         self->needs_encryption = !opened_securely;
+    }
+    for (size_t i = 0; i < num_entries_to_defrag; i++) {
+        free(defrag_entries[i].key.hash_key);
+        defrag_entries[i].key.hash_key = NULL;
     }
     if (new_cache_file > -1) safe_close(new_cache_file, __FILE__, __LINE__);
 }
@@ -272,7 +324,8 @@ update_largest_hole_size(Holes *holes) {
 
 static void
 remove_hole_from_maps_itr(Holes *holes, Hole h, hole_size_map_itr i, size_t pos_in_sizes_array) {
-    vt_erase(&holes->pos_map, h.pos); vt_erase(&holes->end_pos_map, h.pos + h.size);
+    vt_erase(&holes->pos_map, h.pos);
+    vt_erase(&holes->end_pos_map, h.pos + h.size);
     if (i.data->val.count <= 1) {
         vt_erase_itr(&holes->size_map, i);
         if (h.size > holes->largest_hole_size) update_largest_hole_size(holes);
@@ -300,11 +353,12 @@ find_hole_to_use(DiskCache *self, const off_t required_sz) {
         }
     }
     if (vt_is_end(i)) return false;
-    Hole h = {.pos=i.data->val.positions[i.data->val.count-1], .size=i.data->key};
-    remove_hole_from_maps_itr(&self->holes, h, i, i.data->val.count-1);
+    Hole h = {.pos = i.data->val.positions[i.data->val.count - 1], .size = i.data->key};
+    remove_hole_from_maps_itr(&self->holes, h, i, i.data->val.count - 1);
     self->currently_writing.val.pos_in_cache_file = h.pos;
     if (required_sz < h.size) {
-        h.pos += required_sz; h.size -= required_sz;
+        h.pos += required_sz;
+        h.size -= required_sz;
         if (h.size > self->small_hole_threshold) add_hole_to_maps(&self->holes, h);
     }
     return true;
@@ -329,21 +383,27 @@ add_hole(DiskCache *self, const off_t pos, const off_t size) {
             // Now look for a hole before us
             i = vt_get(&self->holes.end_pos_map, pos);
             if (!vt_is_end(i)) {
-                original_hole.pos = i.data->key - i.data->val; original_hole.size = i.data->val;
-                new_hole.pos = original_hole.pos; new_hole.size = original_hole.size + size;
+                original_hole.pos = i.data->key - i.data->val;
+                original_hole.size = i.data->val;
+                new_hole.pos = original_hole.pos;
+                new_hole.size = original_hole.size + size;
                 found = true;
             }
         } else {
-            original_hole.pos = i.data->key; original_hole.size = i.data->val;
-            new_hole.pos = pos; new_hole.size = original_hole.size + size;
+            original_hole.pos = i.data->key;
+            original_hole.size = i.data->val;
+            new_hole.pos = pos;
+            new_hole.size = original_hole.size + size;
             found = true;
             // there could be a hole before us as well
             i = vt_get(&self->holes.end_pos_map, pos);
             if (!vt_is_end(i)) {
                 self->holes.largest_hole_size = MAX(self->holes.largest_hole_size, new_hole.size);
                 remove_hole_from_maps(&self->holes, original_hole);
-                original_hole.pos = i.data->key - i.data->val; original_hole.size = i.data->val;
-                new_hole.pos = original_hole.pos; new_hole.size += original_hole.size;
+                original_hole.pos = i.data->key - i.data->val;
+                original_hole.size = i.data->val;
+                new_hole.pos = original_hole.pos;
+                new_hole.size += original_hole.size;
             }
         }
         if (found) {
@@ -354,7 +414,7 @@ add_hole(DiskCache *self, const off_t pos, const off_t size) {
             return;
         }
     }
-    Hole h = {.pos=pos, .size=size };
+    Hole h = {.pos = pos, .size = size};
     add_hole_to_maps(&self->holes, h);
 }
 
@@ -362,11 +422,15 @@ static void
 remove_from_disk(DiskCache *self, CacheValue *s) {
     if (s->written_to_disk) {
         s->written_to_disk = false;
-        if (s->data_sz && s->pos_in_cache_file > -1) {
-            add_hole(self, s->pos_in_cache_file, s->data_sz);
-            s->pos_in_cache_file = -1;
-        }
+        if (s->data_sz && s->pos_in_cache_file > -1) add_hole(self, s->pos_in_cache_file, s->data_sz);
+        s->pos_in_cache_file = -1;
     }
+}
+
+static void
+clear_enc_key(DiskCache *self) {
+    secure_zero(self->currently_writing.enc_key, sizeof(self->currently_writing.enc_key));
+    self->currently_writing.encrypted = false;
 }
 
 static bool
@@ -376,23 +440,21 @@ find_cache_entry_to_write(DiskCache *self) {
         CacheValue *s = i.data->val;
         if (!s->written_to_disk) {
             if (s->data) {
+                clear_enc_key(self);
                 if (self->currently_writing.val.data) free(self->currently_writing.val.data);
                 self->currently_writing.val.data = s->data;
                 s->data = NULL;
                 self->currently_writing.val.data_sz = s->data_sz;
+                self->currently_writing.val.generation = s->generation;
                 self->currently_writing.val.pos_in_cache_file = -1;
-                s->uses_encryption = false;
-                if (self->needs_encryption && secure_random_bytes(s->encryption_key, sizeof(s->encryption_key))) {
-                    xor_data64(s->encryption_key, self->currently_writing.val.data, s->data_sz);
-                    s->uses_encryption = true;
-                }
                 self->currently_writing.key.hash_keylen = MIN(i.data->key.hash_keylen, MAX_KEY_SIZE);
                 memcpy(self->currently_writing.key.hash_key, i.data->key.hash_key, self->currently_writing.key.hash_keylen);
                 find_hole_to_use(self, self->currently_writing.val.data_sz);
                 return true;
             }
+            // empty entries occupy no space in the cache file
             s->written_to_disk = true;
-            s->pos_in_cache_file = 0;
+            s->pos_in_cache_file = -1;
             s->data_sz = 0;
         }
     }
@@ -400,9 +462,30 @@ find_cache_entry_to_write(DiskCache *self) {
 }
 
 static bool
+write_all(DiskCache *self, const uint8_t *p, size_t left, off_t *offset) {
+    while (left > 0) {
+        ssize_t n = pwrite(self->cache_file_fd, p, left, *offset);
+        if (n < 0) {
+            if (errno == EINTR || errno == EAGAIN) continue;
+            perror("Failed to write to disk-cache file");
+            return false;
+        }
+        if (n == 0) {
+            fprintf(stderr, "Failed to write to disk-cache file with zero return\n");
+            return false;
+        }
+        left -= n;
+        p += n;
+        *offset += n;
+        self->end_of_data_offset = MAX(self->end_of_data_offset, *offset);
+    }
+    return true;
+}
+
+static bool
 write_dirty_entry(DiskCache *self) {
-    size_t left = self->currently_writing.val.data_sz;
-    uint8_t *p = self->currently_writing.val.data;
+    const uint8_t *data = self->currently_writing.val.data;
+    const size_t sz = self->currently_writing.val.data_sz;
     if (self->currently_writing.val.pos_in_cache_file < 0) {
         self->currently_writing.val.pos_in_cache_file = self->end_of_data_offset;
         if (self->currently_writing.val.pos_in_cache_file < 0) {
@@ -411,37 +494,66 @@ write_dirty_entry(DiskCache *self) {
         }
     }
     off_t offset = self->currently_writing.val.pos_in_cache_file;
-    while (left > 0) {
-        ssize_t n = pwrite(self->cache_file_fd, p, left, offset);
-        if (n < 0) {
-            if (errno == EINTR || errno == EAGAIN) continue;
-            perror("Failed to write to disk-cache file");
-            self->currently_writing.val.pos_in_cache_file = -1;
-            return false;
+    bool ok = true;
+    if (self->currently_writing.encrypted) {
+        // chunk sizes must be multiples of the key size. Use large chunks to
+        // keep the number of write syscalls low, falling back to a small stack
+        // buffer if allocation fails.
+        uint8_t stack_buf[16 * 1024];
+        size_t chunk_sz = MIN(sz, (size_t)1024 * 1024);
+        RAII_ALLOC(uint8_t, heap_buf, chunk_sz > sizeof(stack_buf) ? malloc(chunk_sz) : NULL);
+        uint8_t *buf = heap_buf;
+        if (!buf) {
+            buf = stack_buf;
+            chunk_sz = sizeof(stack_buf);
         }
-        if (n == 0) {
-            fprintf(stderr, "Failed to write to disk-cache file with zero return\n");
-            self->currently_writing.val.pos_in_cache_file = -1;
-            return false;
+        for (size_t done = 0; ok && done < sz; done += chunk_sz) {
+            const size_t n = MIN(sz - done, chunk_sz);
+            memcpy(buf, data + done, n);
+            xor_data64(self->currently_writing.enc_key, buf, n);
+            ok = write_all(self, buf, n, &offset);
         }
-        left -= n;
-        p += n;
-        offset += n;
-        self->end_of_data_offset = MAX(self->end_of_data_offset, offset);
-    }
-    return true;
+    } else ok = write_all(self, data, sz, &offset);
+    if (!ok) self->currently_writing.val.pos_in_cache_file = -1;
+    return ok;
 }
 
 static void
 retire_currently_writing(DiskCache *self) {
+    // The mutex is released while the actual write happens, so the entry we
+    // just wrote could have been removed from the cache or had its data
+    // replaced in the meantime. In that case the entry must not be marked as
+    // written to disk (its current data is still only in RAM) and the space
+    // used by the now stale data we just wrote has to be reclaimed.
     cache_map_itr i = vt_get(&self->map, self->currently_writing.key);
-    if (!vt_is_end(i)) {
-        i.data->val->written_to_disk = true;
-        i.data->val->pos_in_cache_file = self->currently_writing.val.pos_in_cache_file;
+    if (!vt_is_end(i) && i.data->val->generation == self->currently_writing.val.generation) {
+        CacheValue *s = i.data->val;
+        s->uses_encryption = self->currently_writing.encrypted;
+        if (s->uses_encryption) memcpy(s->encryption_key, self->currently_writing.enc_key, sizeof(s->encryption_key));
+        s->written_to_disk = true;
+        s->pos_in_cache_file = self->currently_writing.val.pos_in_cache_file;
+    } else if (self->currently_writing.val.pos_in_cache_file > -1 && self->currently_writing.val.data_sz) {
+        add_hole(self, self->currently_writing.val.pos_in_cache_file, self->currently_writing.val.data_sz);
     }
+    clear_enc_key(self);
     free(self->currently_writing.val.data);
     self->currently_writing.val.data = NULL;
     self->currently_writing.val.data_sz = 0;
+    self->currently_writing.val.generation = 0;
+}
+
+static void
+wait_while_writes_paused(DiskCache *self) {
+    // Testing only. Allows tests to deterministically interleave cache
+    // operations with an in-flight write. Must be called with the lock held.
+    while (UNLIKELY(self->pause_writes.requested) && !self->shutting_down) {
+        self->pause_writes.active = true;
+        mutex(unlock);
+        struct timespec a = {.tv_nsec = MONOTONIC_T_1e6}, b; // 1ms sleep
+        nanosleep(&a, &b);
+        mutex(lock);
+    }
+    self->pause_writes.active = false;
 }
 
 static int
@@ -456,9 +568,9 @@ clear_disk_cache_with_lock_held(DiskCache *self) {
     return 0;
 }
 
-static void*
+static void *
 write_loop(void *data) {
-    DiskCache *self = (DiskCache*)data;
+    DiskCache *self = (DiskCache *)data;
     set_thread_name("DiskCacheWrite");
     struct pollfd fds[1] = {0};
     fds[0].fd = self->loop_data.wakeup_read_fd;
@@ -469,22 +581,25 @@ write_loop(void *data) {
         mutex(lock);
         found_dirty_entry = find_cache_entry_to_write(self);
         size_t count = vt_size(&self->map);
+        const bool encrypt = self->needs_encryption;
         mutex(unlock);
         if (found_dirty_entry) {
+            if (encrypt) self->currently_writing.encrypted = secure_random_bytes(self->currently_writing.enc_key, sizeof(self->currently_writing.enc_key));
             write_dirty_entry(self);
             mutex(lock);
+            wait_while_writes_paused(self);
             retire_currently_writing(self);
             mutex(unlock);
             continue;
         } else if (!count) {
             mutex(lock);
             count = vt_size(&self->map);
-            if (!count) clear_disk_cache_with_lock_held(self);  // failure to truncate is not fatal
+            if (!count) clear_disk_cache_with_lock_held(self); // failure to truncate is not fatal
             mutex(unlock);
         }
 
         if (poll(fds, 1, -1) > 0 && fds[0].revents & POLLIN) {
-            drain_fd(fds[0].fd);  // wakeup
+            drain_fd(fds[0].fd); // wakeup
         }
     }
     return 0;
@@ -496,12 +611,18 @@ ensure_state(DiskCache *self) {
     int ret;
     if (self->fully_initialized) return true;
     if (!self->loop_data_inited) {
-        if (!init_loop_data(&self->loop_data, 0)) { PyErr_SetFromErrno(PyExc_OSError); return false; }
+        if (!init_loop_data(&self->loop_data, 0)) {
+            PyErr_SetFromErrno(PyExc_OSError);
+            return false;
+        }
         self->loop_data_inited = true;
     }
     if (!self->currently_writing.key.hash_key) {
         self->currently_writing.key.hash_key = malloc(MAX_KEY_SIZE);
-        if (!self->currently_writing.key.hash_key) { PyErr_NoMemory(); return false; }
+        if (!self->currently_writing.key.hash_key) {
+            PyErr_NoMemory();
+            return false;
+        }
     }
 
     if (!self->lock_inited) {
@@ -532,7 +653,8 @@ ensure_state(DiskCache *self) {
                 } else PyErr_SetString(PyExc_TypeError, "cache_dir() did not return a string");
             }
         }
-        Py_CLEAR(kc); Py_CLEAR(cache_dir);
+        Py_CLEAR(kc);
+        Py_CLEAR(cache_dir);
         if (PyErr_Occurred()) return false;
     }
 
@@ -545,7 +667,10 @@ ensure_state(DiskCache *self) {
         }
         self->needs_encryption = !opened_securely;
     }
-    vt_init(&self->map); vt_init(&self->holes.pos_map); vt_init(&self->holes.size_map); vt_init(&self->holes.end_pos_map);
+    vt_init(&self->map);
+    vt_init(&self->holes.pos_map);
+    vt_init(&self->holes.size_map);
+    vt_init(&self->holes.end_pos_map);
     self->fully_initialized = true;
     return true;
 }
@@ -556,7 +681,7 @@ wakeup_write_loop(DiskCache *self) {
 }
 
 static void
-dealloc(DiskCache* self) {
+dealloc(DiskCache *self) {
     self->shutting_down = true;
     if (self->thread_started) {
         wakeup_write_loop(self);
@@ -564,7 +689,8 @@ dealloc(DiskCache* self) {
         self->thread_started = false;
     }
     if (self->currently_writing.key.hash_key) {
-        free(self->currently_writing.key.hash_key); self->currently_writing.key.hash_key = NULL;
+        free(self->currently_writing.key.hash_key);
+        self->currently_writing.key.hash_key = NULL;
     }
     if (self->lock_inited) {
         pthread_mutex_destroy(&self->lock);
@@ -574,68 +700,119 @@ dealloc(DiskCache* self) {
         free_loop_data(&self->loop_data);
         self->loop_data_inited = false;
     }
-    vt_cleanup(&self->map); cleanup_holes(&self->holes);
+    vt_cleanup(&self->map);
+    cleanup_holes(&self->holes);
     if (self->cache_file_fd > -1) {
         safe_close(self->cache_file_fd, __FILE__, __LINE__);
         self->cache_file_fd = -1;
     }
+    clear_enc_key(self);
     if (self->currently_writing.val.data) free(self->currently_writing.val.data);
-    free(self->cache_dir); self->cache_dir = NULL;
-    Py_TYPE(self)->tp_free((PyObject*)self);
+    free(self->cache_dir);
+    self->cache_dir = NULL;
+    Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static CacheValue*
+static CacheValue *
 create_cache_entry(void) {
     CacheValue *s = calloc(1, sizeof(CacheValue));
-    if (!s) return (CacheValue*)PyErr_NoMemory();
+    if (!s) return (CacheValue *)PyErr_NoMemory();
     s->pos_in_cache_file = -2;
     return s;
 }
 
-bool
-add_to_disk_cache(PyObject *self_, const void *key, size_t key_sz, const void *data, size_t data_sz, bool memory_only) {
-    DiskCache *self = (DiskCache*)self_;
-    if (!ensure_state(self)) return false;
-    if (key_sz > MAX_KEY_SIZE) { PyErr_SetString(PyExc_KeyError, "cache key is too long"); return false; }
-    RAII_ALLOC(uint8_t, copied_data, malloc(data_sz));
-    if (!copied_data) { PyErr_NoMemory(); return false; }
-    memcpy(copied_data, data, data_sz);
-    CacheKey k = {.hash_key=(void*)key, .hash_keylen=key_sz};
+static bool
+add_to_disk_cache_impl(DiskCache *self, const void *key, size_t key_sz, uint8_t *owned_data, size_t data_sz, bool memory_only) {
+    // On success ownership of owned_data passes to the cache, on failure the
+    // caller retains ownership.
+    CacheKey k = {.hash_key = (void *)key, .hash_keylen = key_sz};
+    bool ok = false;
+    CacheValue *s;
 
     mutex(lock);
     cache_map_itr i = vt_get(&self->map, k);
-    CacheValue *s;
     if (vt_is_end(i)) {
         k.hash_key = malloc(key_sz);
-        if (!k.hash_key) { PyErr_NoMemory(); goto end; }
+        if (!k.hash_key) {
+            PyErr_NoMemory();
+            goto end;
+        }
         memcpy(k.hash_key, key, key_sz);
-        if (!(s = create_cache_entry())) goto end;
-        if (vt_is_end(vt_insert(&self->map, k, s))) { PyErr_NoMemory(); goto end; }
+        if (!(s = create_cache_entry())) {
+            free_cache_key(k);
+            goto end;
+        }
+        if (vt_is_end(vt_insert(&self->map, k, s))) {
+            free_cache_key(k);
+            free_cache_value(s);
+            PyErr_NoMemory();
+            goto end;
+        }
     } else {
         s = i.data->val;
         remove_from_disk(self, s);
         self->total_size -= MIN(self->total_size, s->data_sz);
-        if (s->data) free(s->data);
+        free(s->data);
     }
-    s->data = copied_data; s->data_sz = data_sz; copied_data = NULL;
+    s->data = owned_data;
+    s->data_sz = data_sz;
+    s->generation = ++self->generation_counter;
     s->memory_only = memory_only;
     s->written_to_disk = memory_only;
     if (memory_only) s->pos_in_cache_file = -1;
     self->total_size += s->data_sz;
+    ok = true;
 end:
     mutex(unlock);
-    if (PyErr_Occurred()) return false;
+    if (!ok) return false;
     if (!memory_only) wakeup_write_loop(self);
+    return true;
+}
+
+static bool
+add_to_disk_cache_preflight(DiskCache *self, size_t key_sz) {
+    if (!ensure_state(self)) return false;
+    if (key_sz > MAX_KEY_SIZE) {
+        PyErr_SetString(PyExc_KeyError, "cache key is too long");
+        return false;
+    }
+    return true;
+}
+
+bool
+add_to_disk_cache(PyObject *self_, const void *key, size_t key_sz, const void *data, size_t data_sz, bool memory_only) {
+    DiskCache *self = (DiskCache *)self_;
+    if (!add_to_disk_cache_preflight(self, key_sz)) return false;
+    RAII_ALLOC(uint8_t, copied_data, malloc(MAX(data_sz, 1u)));
+    if (!copied_data) {
+        PyErr_NoMemory();
+        return false;
+    }
+    memcpy(copied_data, data, data_sz);
+    if (!add_to_disk_cache_impl(self, key, key_sz, copied_data, data_sz, memory_only)) return false;
+    copied_data = NULL; // ownership transferred to the cache
+    return true;
+}
+
+bool
+add_to_disk_cache_move(PyObject *self_, const void *key, size_t key_sz, void **data, size_t data_sz, bool memory_only) {
+    DiskCache *self = (DiskCache *)self_;
+    if (!add_to_disk_cache_preflight(self, key_sz)) return false;
+    if (!add_to_disk_cache_impl(self, key, key_sz, *data, data_sz, memory_only)) return false;
+    *data = NULL; // ownership transferred to the cache
     return true;
 }
 
 bool
 remove_from_disk_cache(PyObject *self_, const void *key, size_t key_sz) {
-    DiskCache *self = (DiskCache*)self_;
+    DiskCache *self = (DiskCache *)self_;
     if (!ensure_state(self)) return false;
-    if (key_sz > MAX_KEY_SIZE) { PyErr_SetString(PyExc_KeyError, "cache key is too long"); return false; }
+    if (key_sz > MAX_KEY_SIZE) {
+        PyErr_SetString(PyExc_KeyError, "cache key is too long");
+        return false;
+    }
     CacheValue *s = NULL;
-    CacheKey k = {.hash_key=(void*)key, .hash_keylen=key_sz};
+    CacheKey k = {.hash_key = (void *)key, .hash_keylen = key_sz};
     bool removed = false;
 
     mutex(lock);
@@ -655,7 +832,7 @@ remove_from_disk_cache(PyObject *self_, const void *key, size_t key_sz) {
 static int
 clear_disk_cache(PyObject *self_) {
     // This is currently only used in testing
-    DiskCache *self = (DiskCache*)self_;
+    DiskCache *self = (DiskCache *)self_;
     if (!ensure_state(self)) return 0;
     int saved_errno = 0;
     disk_cache_wait_for_write(self_, 0);
@@ -692,6 +869,7 @@ read_from_cache_file(const DiskCache *self, off_t pos, size_t sz, void *dest) {
 static void
 read_from_cache_entry(const DiskCache *self, const CacheValue *s, void *dest) {
     size_t sz = s->data_sz;
+    if (!sz) return;
     off_t pos = s->pos_in_cache_file;
     if (pos < 0) {
         PyErr_SetString(PyExc_OSError, "Cache entry was not written, could not read from it");
@@ -700,34 +878,45 @@ read_from_cache_entry(const DiskCache *self, const CacheValue *s, void *dest) {
     read_from_cache_file(self, pos, sz, dest);
 }
 
-void*
-read_from_disk_cache(PyObject *self_, const void *key, size_t key_sz, void*(allocator)(void*, size_t), void* allocator_data, bool store_in_ram) {
-    DiskCache *self = (DiskCache*)self_;
+void *
+read_from_disk_cache(PyObject *self_, const void *key, size_t key_sz, void *(allocator)(void *, size_t), void *allocator_data, bool store_in_ram) {
+    DiskCache *self = (DiskCache *)self_;
     void *data = NULL;
     if (!ensure_state(self)) return data;
-    if (key_sz > MAX_KEY_SIZE) { PyErr_SetString(PyExc_KeyError, "cache key is too long"); return data; }
-    CacheKey k = {.hash_key=(void*)key, .hash_keylen=key_sz};
+    if (key_sz > MAX_KEY_SIZE) {
+        PyErr_SetString(PyExc_KeyError, "cache key is too long");
+        return data;
+    }
+    CacheKey k = {.hash_key = (void *)key, .hash_keylen = key_sz};
 
     mutex(lock);
     cache_map_itr i = vt_get(&self->map, k);
-    if (vt_is_end(i)) { PyErr_SetString(PyExc_KeyError, "No cached entry with specified key found"); goto end; }
+    if (vt_is_end(i)) {
+        PyErr_SetString(PyExc_KeyError, "No cached entry with specified key found");
+        goto end;
+    }
     CacheValue *s = i.data->val;
     data = allocator(allocator_data, s->data_sz);
-    if (!data) { PyErr_NoMemory(); goto end; }
-
-    if (s->data) { memcpy(data, s->data, s->data_sz); }
-    else if (self->currently_writing.val.data && self->currently_writing.key.hash_key && keys_are_equal(self->currently_writing.key, k)) {
-        memcpy(data, self->currently_writing.val.data, s->data_sz);
-        if (s->uses_encryption) xor_data64(s->encryption_key, data, s->data_sz);
+    if (!data) {
+        PyErr_NoMemory();
+        goto end;
     }
-    else {
+
+    if (s->data) {
+        memcpy(data, s->data, s->data_sz);
+    } else if (
+        self->currently_writing.val.data && self->currently_writing.key.hash_key && keys_are_equal(self->currently_writing.key, k) &&
+        s->generation == self->currently_writing.val.generation) {
+        memcpy(data, self->currently_writing.val.data, s->data_sz);
+    } else {
         read_from_cache_entry(self, s, data);
         if (s->uses_encryption) xor_data64(s->encryption_key, data, s->data_sz);
     }
     if (store_in_ram && !s->data && s->data_sz) {
         void *copy = malloc(s->data_sz);
         if (copy) {
-            memcpy(copy, data, s->data_sz); s->data = copy;
+            memcpy(copy, data, s->data_sz);
+            s->data = copy;
         }
     }
 end:
@@ -736,15 +925,16 @@ end:
 }
 
 static size_t
-disk_cache_clear_from_ram(PyObject *self_, bool(matches)(void*, void *key, unsigned keysz), void *data) {
-    DiskCache *self = (DiskCache*)self_;
+disk_cache_clear_from_ram(PyObject *self_, bool(matches)(void *, void *key, unsigned keysz), void *data) {
+    DiskCache *self = (DiskCache *)self_;
     size_t ans = 0;
     if (!ensure_state(self)) return ans;
     mutex(lock);
     cache_map_for_loop(i) {
         CacheValue *s = i.data->val;
         if (s->written_to_disk && !s->memory_only && s->data && matches(data, i.data->key.hash_key, i.data->key.hash_keylen)) {
-            free(s->data); s->data = NULL;
+            free(s->data);
+            s->data = NULL;
             ans++;
         }
     }
@@ -754,7 +944,7 @@ disk_cache_clear_from_ram(PyObject *self_, bool(matches)(void*, void *key, unsig
 
 bool
 disk_cache_wait_for_write(PyObject *self_, monotonic_t timeout) {
-    DiskCache *self = (DiskCache*)self_;
+    DiskCache *self = (DiskCache *)self_;
     if (!ensure_state(self)) return false;
     monotonic_t end_at = monotonic() + timeout;
     while (!timeout || monotonic() <= end_at) {
@@ -769,18 +959,20 @@ disk_cache_wait_for_write(PyObject *self_, monotonic_t timeout) {
         mutex(unlock);
         if (!pending) return true;
         wakeup_write_loop(self);
-        struct timespec a = { .tv_nsec = 10L * MONOTONIC_T_1e6 }, b;  // 10ms sleep
+        struct timespec a = {.tv_nsec = 10L * MONOTONIC_T_1e6}, b; // 10ms sleep
         nanosleep(&a, &b);
     }
     return false;
 }
 
 size_t
-disk_cache_total_size(PyObject *self) { return ((DiskCache*)self)->total_size; }
+disk_cache_total_size(PyObject *self) {
+    return ((DiskCache *)self)->total_size;
+}
 
 size_t
 disk_cache_num_cached_in_ram(PyObject *self_) {
-    DiskCache *self = (DiskCache*)self_;
+    DiskCache *self = (DiskCache *)self_;
     unsigned long ans = 0;
     if (ensure_state(self)) {
         mutex(lock);
@@ -794,15 +986,16 @@ disk_cache_num_cached_in_ram(PyObject *self_) {
 
 
 // The Python interface used only for testing {{{
-#define PYWRAP(name) static PyObject* py##name(DiskCache *self, PyObject *args)
-#define PA(fmt, ...) if (!PyArg_ParseTuple(args, fmt, __VA_ARGS__)) return NULL;
+#define PYWRAP(name) static PyObject *py##name(DiskCache *self, PyObject *args)
+#define PA(fmt, ...) \
+    if (!PyArg_ParseTuple(args, fmt, __VA_ARGS__)) return NULL;
 PYWRAP(ensure_state) {
     (void)args;
     ensure_state(self);
     Py_RETURN_NONE;
 }
 
-static PyObject*
+static PyObject *
 wait_for_write(PyObject *self, PyObject *args) {
     double timeout = 0;
     PA("|d", &timeout);
@@ -810,10 +1003,79 @@ wait_for_write(PyObject *self, PyObject *args) {
     Py_RETURN_FALSE;
 }
 
-static PyObject*
+static bool
+wait_for_pause_state(DiskCache *self, bool active, monotonic_t timeout) {
+    // Only used for testing. Note that the write thread holds the lock from
+    // the moment it clears pause_writes.active until it has finished retiring
+    // the entry it wrote, so observing active == false means the write has
+    // been fully accounted for.
+    monotonic_t end_at = monotonic() + timeout;
+    while (monotonic() <= end_at) {
+        mutex(lock);
+        const bool is_active = self->pause_writes.active;
+        mutex(unlock);
+        if (is_active == active) return true;
+        wakeup_write_loop(self);
+        struct timespec a = {.tv_nsec = MONOTONIC_T_1e6}, b; // 1ms sleep
+        nanosleep(&a, &b);
+    }
+    return false;
+}
+
+static PyObject *
+pause_writes(PyObject *self_, PyObject *args UNUSED) {
+    // Only used for testing. Makes the write thread stop just after writing an
+    // entry to disk and just before it records the entry as written.
+    DiskCache *self = (DiskCache *)self_;
+    if (!ensure_state(self)) return NULL;
+    mutex(lock);
+    self->pause_writes.requested = true;
+    mutex(unlock);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+set_needs_encryption(PyObject *self_, PyObject *val) {
+    DiskCache *self = (DiskCache *)self_;
+    if (!ensure_state(self)) return NULL;
+    int b = PyObject_IsTrue(val);
+    if (b < 0) return NULL;
+    mutex(lock);
+    self->needs_encryption = b;
+    mutex(unlock);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+resume_writes(PyObject *self_, PyObject *args) {
+    // Only used for testing. Returns after the write thread has resumed and
+    // finished retiring the entry it was paused on.
+    DiskCache *self = (DiskCache *)self_;
+    double timeout = 20;
+    PA("|d", &timeout);
+    if (!ensure_state(self)) return NULL;
+    mutex(lock);
+    self->pause_writes.requested = false;
+    mutex(unlock);
+    if (wait_for_pause_state(self, false, s_double_to_monotonic_t(timeout))) Py_RETURN_TRUE;
+    Py_RETURN_FALSE;
+}
+
+static PyObject *
+wait_until_writes_paused(PyObject *self_, PyObject *args) {
+    // Only used for testing
+    DiskCache *self = (DiskCache *)self_;
+    double timeout = 20;
+    PA("|d", &timeout);
+    if (!ensure_state(self)) return NULL;
+    if (wait_for_pause_state(self, true, s_double_to_monotonic_t(timeout))) Py_RETURN_TRUE;
+    Py_RETURN_FALSE;
+}
+
+static PyObject *
 end_of_data_offset(PyObject *self_, PyObject *args UNUSED) {
     // Only used for testing
-    DiskCache *self = (DiskCache*)self_;
+    DiskCache *self = (DiskCache *)self_;
     unsigned long long ans = 0;
     mutex(lock);
     if (self->cache_file_fd > -1) ans = MAX(0, self->end_of_data_offset);
@@ -821,16 +1083,16 @@ end_of_data_offset(PyObject *self_, PyObject *args UNUSED) {
     return PyLong_FromUnsignedLongLong(ans);
 }
 
-static PyObject*
+static PyObject *
 clear(PyObject *self, PyObject *args UNUSED) {
     int saved_errno = clear_disk_cache(self);
     if (saved_errno) return PyErr_SetFromErrno(PyExc_OSError);
     Py_RETURN_NONE;
 }
 
-static PyObject*
+static PyObject *
 holes(PyObject *self_, PyObject *args UNUSED) {
-    DiskCache *self = (DiskCache*)self_;
+    DiskCache *self = (DiskCache *)self_;
     mutex(lock);
     RAII_PyObject(ans, PyFrozenSet_New(NULL));
     if (ans) {
@@ -846,16 +1108,17 @@ holes(PyObject *self_, PyObject *args UNUSED) {
 }
 
 
-static PyObject*
+static PyObject *
 add(PyObject *self, PyObject *args) {
     const char *key, *data;
     Py_ssize_t keylen, datalen;
-    PA("y#y#", &key, &keylen, &data, &datalen);
-    if (!add_to_disk_cache(self, key, keylen, data, datalen, false)) return NULL;
+    int memory_only = 0;
+    PA("y#y#|p", &key, &keylen, &data, &datalen, &memory_only);
+    if (!add_to_disk_cache(self, key, keylen, data, datalen, memory_only)) return NULL;
     Py_RETURN_NONE;
 }
 
-static PyObject*
+static PyObject *
 pyremove(PyObject *self, PyObject *args) {
     const char *key;
     Py_ssize_t keylen;
@@ -870,7 +1133,7 @@ typedef struct {
     PyObject *bytes;
 } BytesWrapper;
 
-static void*
+static void *
 bytes_alloc(void *x, size_t sz) {
     BytesWrapper *w = x;
     w->bytes = PyBytes_FromStringAndSize(NULL, sz);
@@ -878,15 +1141,18 @@ bytes_alloc(void *x, size_t sz) {
     return PyBytes_AS_STRING(w->bytes);
 }
 
-PyObject*
+PyObject *
 read_from_disk_cache_python(PyObject *self, const void *key, size_t keysz, bool store_in_ram) {
     BytesWrapper w = {0};
     read_from_disk_cache(self, key, keysz, bytes_alloc, &w, store_in_ram);
-    if (PyErr_Occurred()) { Py_CLEAR(w.bytes); return NULL; }
+    if (PyErr_Occurred()) {
+        Py_CLEAR(w.bytes);
+        return NULL;
+    }
     return w.bytes;
 }
 
-static PyObject*
+static PyObject *
 get(PyObject *self, PyObject *args) {
     const char *key;
     Py_ssize_t keylen;
@@ -898,19 +1164,25 @@ get(PyObject *self, PyObject *args) {
 static bool
 python_clear_predicate(void *data, void *key, unsigned keysz) {
     PyObject *ret = PyObject_CallFunction(data, "y#", key, keysz);
-    if (ret == NULL) { PyErr_Print(); return false; }
+    if (ret == NULL) {
+        PyErr_Print();
+        return false;
+    }
     bool ans = PyObject_IsTrue(ret);
     Py_DECREF(ret);
     return ans;
 }
 
-static PyObject*
+static PyObject *
 remove_from_ram(PyObject *self, PyObject *callable) {
-    if (!PyCallable_Check(callable)) { PyErr_SetString(PyExc_TypeError, "not a callable"); return NULL; }
+    if (!PyCallable_Check(callable)) {
+        PyErr_SetString(PyExc_TypeError, "not a callable");
+        return NULL;
+    }
     return PyLong_FromUnsignedLong(disk_cache_clear_from_ram(self, python_clear_predicate, callable));
 }
 
-static PyObject*
+static PyObject *
 num_cached_in_ram(PyObject *self, PyObject *args UNUSED) {
     return PyLong_FromUnsignedLong(disk_cache_num_cached_in_ram(self));
 }
@@ -925,11 +1197,15 @@ static PyMethodDef methods[] = {
     {"num_cached_in_ram", num_cached_in_ram, METH_NOARGS, NULL},
     {"get", get, METH_VARARGS, NULL},
     {"wait_for_write", wait_for_write, METH_VARARGS, NULL},
+    {"pause_writes", pause_writes, METH_NOARGS, NULL},
+    {"set_needs_encryption", set_needs_encryption, METH_O, NULL}, // testing only
+    {"resume_writes", resume_writes, METH_VARARGS, NULL},
+    {"wait_until_writes_paused", wait_until_writes_paused, METH_VARARGS, NULL},
     {"end_of_data_offset", end_of_data_offset, METH_NOARGS, NULL},
     {"clear", clear, METH_NOARGS, NULL},
     {"holes", holes, METH_NOARGS, NULL},
 
-    {NULL}  /* Sentinel */
+    {NULL} /* Sentinel */
 };
 
 static PyMemberDef members[] = {
@@ -941,8 +1217,7 @@ static PyMemberDef members[] = {
 
 
 PyTypeObject DiskCache_Type = {
-    PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "fast_data_types.DiskCache",
+    PyVarObject_HEAD_INIT(NULL, 0).tp_name = "fast_data_types.DiskCache",
     .tp_basicsize = sizeof(DiskCache),
     .tp_dealloc = (destructor)dealloc,
     .tp_flags = Py_TPFLAGS_DEFAULT,
@@ -953,5 +1228,8 @@ PyTypeObject DiskCache_Type = {
 };
 
 INIT_TYPE(DiskCache)
-PyObject* create_disk_cache(void) { return new_diskcache_object(&DiskCache_Type, NULL, NULL); }
+PyObject *
+create_disk_cache(void) {
+    return new_diskcache_object(&DiskCache_Type, NULL, NULL);
+}
 // }}}

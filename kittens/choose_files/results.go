@@ -25,7 +25,7 @@ func (h *Handler) draw_results_title() {
 	if strings.HasPrefix(text, home) {
 		text = "~" + text[len(home):]
 	}
-	text = sanitize(text)
+	text = sanitize_name(text)
 	available_width := h.screen_size.width - 9
 	if available_width < 2 {
 		return
@@ -130,7 +130,7 @@ func icon_for(path string, x os.FileMode) string {
 		return ans
 	}
 	var ans string
-	if x&fs.ModeSymlink != 0 && x&SymlinkToDir != 0 {
+	if is_symlink_to_dir(x) {
 		ans = string(icons.SYMLINK_TO_DIR)
 	} else {
 		ans = icons.IconForFileWithMode(path, x, true)
@@ -154,7 +154,7 @@ func (h *Handler) draw_column_of_matches(matches ResultsType, current_idx int, x
 		} else {
 			icon = icon_for(filepath.Join(root_dir, m.text), m.ftype)
 		}
-		text := sanitize(m.text)
+		text := sanitize_name(m.text)
 		add_ellipsis := false
 		width := wcswidth.Stringwidth(text)
 		if width > available_width-3 {

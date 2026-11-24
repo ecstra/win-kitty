@@ -164,7 +164,7 @@ def create_narrow_symbols(opts: Options) -> tuple[tuple[int, int, int], ...]:
     return tuple((a, b, v) for (a, b), v in coalesce_symbol_maps(opts.narrow_symbols).items())
 
 
-descriptor_overrides: dict[int, tuple[str, bool, bool]] = {}
+descriptor_overrides: dict[int, tuple[FontObject | str, bool, bool]] = {}
 
 
 def descriptor_for_idx(idx: int) -> tuple[FontObject | str, bool, bool]:
@@ -178,7 +178,7 @@ def dump_font_debug() -> None:
     cf = current_fonts()
     log_error('Text fonts:')
     for key, text in {'medium': 'Normal', 'bold': 'Bold', 'italic': 'Italic', 'bi': 'Bold-Italic'}.items():
-        log_error(f'  {text}:', cf[key].identify_for_debug())  # type: ignore
+        log_error(f'  {text}:', cf[key].identify_for_debug())
     ss = cf['symbol']
     if ss:
         log_error('Symbol map fonts:')
@@ -188,6 +188,7 @@ def dump_font_debug() -> None:
 
 def clear_font_caches() -> None:
     from .common import clear_caches as clear_common_caches
+
     clear_common_caches()
     if is_macos:
         from .core_text import clear_caches as clear_platform_caches
@@ -218,15 +219,12 @@ def set_font_family(opts: Options | None = None, override_font_size: float | Non
     sm = create_symbol_map(opts)
     ns = create_narrow_symbols(opts)
     num_symbol_fonts = len(current_faces) - before
-    set_font_data(
-        descriptor_for_idx,
-        indices['bold'], indices['italic'], indices['bi'], num_symbol_fonts,
-        sm, sz, ns
-    )
+    set_font_data(descriptor_for_idx, indices['bold'], indices['italic'], indices['bi'], num_symbol_fonts, sm, sz, ns)
 
 
 if TYPE_CHECKING:
     import ctypes
+
     CBufType = ctypes.Array[ctypes.c_ubyte]
 else:
     CBufType = None
@@ -234,14 +232,21 @@ UnderlineCallback = Callable[[CBufType, int, int, int, int], None]
 
 
 class setup_for_testing:
-
     xnum = 100000
     ynum = 100
     baseline = 0
 
-    def __init__(self, family: str = 'monospace', size: float = 11.0, dpi: float = 96.0, main_face_path: str = ''):
+    def __init__(
+        self,
+        family: str = 'monospace',
+        size: float = 11.0,
+        dpi: float = 96.0,
+        main_face_path: str = '',
+        main_face_descriptor: FontObject | None = None,
+    ):
         self.family, self.size, self.dpi = family, size, dpi
         self.main_face_path = main_face_path
+        self.main_face_descriptor = main_face_descriptor
 
     def __enter__(self) -> tuple[dict[tuple[int, int, int], bytes], int, int]:
         global descriptor_overrides
@@ -256,7 +261,9 @@ class setup_for_testing:
         set_send_sprite_to_gpu(send_to_gpu)
         self.orig_desc_overrides = descriptor_overrides
         descriptor_overrides = {}
-        if self.main_face_path:
+        if self.main_face_descriptor is not None:
+            descriptor_overrides[0] = self.main_face_descriptor, False, False
+        elif self.main_face_path:
             descriptor_overrides[0] = self.main_face_path, False, False
         try:
             set_font_family(opts)
@@ -274,7 +281,7 @@ class setup_for_testing:
 
 def render_string(text: str, family: str = 'monospace', size: float = 11.0, dpi: float = 96.0) -> tuple[int, int, list[bytes]]:
     with setup_for_testing(family, size, dpi) as (sprites, cell_width, cell_height):
-        s = Screen(None, 1, len(text)*2)
+        s = Screen(None, 1, len(text) * 2)
         line = s.line(0)
         s.draw(text)
         test_render_line(line)
@@ -282,7 +289,7 @@ def render_string(text: str, family: str = 'monospace', size: float = 11.0, dpi:
     found_content = False
     for i in reversed(range(s.columns)):
         sp = line.sprite_at(i)
-        sp &= 0x7fffffff
+        sp &= 0x7FFFFFFF
         if not sp and not found_content:
             continue
         found_content = True
@@ -291,10 +298,10 @@ def render_string(text: str, family: str = 'monospace', size: float = 11.0, dpi:
 
 
 def shape_string(
-    text: str = "abcd", family: str = 'monospace', size: float = 11.0, dpi: float = 96.0, path: str | None = None
+    text: str = 'abcd', family: str = 'monospace', size: float = 11.0, dpi: float = 96.0, path: str | None = None
 ) -> list[tuple[int, int, int, tuple[int, ...]]]:
     with setup_for_testing(family, size, dpi) as (sprites, cell_width, cell_height):
-        s = Screen(None, 1, len(text)*2)
+        s = Screen(None, 1, len(text) * 2)
         line = s.line(0)
         s.draw(text)
         return test_shape(line, path)
@@ -326,12 +333,7 @@ def display_bitmap(rgb_data: bytes, width: int, height: int) -> None:
     show(rgb_data, width, height)
 
 
-def test_render_string(
-        text: str = 'Hello, world!',
-        family: str = 'monospace',
-        size: float = 64.0,
-        dpi: float = 96.0
-) -> None:
+def test_render_string(text: str = 'Hello, world!', family: str = 'monospace', size: float = 64.0, dpi: float = 96.0) -> None:
 
     cell_width, cell_height, cells = render_string(text, family, size, dpi)
     rgb_data = concat_cells(cell_width, cell_height, True, tuple(cells))
@@ -352,7 +354,7 @@ def test_fallback_font(qtext: str | None = None, bold: bool = False, italic: boo
         if qtext:
             trials = [qtext]
         else:
-            trials = ['你', 'He\u0347\u0305', '\U0001F929']
+            trials = ['你', 'He\u0347\u0305', '\U0001f929']
         for text in trials:
             f = get_fallback_font(text, bold, italic)
             try:
@@ -372,8 +374,10 @@ def showcase() -> None:
 def create_face(path: str) -> 'Union[CTFace, Face]':
     if is_macos:
         from kitty.fast_data_types import CTFace
+
         return CTFace(path=path)
     from kitty.fast_data_types import Face
+
     return Face(path=path)
 
 

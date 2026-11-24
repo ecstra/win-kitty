@@ -1,20 +1,23 @@
 #!/usr/bin/env python
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
+from math import isfinite
 from typing import TYPE_CHECKING
 
-from .base import ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, RemoteCommand, ResponseType, Window
+from kitty.options.utils import parse_font_size_change
+
+from .base import ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, RemoteCommand, RemoteControlErrorWithoutTraceback, ResponseType, Window
 
 if TYPE_CHECKING:
     from kitty.cli_stub import SetFontSizeRCOptions as CLIOptions
 
 
 class SetFontSize(RemoteCommand):
-    protocol_spec = __doc__ = '''
+    protocol_spec = __doc__ = """
     size+/float: The new font size in pts (a positive number). If absent is assumed to be zero which means reset to default.
     all/bool: Boolean whether to change font size in the current window or all windows
     increment_op/choices.+.-.*./: The string ``+``, ``-``, ``*`` or ``/`` to interpret size as an increment
-    '''
+    """
 
     short_desc = 'Set the font size in the active top-level OS window'
     desc = (
@@ -27,25 +30,29 @@ class SetFontSize(RemoteCommand):
         ' kitten @ set-font-size -- -2'
     )
     args = RemoteCommand.Args(spec='FONT_SIZE', count=1, special_parse='+increment_op:parse_set_font_size(args[0], &payload)', json_field='size')
-    options_spec = '''\
+    options_spec = """\
 --all -a
 type=bool-set
 By default, the font size is only changed in the active OS window,
 this option will cause it to be changed in all OS windows. It also changes
 the font size for any newly created OS Windows in the future.
-'''
+"""
 
     def message_to_kitty(self, global_opts: RCOptions, opts: 'CLIOptions', args: ArgsType) -> PayloadType:
         if not args:
             self.fatal('No font size specified')
-        fs = args[0]
-        inc = fs[0] if fs and fs[0] in '+-' else None
-        return {'size': abs(float(fs)), 'all': opts.all, 'increment_op': inc}
+        try:
+            inc, size = parse_font_size_change(args[0])
+        except ValueError as e:
+            self.fatal(f'Invalid font size: {args[0]}: {e}')
+        return {'size': size, 'all': opts.all, 'increment_op': inc}
 
     def response_from_kitty(self, boss: Boss, window: Window | None, payload_get: PayloadGetType) -> ResponseType:
-        boss.change_font_size(
-            payload_get('all'),
-            payload_get('increment_op'), payload_get('size') or 0)
+        size = payload_get('size') or 0
+        inc = payload_get('increment_op')
+        if not isfinite(size) or size < 0 or (inc and size == 0):
+            raise RemoteControlErrorWithoutTraceback(f'Invalid font size: {inc or ""}{size}, must be a positive number')
+        boss.change_font_size(payload_get('all'), inc, size)
         return None
 
 

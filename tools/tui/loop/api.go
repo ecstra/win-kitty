@@ -147,7 +147,8 @@ type Loop struct {
 }
 
 func New(options ...func(self *Loop)) (*Loop, error) {
-	if runtime.GOOS == "windows" && os.Getenv("KITTY_WINDOW_ID") == "" {
+	// Tests build loops without running a UI, so they are left alone.
+	if runtime.GOOS == "windows" && os.Getenv("KITTY_WINDOW_ID") == "" && !utils.IsTesting() {
 		// Full-screen kitten UIs need faithful VT and mouse handling, which
 		// other Windows terminals (running the kitten through their ConPTY)
 		// mangle: garbled mouse reports typed into the UI, broken raw mode and

@@ -5,7 +5,7 @@ name: CI
 # this fork does not change, and the port's own code is covered here.
 on:
     push:
-        branches: [windows-native-port, master, ucrt64-migration]
+        branches: [windows-native-port, master, upcoming]
         # Documentation cannot break the build, so do not spend a runner on it.
         # Written out twice because GitHub Actions does not support YAML anchors.
         paths-ignore:
@@ -59,6 +59,7 @@ jobs:
                       mingw-w64-ucrt-x86_64-ncurses
                       mingw-w64-ucrt-x86_64-lcms2
                       mingw-w64-ucrt-x86_64-ruff
+                      mingw-w64-ucrt-x86_64-glslang
 
             - name: Lint
               run: |
@@ -83,6 +84,31 @@ jobs:
                   tar -xf /tmp/nerd.tar.xz -C /tmp/nerd
                   find /tmp/nerd -name 'SymbolsNerdFontMono-Regular.ttf' -exec cp {} fonts/ \;
                   test -f fonts/SymbolsNerdFontMono-Regular.ttf
+
+            - name: Fetch the Slang compiler
+              run: |
+                  set -euo pipefail
+                  # kitty writes its shaders in Slang and compiles them to GLSL
+                  # during the build, which glslangValidator then checks. Use the
+                  # slangc release upstream builds with, named in bypy/sources.json,
+                  # since an older one writes GLSL the checker rejects.
+                  version="$(grep -o '"slang [0-9.]*"' bypy/sources.json | tr -d '"' | cut -d' ' -f2)"
+                  # The prebuilt slangc runs in the build and its output ships in
+                  # the installer, so the download is pinned. When sources.json
+                  # moves to a new version this fails until both lines below are
+                  # updated, the hash from the release asset's sha256 digest.
+                  pinned_version=2026.14.1
+                  pinned_sha256=791fe8400fe3cabdaf054089e6f5bffa745fbf5912b5b85e2ee4dc78c6b9aff7
+                  if [ "$version" != "$pinned_version" ]; then
+                      echo "bypy/sources.json wants slang $version, but this step pins $pinned_version" >&2
+                      exit 1
+                  fi
+                  mkdir -p /tmp/slang
+                  curl -fsSL -o /tmp/slang.tar.gz "https://github.com/shader-slang/slang/releases/download/v${version}/slang-${version}-windows-x86_64.tar.gz"
+                  echo "$pinned_sha256  /tmp/slang.tar.gz" | sha256sum -c -
+                  tar -xzf /tmp/slang.tar.gz -C /tmp/slang
+                  test -x /tmp/slang/bin/slangc.exe
+                  echo "SLANGC=$(cygpath -m /tmp/slang/bin/slangc.exe)" >> "$GITHUB_ENV"
 
             - name: Build
               run: |

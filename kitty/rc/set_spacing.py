@@ -3,7 +3,7 @@
 
 
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, LiteralString
+from typing import TYPE_CHECKING
 
 from .base import MATCH_TAB_OPTION, MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, RemoteCommand, ResponseType, Window
 
@@ -35,14 +35,28 @@ def patch_configured_edges(opts: 'Options', s: dict[str, float | None]) -> None:
         setattr(opts, q, new_edges)
 
 
-def parse_spacing_settings(args: Iterable[str]) -> dict[str, float | None]:
-    mapper: dict[str, list[LiteralString]] = {}
+def spacing_edge_map() -> dict[str, tuple[str, ...]]:
+    # This is the single source of truth for the edge names accepted when
+    # setting spacing, it is also used to generate the Go parser's map.
+    ans: dict[str, tuple[str, ...]] = {}
     for q in ('margin', 'padding'):
-        mapper[q] = f'{q}-left {q}-top {q}-right {q}-bottom'.split()
-        mapper[f'{q}-h'] = mapper[f'{q}-horizontal'] = f'{q}-left {q}-right'.split()
-        mapper[f'{q}-v'] = mapper[f'{q}-vertical'] = f'{q}-top {q}-bottom'.split()
+        ans[q] = tuple(f'{q}-{edge}' for edge in ('left', 'top', 'right', 'bottom'))
+        ans[f'{q}-h'] = ans[f'{q}-horizontal'] = (f'{q}-left', f'{q}-right')
+        ans[f'{q}-v'] = ans[f'{q}-vertical'] = (f'{q}-top', f'{q}-bottom')
         for edge in ('left', 'top', 'right', 'bottom'):
-            mapper[f'{q}-{edge}'] = [f'{q}-{edge}']
+            ans[f'{q}-{edge}'] = (f'{q}-{edge}',)
+    return ans
+
+
+SPACING_SETTINGS_DOC = (
+    'For example: :code:`margin=20` or :code:`padding-left=10` or :code:`margin-h=30`. The shorthand form sets'
+    ' all values, the :code:`*-h` (or :code:`*-horizontal`) and :code:`*-v` (or :code:`*-vertical`) variants'
+    ' set horizontal and vertical values. The special value :code:`default` resets to using the default value.'
+)
+
+
+def parse_spacing_settings(args: Iterable[str]) -> dict[str, float | None]:
+    mapper = spacing_edge_map()
     settings: dict[str, float | None] = {}
     for spec in args:
         parts = spec.split('=', 1)
@@ -64,24 +78,22 @@ def parse_spacing_settings(args: Iterable[str]) -> dict[str, float | None]:
 
 
 class SetSpacing(RemoteCommand):
-
-    protocol_spec = __doc__ = '''
+    protocol_spec = __doc__ = """
     settings+/dict.spacing: An object mapping margins/paddings using canonical form {'margin-top': 50, 'padding-left': null} etc
     match_window/str: Window to change paddings and margins in
     match_tab/str: Tab to change paddings and margins in
     all/bool: Boolean indicating change paddings and margins everywhere or not
     configured/bool: Boolean indicating whether to change the configured paddings and margins. Must be True if reset is True
-    '''
+    """
 
     short_desc = 'Set window paddings and margins'
     desc = (
-        'Set the paddings and margins for the specified windows (defaults to active window).'
-        ' For example: :code:`margin=20` or :code:`padding-left=10` or :code:`margin-h=30`. The shorthand form sets'
-        ' all values, the :code:`*-h` and :code:`*-v` variants set horizontal and vertical values.'
-        ' The special value :code:`default` resets to using the default value.'
-        ' If you specify a tab rather than a window, all windows in that tab are affected.'
+        'Set the paddings and margins for the specified windows (defaults to active window). '
+        + SPACING_SETTINGS_DOC
+        + ' If you specify a tab rather than a window, all windows in that tab are affected.'
     )
-    options_spec = '''\
+    options_spec = (
+        """\
 --all -a
 type=bool-set
 By default, settings are only changed for the currently active window. This option will
@@ -92,7 +104,12 @@ cause paddings and margins to be changed in all windows.
 type=bool-set
 Also change the configured paddings and margins (i.e. the settings kitty will use for new
 windows).
-''' + '\n\n' + MATCH_WINDOW_OPTION + '\n\n' + MATCH_TAB_OPTION.replace('--match -m', '--match-tab -t')
+"""
+        + '\n\n'
+        + MATCH_WINDOW_OPTION
+        + '\n\n'
+        + MATCH_TAB_OPTION.replace('--match -m', '--match-tab -t')
+    )
     args = RemoteCommand.Args(spec='MARGIN_OR_PADDING ...', minimum_count=1, json_field='settings', special_parse='parse_set_spacing(args)')
 
     def message_to_kitty(self, global_opts: RCOptions, opts: 'CLIOptions', args: ArgsType) -> PayloadType:
@@ -102,11 +119,7 @@ windows).
             settings = parse_spacing_settings(args)
         except Exception as e:
             self.fatal(str(e))
-        ans = {
-            'match_window': opts.match, 'match_tab': opts.match_tab,
-            'all': opts.all, 'configured': opts.configured,
-            'settings': settings
-        }
+        ans = {'match_window': opts.match, 'match_tab': opts.match_tab, 'all': opts.all, 'configured': opts.configured, 'settings': settings}
         return ans
 
     def response_from_kitty(self, boss: Boss, window: Window | None, payload_get: PayloadGetType) -> ResponseType:
@@ -114,6 +127,7 @@ windows).
         settings: dict[str, float | None] = payload_get('settings')
         dirtied_tabs = {}
         from kitty.fast_data_types import get_options
+
         if payload_get('configured'):
             patch_configured_edges(get_options(), settings)
 

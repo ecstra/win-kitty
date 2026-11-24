@@ -15,3 +15,8 @@ func (self *remote_file) apply_metadata() {
 		_ = os.Chmod(self.expanded_local_path, self.permissions)
 	}
 }
+
+// Writing in place is only safe for a file no other link shares, and the link
+// count is not in what os.Lstat reports here, so never fall back to it. The
+// transfer then fails with the original permission error instead.
+func open_for_writing_in_place(path string) *os.File { return nil }

@@ -16,12 +16,22 @@ typedef struct TrackCursor {
 } TrackCursor;
 
 typedef struct ResizeResult {
-    LineBuf *lb; HistoryBuf *hb;
+    LineBuf *lb;
+    HistoryBuf *hb;
     bool ok;
     index_type num_content_lines_before, num_content_lines_after;
 } ResizeResult;
 
+typedef enum HistoryResizeMode {
+    // hb is never modified
+    HISTORY_PRESERVE,
+    // on success the storage of hb may be moved into the result, leaving hb
+    // empty, so hb must be discarded. On failure hb is left untouched.
+    HISTORY_CONSUME,
+    // as HISTORY_CONSUME but never reuse unchanged lines, used in tests
+    HISTORY_CONSUME_NO_REUSE,
+} HistoryResizeMode;
+
 ResizeResult
-resize_screen_buffers(LineBuf *lb, HistoryBuf *hb, index_type lines, index_type columns, ANSIBuf *as_ansi_buf, TrackCursor *cursors);
-ResizeResult
-resize_screen_buffer_without_rewrap(LineBuf *lb, index_type lines, index_type columns, TrackCursor *cursors);
+resize_screen_buffers(LineBuf *lb, HistoryBuf *hb, HistoryResizeMode hb_mode, index_type lines, index_type columns, ANSIBuf *as_ansi_buf, TrackCursor *cursors);
+ResizeResult resize_screen_buffer_without_rewrap(LineBuf *lb, index_type lines, index_type columns, TrackCursor *cursors);

@@ -30,10 +30,10 @@
     },
 
     {
-        "name": "openssl 3.5.7",
+        "name": "openssl 3.5.9",
         "unix": {
             "file_extension": "tar.gz",
-            "hash": "sha256:a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8",
+            "hash": "sha256:603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a",
             "urls": ["https://www.openssl.org/source/{filename}"]
         }
     },
@@ -59,10 +59,10 @@
     },
 
     {
-        "name": "libxml2 2.15.3",
+        "name": "libxml2 2.15.4",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:78262a6e7ac170d6528ebfe2efccdf220191a5af6a6cd61ea4a9a9a5042c7a07",
+            "hash": "sha256:98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821",
             "urls": ["https://download.gnome.org/sources/libxml2/{version_except_last}/{filename}"]
         }
     },
@@ -78,11 +78,11 @@
     },
 
     {
-        "name": "sqlite 3.53.2",
+        "name": "sqlite 3.54.0",
         "unix": {
             "file_extension": "tar.gz",
-            "hash": "sha256:588ad51949419a56ebe81fe56193d510c559eb94c9a57748387860b5d3069316",
-            "urls": ["https://www.sqlite.org/2026/{name}-autoconf-3530200.{file_extension}"]
+            "hash": "sha256:134ec0802dda5795816e25d25872d20b312cb3973438c49b30bc40b7705ea9ed",
+            "urls": ["https://www.sqlite.org/2026/{name}-autoconf-3540000.{file_extension}"]
         }
     },
 
@@ -145,10 +145,10 @@
     },
 
     {
-        "name": "python 3.14.6",
+        "name": "python 3.14.10",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:143b1dddefaec3bd2e21e3b839b34a2b7fb9842272883c576420d605e9f30c63",
+            "hash": "sha256:de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032",
             "urls": ["https://www.python.org/ftp/python/{version}/Python-{version}.{file_extension}"]
         }
     },
@@ -202,21 +202,21 @@
     },
 
     {
-        "name": "glib 2.88.1",
+        "name": "glib 2.89.0",
         "os": "linux",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:51ab804c56f6eab3e5045c774d1290ac5e4c923d4f9a3d8e33123bee45c1840e",
+            "hash": "sha256:205bf5dab175de68f11e33be7bb36d4ad4c5a5097d8c0c88a8682b257b6293dc",
             "urls": ["https://ftp.gnome.org/pub/GNOME/sources/glib/{version_except_last}/{filename}"]
         }
     },
 
     {
-        "name": "libbrotli 1.1.0",
+        "name": "libbrotli 1.1.1",
         "os": "linux",
         "unix": {
             "file_extension": "tar.gz",
-            "hash": "sha256:e720a6ca29428b803f4ad165371771f5398faba397edf6778837a18599ea13ff",
+            "hash": "sha256:1a84dfaa740994d19254bf78aa7d74a4a8040d1638f3d5f2cdecb188fd520da8",
             "urls": ["https://github.com/google/brotli/archive/v{version}/{filename}"]
         }
     },
@@ -232,11 +232,11 @@
     },
 
     {
-        "name": "freetype 2.13.2",
+        "name": "freetype 2.15.0",
         "os": "linux",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:12991c4e55c506dd7f9b765933e62fd2be2e06d421505d7950a132e4f1bb484d",
+            "hash": "sha256:93cd47eb719c325107f2d3cf087d06299e944c3b48a40b55537302304dea1dd5",
             "urls": ["https://download.savannah.gnu.org/releases/freetype/{filename}"]
         }
     },
@@ -262,10 +262,10 @@
     },
 
     {
-        "name": "harfbuzz 12.3.0",
+        "name": "harfbuzz 15.0.0",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:8660ebd3c27d9407fc8433b5d172bafba5f0317cb0bb4339f28e5370c93d42b7",
+            "hash": "sha256:968536e9abd782f07f7954044c0c4020199fcdd39b41d221ec42d2a3be4a44df",
             "urls": ["https://github.com/harfbuzz/harfbuzz/releases/download/{version}/{filename}"]
         }
     },
@@ -280,21 +280,30 @@
     },
 
     {
-        "name": "wayland 1.24.0",
+        "name": "slang 2026.14.1",
+        "unix": {
+            "file_extension": "tar.gz",
+            "hash": "sha256:20254026c218ac100ecd118c033f2843e11282152d0d2b6a6b744735674c40ea",
+            "urls": ["git-submodules://github.com/shader-slang/slang.git"]
+        }
+    },
+
+    {
+        "name": "wayland 1.26.0",
         "os": "linux",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:82892487a01ad67b334eca83b54317a7c86a03a89cfadacfef5211f11a5d0536",
+            "hash": "sha256:64176eaa46e4969903e286f8e5ef8331affc17fdf03ac9b58381d2b23162b7a3",
             "urls": ["https://gitlab.freedesktop.org/wayland/wayland/-/releases/{version}/downloads/{filename}"]
         }
     },
 
     {
-        "name": "wayland-protocols 1.45",
+        "name": "wayland-protocols 1.49",
         "os": "linux",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:4d2b2a9e3e099d017dc8107bf1c334d27bb87d9e4aff19a0c8d856d17cd41ef0",
+            "hash": "sha256:ec4c8f74942d6dff7ace8b4ce4764f0ef9ff618a935d974ea77edee2ad240b14",
             "urls": ["https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/{version}/downloads/{filename}"]
         }
     }

@@ -5,7 +5,9 @@ import (
 	"io/fs"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -250,6 +252,191 @@ func TestChooseFilesScoring(t *testing.T) {
 	af("mime:image/png:A", "x", "y", "c.png", "x/s")
 	af("mime:image/*:A", "x", "y", "c.png", "x/s")
 	af("glob:*:All", "x", "y", "a", "b", "c.png", "x/s", "x/1", "x/2", "x/3", "y/3", "y/4", "y/5", "x/s/m", "x/s/n")
+}
+
+func combined_filter(t *testing.T, specs ...string) Filter {
+	t.Helper()
+	filters := make([]Filter, 0, len(specs))
+	for _, spec := range specs {
+		f, err := NewFilter(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		filters = append(filters, *f)
+	}
+	return CombinedFilter(filters...)
+}
+
+func TestChooseFilesFilterEquality(t *testing.T) {
+	f := func(specs ...string) Filter { return combined_filter(t, specs...) }
+	for _, tc := range []struct {
+		a, b  Filter
+		equal bool
+	}{
+		{f("glob:*.txt:A"), f("glob:*.txt:B"), true},
+		{f("glob:*.txt:A"), f("mime:*.txt:A"), false},
+		{f("glob:*.txt:A", "glob:*.jpg:A"), f("glob:*.jpg:B", "glob:*.txt:B"), true},
+		{f("glob:*.txt:A", "glob:*.jpg:A"), f("glob:*.txt:A", "glob:*.png:A"), false},
+		{f("glob:*.txt:A", "glob:*.jpg:A"), f("glob:*.txt:A"), false},
+		{f("glob:*.txt:A", "glob:*.txt:A"), f("glob:*.txt:A"), true},
+		{f("mime:image/*:A", "glob:*.mkv:A"), f("mime:image/*:A", "mime:*.mkv:A"), false},
+		{f("glob:*.txt:A", "glob:*.jpg:A"), CombinedFilter(f("glob:*.jpg:A"), f("glob:*.txt:A", "glob:*.jpg:A")), true},
+		{f("glob:*:A"), Filter{}, true},
+		{f("glob:*:A"), f("glob:*.txt:A"), false},
+	} {
+		if tc.a.Equal(tc.b) != tc.equal || tc.b.Equal(tc.a) != tc.equal {
+			t.Errorf("expected Equal(%s, %s) to be %v", tc.a, tc.b, tc.equal)
+		}
+	}
+	if s := f("glob:*.txt:A", "mime:image/*:A").String(); s != "glob:*.txt:A, mime:image/*:A" {
+		t.Errorf("unexpected string representation of combined filter: %s", s)
+	}
+}
+
+func TestChooseFilesCombinedFilters(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.txt", "b.jpg", "c.png"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := combined_filter(t, "glob:*.txt:First", "glob:*.jpg:First")
+	second := combined_filter(t, "glob:*.txt:Second", "glob:*.png:Second")
+	var scan_err error
+	s := NewFileSystemScorer(root, "", first, false, func(err error, complete bool) {
+		if err != nil {
+			scan_err = err
+		}
+	})
+	h := Handler{state: State{
+		current_dir: root, current_filter: "First", filter_map: map[string]Filter{"First": first, "Second": second},
+	}}
+	h.result_manager = &ResultManager{settings: &h.state, scorer: s}
+	check := func(expected ...string) {
+		t.Helper()
+		s.current_worker_wait.Wait()
+		if scan_err != nil {
+			t.Fatal(scan_err)
+		}
+		results, _ := s.Results()
+		var actual []string
+		for _, item := range results.RenderedMatches(CollectionIndex{}, -1) {
+			actual = append(actual, item.text)
+		}
+		slices.Sort(actual)
+		if diff := cmp.Diff(expected, actual); diff != "" {
+			t.Fatalf("incorrect results for filter %s:\n%s", h.state.current_filter, diff)
+		}
+	}
+	s.Start()
+	check("a.txt", "b.jpg")
+	h.set_filter("Second")
+	check("a.txt", "c.png")
+	h.set_filter("First")
+	check("a.txt", "b.jpg")
+}
+
+func TestChooseFilesDirectorySymlinks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "real-dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"file.txt", "real-dir/nested.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, target := range map[string]string{"linked-dir": "real-dir", "linked-file.txt": "file.txt"} {
+		if err := os.Symlink(target, filepath.Join(root, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	filter, err := NewFilter("glob:*.txt:Text files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name           string
+		mode           Mode
+		filter         Filter
+		want, selected []string
+	}{
+		{"directories", SELECT_SINGLE_DIR, Filter{},
+			[]string{"linked-dir", "real-dir"}, []string{"linked-dir", "real-dir"}},
+		{"file filter", SELECT_SINGLE_FILE, *filter,
+			// choices are shown with the platform's separator
+			[]string{"file.txt", "linked-dir", "linked-file.txt", "real-dir", filepath.FromSlash("real-dir/nested.txt")},
+			[]string{"file.txt", "linked-file.txt", filepath.FromSlash("real-dir/nested.txt")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			done := make(chan struct{})
+			var scan_err error
+			s := NewFileSystemScorer(root, "", tc.filter, tc.mode.OnlyDirs(), func(err error, complete bool) {
+				if err != nil {
+					scan_err = err
+				}
+				if complete {
+					close(done)
+				}
+			})
+			s.Start()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("file scan did not finish")
+			}
+			if scan_err != nil {
+				t.Fatal(scan_err)
+			}
+			results, _ := s.Results()
+			state := State{mode: tc.mode}
+			var actual, selected []string
+			for _, item := range results.RenderedMatches(CollectionIndex{}, -1) {
+				actual = append(actual, item.text)
+				if state.CanSelect(item) {
+					selected = append(selected, item.text)
+				}
+			}
+			slices.Sort(actual)
+			slices.Sort(selected)
+			if diff := cmp.Diff(tc.want, actual); diff != "" {
+				t.Errorf("wrong choices:\n%s", diff)
+			}
+			if diff := cmp.Diff(tc.selected, selected); diff != "" {
+				t.Errorf("wrong selectable choices:\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestIsDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		ftype    fs.FileMode
+		expected bool
+	}{
+		{0, false},
+		{0o755, false},
+		{fs.ModeDir, true},
+		{fs.ModeSymlink, false},
+		{fs.ModeSymlink | SymlinkToDir, true},
+	} {
+		if actual := is_directory(tc.ftype); actual != tc.expected {
+			t.Fatalf("is_directory(%s) = %v, expected %v", tc.ftype, actual, tc.expected)
+		}
+	}
+	tdir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tdir, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("dir", filepath.Join(tdir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if ftype := resolve_symlink_to_dir(filepath.Join(tdir, "link"), fs.ModeSymlink); !is_symlink_to_dir(ftype) {
+		t.Fatalf("symlink to directory not resolved: %s", ftype)
+	}
+	if ftype := resolve_symlink_to_dir(filepath.Join(tdir, "missing"), fs.ModeSymlink); is_directory(ftype) {
+		t.Fatalf("dangling symlink resolved as directory: %s", ftype)
+	}
 }
 
 func TestSortedResults(t *testing.T) {

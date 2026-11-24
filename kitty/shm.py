@@ -33,12 +33,13 @@ def make_filename(prefix: str) -> str:
 
 
 class SharedMemory:
-    '''
+    """
     Create or access randomly named shared memory. To create call with empty name and specific size.
     To access call with name only.
 
     WARNING: The actual size of the shared memory may be larger than the requested size.
-    '''
+    """
+
     _fd: int = -1
     _name: str = ''
     _mmap: mmap.mmap | None = None
@@ -47,10 +48,14 @@ class SharedMemory:
     num_bytes_for_size = struct.calcsize(size_fmt)
 
     def __init__(
-        self, name: str = '', size: int = 0, readonly: bool = False,
+        self,
+        name: str = '',
+        size: int = 0,
+        readonly: bool = False,
         mode: int = stat.S_IREAD | stat.S_IWRITE,
         prefix: str = 'kitty-',
-        unlink_on_exit: bool = False, ignore_close_failure: bool = False
+        unlink_on_exit: bool = False,
+        ignore_close_failure: bool = False,
     ):
         self.unlink_on_exit = unlink_on_exit
         self.ignore_close_failure = ignore_close_failure
@@ -154,6 +159,16 @@ class SharedMemory:
 
     def fileno(self) -> int:
         return self._fd
+
+    def verify_owner_and_mode(self) -> None:
+        """Ensure the shared memory object is owned by us and not accessible to
+        any other user. Must be called when opening objects whose name comes
+        from an untrusted source, as anyone can create an object of that name."""
+        if self.stats.st_uid != os.geteuid() or self.stats.st_gid != os.getegid():
+            raise ValueError(f'Incorrect owner on shared memory object: uid={self.stats.st_uid} gid={self.stats.st_gid}')
+        mode = stat.S_IMODE(self.stats.st_mode)
+        if mode != stat.S_IREAD | stat.S_IWRITE:
+            raise ValueError(f'Incorrect permissions on shared memory object: 0o{mode:03o}')
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}({self.name!r}, size={self.size})'

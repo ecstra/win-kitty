@@ -39,7 +39,9 @@ echo "==> staging tree"
 rm -rf "$DIST"
 mkdir -p "$DIST"
 cp __main__.py "$DIST/"
-cp -r kitty kittens shell-integration terminfo logo fonts "$DIST/" 2>/dev/null || true
+# shaders holds the GLSL the build compiles from the Slang sources, which kitty
+# loads at startup, so a tree without it cannot draw anything.
+cp -r kitty kittens shell-integration terminfo logo fonts shaders "$DIST/"
 # Prune what the runtime does not need. Keep .py/.pyd/.so/.glsl/.conf/.json,
 # the launcher exes and kitty.ico; drop sources, build litter and caches.
 find "$DIST" -type d -name __pycache__ -prune -exec rm -rf {} +

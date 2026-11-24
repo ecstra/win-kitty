@@ -27,6 +27,11 @@ To open the new window in a new tab::
 
     map f1 launch --type=tab
 
+To open a window docked to the bottom of the active window, using ten lines,
+see :ref:`docks`::
+
+    map f1 launch --type=window-dock --dock-edge=bottom --dock-size=10
+
 To run multiple commands in a shell, use::
 
     map f1 launch sh -c "ls && exec zsh"
@@ -148,7 +153,30 @@ create :file:`~/.config/kitty/mywatcher.py` and use :option:`launch --watcher` =
 
     def on_close(boss: Boss, window: Window, data: dict[str, Any])-> None:
         # called when window is closed, typically when the program running in
-        # it exits
+        # it exits. data contains reason, cause and confirmed. reason is what
+        # was closed and cause is why, one of:
+        #   reason='window': only this window was closed, cause is:
+        #       'program_exit': the program running in the window exited
+        #       'closed': kitty closed the window, for example, because the
+        #                 user closed it or its tab or because of a remote
+        #                 control command
+        #   reason='os_window': the OS window containing this window was
+        #       closed, cause is 'closed'
+        #   reason='quit': kitty is quitting, cause is:
+        #       'action': the quit action, for example, via a keyboard
+        #                 shortcut, menu or remote control
+        #       'os_request': the OS asked kitty to quit, for example, via
+        #                     the Dock on macOS
+        #       'logout': the user is logging out or shutting down. On Linux
+        #                 this is reported only when
+        #                 restore_session_after_logout is enabled, otherwise
+        #                 it is reported as 'signal'
+        #       'signal': kitty received SIGTERM, SIGINT or SIGHUP
+        #       'fatal_error': kitty lost its connection to the display
+        #                      server
+        #       'unknown': none of the above
+        # confirmed is True if the user confirmed closing the window, its
+        # tab, its OS window or quitting kitty in a confirmation dialog.
         ...
 
     def on_set_user_var(boss: Boss, window: Window, data: dict[str, Any]) -> None:
@@ -163,9 +191,25 @@ create :file:`~/.config/kitty/mywatcher.py` and use :option:`launch --watcher` =
         # running in the terminal
         ...
 
+    def on_cwd_change(boss: Boss, window: Window, data: dict[str, Any]) -> None:
+        # called when the program running in the window reports a change in
+        # its working directory via the OSC 7 escape code, as done by the
+        # kitty shell integration. data contains cwd, the reported directory and
+        # host, the hostname from the reported URL (empty if absent). Note that
+        # the directory may be on a remote machine, for example, when using the
+        # ssh kitten.
+        ...
+
     def on_cmd_startstop(boss: Boss, window: Window, data: dict[str, Any]) -> None:
         # called when the shell starts/stops executing a command. Here
         # data will contain is_start, cmdline and time.
+        ...
+
+    def on_program_status_change(boss: Boss, window: Window, data: dict[str, Any]) -> None:
+        # called when the program status (OSC 7501) records of the window
+        # change. Here data will contain program_status, the list of current
+        # records, each a dict with keys: id, state, kind, progress, app,
+        # title and msg.
         ...
 
     def on_color_scheme_preference_change(boss: Boss, window: Window, data: dict[str, Any]) -> None:
@@ -211,6 +255,172 @@ would pass to ``kitten @``. For example:
 Run, ``kitten @ --help`` in a kitty terminal, to see all the remote control
 commands available to you.
 
+
+.. _launch_wrapper:
+
+Wrapping the programs run in new windows
+-------------------------------------------
+
+.. versionadded:: 0.50.1
+
+You can have kitty run the program in every new window via a wrapper command of
+your choosing, for example, to open new windows inside the same container or
+development environment as the window they are opened from. To do so, create
+the file :file:`launch_wrapper.py` in the kitty config directory, defining a
+function named ``prefix_for_launch()``. kitty calls it just before starting the
+program in a new window and runs the program with the list of strings it returns
+placed before the command. Return ``None`` or an empty list to run the program
+unchanged. For example:
+
+.. code-block:: python
+
+    # ~/.config/kitty/launch_wrapper.py
+    from collections.abc import Sequence
+
+    from kitty.launch_wrapper import LaunchContext
+
+
+    def in_nix_shell(pid: int) -> bool:
+        # Whether a process was started inside a nix develop shell, detected
+        # from the environment variables it was started with
+        try:
+            with open(f'/proc/{pid}/environ', 'rb') as f:
+                return b'IN_NIX_SHELL=' in f.read()
+        except OSError:
+            return False
+
+
+    def prefix_for_launch(ctx: LaunchContext) -> Sequence[str] | None:
+        # Open new windows in the nix develop environment of their working
+        # directory, when opened from a window in a nix develop shell
+        if ctx.source_pid is not None and in_nix_shell(ctx.source_pid):
+            return ['nix', 'develop', '--command']
+        return None
+
+The function is passed a ``LaunchContext`` object with the following fields:
+
+``argv``
+    The command that will be run, as a tuple of strings. The program is as
+    requested, so a name such as ``vim`` is not resolved to a full path, it
+    is looked up in :envvar:`PATH` by the wrapper or the program that runs it,
+    as a shell would. The exception is a program that would not be found via
+    the :envvar:`PATH` in ``env``, for example one found via
+    :opt:`exe_search_path`, which is given as the full path kitty found it at.
+``cwd``
+    The working directory the command will run in
+``env``
+    A read-only mapping of the environment variables the command will be run
+    with, including the ones kitty sets for :ref:`shell_integration` and
+    :doc:`remote control <remote-control>`
+``is_default_shell``
+    True if the command is the shell from :opt:`shell`
+``window_id``
+    The id of the new window
+``launch_type``
+    The type of the new window, the same as the values of :option:`launch --type`,
+    such as ``window``, ``tab``, ``os-window`` or ``overlay``
+``source_window_id``
+    The id of the window the new one is opened from, or ``None``. This is the
+    window the working directory is taken from when using :option:`launch --cwd`
+    and the like, otherwise the active window
+``source_pid``
+    The process id of the foreground process in the source window, or ``None``.
+    You can use it to find out the environment the source window is running
+    in, by reading files such as :file:`/proc/{pid}/environ`,
+    :file:`/proc/{pid}/cgroup` or :file:`/proc/{pid}/cmdline` on Linux.
+``user_vars``
+    A read-only mapping of the user variables set via :option:`launch --var`.
+    Since user variables are saved in :doc:`sessions <sessions>`, you can use
+    them to start a restored window via the same wrapper as the original,
+    for example, by setting a user variable from a :ref:`watcher <watchers>`.
+``hold``
+    True if the window will be kept open after the command exits, as with
+    :option:`launch --hold`. See :ref:`launch_wrapper_hold`.
+
+The wrapper is used for windows created at your request: by the
+:doc:`launch <launch>` command, including via :doc:`remote control
+<remote-control>` and in :doc:`sessions <sessions>`, by actions such as
+:ac:`new_window`, :ac:`new_tab` and :ac:`new_os_window`, the new tab button in
+the tab bar, the macOS menus and the first window kitty creates on startup. It
+is not used for windows kitty creates internally, such as for kittens, the
+scrollback pager, error messages, or the editor run by :program:`edit-in-kitty`.
+It is also not used for background processes or programs run via the legacy
+`pipe` action.
+
+Keep the following in mind when writing a wrapper:
+
+* The wrapper must run its arguments as the command, with the working directory
+  and environment it receives from kitty. In particular, it must pass through
+  the environment variables kitty sets, otherwise features such as
+  :ref:`shell_integration` and remote control will not work in the new window.
+  Use ``ctx.env`` to see what they are.
+
+* kitty may insert its own helper programs between the wrapper and
+  ``ctx.argv``, such as :program:`kitten run-shell` to set up shell integration.
+  These must be able to run wherever the wrapper runs the command. This is the
+  case for wrappers that share the host filesystem, such as :program:`toolbox`,
+  :program:`distrobox`, :code:`nix develop -c` and :code:`direnv exec`.
+
+* On macOS, when the shell is run via :program:`/usr/bin/login`, the wrapper
+  runs inside it, with the home directory as its working directory. Use
+  ``ctx.cwd`` if the wrapper needs to know the actual working directory.
+
+* The function is called synchronously, whenever a window is created, so keep
+  it fast. If it fails, the error is reported and the program is run without
+  a wrapper, so that you can still open windows to fix it.
+
+* The wrapper is not saved in :doc:`sessions <sessions>`, the function is
+  called again when a session is restored.
+
+The file is re-loaded when the kitty config is reloaded, and is ignored when
+kitty is run with :option:`kitty --config` = :code:`NONE`.
+
+Instead of a list of strings, the function can return a ``LaunchPrefix``
+object, which allows for more control. A list is the same as
+``LaunchPrefix(argv=the_list)``. Its fields, all of which must be passed as
+keyword arguments, are:
+
+``argv``
+    The prefix, as a list of strings
+``handles_hold``
+    If ``True``, the wrapper is responsible for keeping the window open after the
+    command exits, see below. Ignored if ``argv`` is empty
+
+.. _launch_wrapper_hold:
+
+Windows that are kept open after the command exits
+_____________________________________________________
+
+By default, kitty keeps windows created with :option:`launch --hold` open by
+running the wrapper via :program:`kitten run-shell`, which runs the shell
+after the command exits. This way the window stays open, showing any errors,
+even if the wrapper itself fails. However, it means that the shell runs outside
+the wrapper. To have the shell run inside the wrapper, as the command does,
+use ``handles_hold``, with the prefix kitty uses to keep windows open, from
+``hold_prefix()``, after your wrapper:
+
+.. code-block:: python
+
+    from kitty.launch_wrapper import LaunchContext, LaunchPrefix, hold_prefix
+
+    def prefix_for_launch(ctx: LaunchContext) -> LaunchPrefix:
+        prefix = ['distrobox', 'enter', 'mybox', '--']
+        if ctx.hold:
+            return LaunchPrefix(argv=prefix + hold_prefix(), handles_hold=True)
+        return LaunchPrefix(argv=prefix)
+
+Why a prefix, rather than a new command and environment?
+____________________________________________________________
+
+A prefix can do anything a replacement could, as the wrapper is a program you
+control: it can change the environment and working directory before running
+the command, or not run it at all. However, kitty needs to know what the
+command is, to set up :ref:`shell_integration`, which depends on the shell
+being run, to track the processes running in the window, to save the window
+in :doc:`sessions <sessions>` and to clone it with :program:`clone-in-kitty`.
+With a prefix, kitty keeps knowing the actual command and can skip over
+the wrapper when needed. A replacement command would silently break these
+features.
 
 Finding executables
 -----------------------

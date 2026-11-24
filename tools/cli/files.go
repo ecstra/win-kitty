@@ -4,7 +4,6 @@ package cli
 
 import (
 	"fmt"
-	"mime"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,15 +13,6 @@ import (
 )
 
 var _ = fmt.Print
-
-func absolutize_path(path string) string {
-	path = utils.Expanduser(path)
-	q, err := filepath.Abs(path)
-	if err == nil {
-		path = q
-	}
-	return path
-}
 
 type FileEntry struct {
 	Name, CompletionCandidate, Abspath string
@@ -59,16 +49,29 @@ func CompleteFiles(prefix string, callback func(*FileEntry), cwd string) error {
 		if err != nil {
 			return err
 		}
+	} else {
+		// cwd may be relative, for example, when the config directory comes from a relative XDG_CONFIG_HOME
+		cwd = utils.Abspath(utils.Expanduser(cwd))
 	}
-	location := absolutize_path(prefix)
+	// relative prefixes are resolved against cwd, not the process working directory
+	location := utils.Expanduser(prefix)
+	if !filepath.IsAbs(location) {
+		if location != "" && os.IsPathSeparator(location[0]) {
+			// Rooted on the drive of cwd, as \Windows is on Windows, where a
+			// path is absolute only with its volume name.
+			location = filepath.VolumeName(cwd) + location
+		} else {
+			location = filepath.Join(cwd, location)
+		}
+	}
 	base_dir := ""
 	joinable_prefix := ""
 	switch prefix {
 	case ".":
-		base_dir = "."
+		base_dir = cwd
 		joinable_prefix = ""
 	case "./":
-		base_dir = "."
+		base_dir = cwd
 		joinable_prefix = "./"
 	case "/":
 		base_dir = "/"
@@ -85,7 +88,7 @@ func CompleteFiles(prefix string, callback func(*FileEntry), cwd string) error {
 			joinable_prefix = prefix
 		} else {
 			idx := last_path_separator_index(prefix)
-			if idx > 0 {
+			if idx > -1 {
 				joinable_prefix = prefix[:idx+1]
 				base_dir = filepath.Dir(location)
 			}
@@ -93,9 +96,6 @@ func CompleteFiles(prefix string, callback func(*FileEntry), cwd string) error {
 	}
 	if base_dir == "" {
 		base_dir = cwd
-	}
-	if !strings.HasPrefix(base_dir, "~") && !filepath.IsAbs(base_dir) {
-		base_dir = filepath.Join(cwd, base_dir)
 	}
 	// fmt.Printf("prefix=%#v base_dir=%#v joinable_prefix=%#v\n", prefix, base_dir, joinable_prefix)
 	entries, err := os.ReadDir(base_dir)
@@ -144,8 +144,13 @@ func CompleteExecutablesInPath(prefix string, paths ...string) []string {
 		entries, err := os.ReadDir(dir)
 		if err == nil {
 			for _, e := range entries {
-				if strings.HasPrefix(e.Name(), prefix) && !e.IsDir() && utils.Access(filepath.Join(dir, e.Name()), utils.AccessExec) == nil {
-					ans = append(ans, e.Name())
+				if strings.HasPrefix(e.Name(), prefix) {
+					// A symlink to a directory has IsDir() false but still passes the X_OK
+					// check, since directories are executable in the access(2) sense.
+					p := filepath.Join(dir, e.Name())
+					if utils.Access(p, utils.AccessExec) == nil && !is_dir_or_symlink_to_dir(e, p) {
+						ans = append(ans, e.Name())
+					}
 				}
 			}
 		}
@@ -176,7 +181,7 @@ func fname_based_completer(prefix, cwd string, is_match func(string) bool) []str
 			entries, err := os.ReadDir(entry.Abspath)
 			if err == nil {
 				for _, e := range entries {
-					if is_match(e.Name()) || is_dir_or_symlink_to_dir(e, filepath.Join(entry.Abspath, e.Name())) {
+					if is_match(strings.ToLower(e.Name())) || is_dir_or_symlink_to_dir(e, filepath.Join(entry.Abspath, e.Name())) {
 						ans = append(ans, entry.CompletionCandidate)
 						return
 					}
@@ -211,16 +216,7 @@ func complete_by_mimepat(prefix, cwd string, patterns []string) []string {
 		if all_allowed {
 			return true
 		}
-		idx := strings.Index(name, ".")
-		if idx < 1 {
-			return false
-		}
-		ext := name[idx:]
-		mt := mime.TypeByExtension(ext)
-		if mt == "" {
-			ext = filepath.Ext(name)
-			mt = mime.TypeByExtension(ext)
-		}
+		mt := utils.GuessMimeType(name)
 		if mt == "" {
 			return false
 		}
@@ -340,7 +336,7 @@ func DirectoryCompleter(title string, relative_to relative_to) CompletionFunc {
 		mg.NoTrailingSpace = true
 		mg.IsFiles = true
 		_ = CompleteFiles(word, func(entry *FileEntry) {
-			if entry.Mode.IsDir() {
+			if entry.IsDir {
 				mg.AddMatch(entry.CompletionCandidate)
 			}
 		}, cwd)

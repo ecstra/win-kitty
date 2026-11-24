@@ -60,7 +60,7 @@ func TestSplit(t *testing.T) {
 			if w.Err != nil {
 				t.Fatal(w.Err)
 			}
-			if w.Value == "" {
+			if w.Pos < 0 {
 				break
 			}
 			ans = append(ans, Tok{w.Pos, w.Value})
@@ -68,6 +68,12 @@ func TestSplit(t *testing.T) {
 		return
 	}
 	for q, expected := range map[string][]Tok{
+		`a""`:           {{0, "a"}},
+		`a""b`:          {{0, "ab"}},
+		`-1 "" 2`:       {{0, "-1"}, {3, ""}, {6, "2"}},
+		`-1 '' 2`:       {{0, "-1"}, {3, ""}, {6, "2"}},
+		`a ""`:          {{0, "a"}, {2, ""}},
+		`""`:            {{0, ""}},
 		`"ab"`:          {{0, "ab"}},
 		`x "ab"y \m`:    {{0, `x`}, {2, `aby`}, {8, `m`}},
 		`x'y"\z'1`:      {{0, `xy"\z1`}},
@@ -75,6 +81,11 @@ func TestSplit(t *testing.T) {
 		``:              nil,
 		`   `:           nil,
 		" \tabc\n\t\r ": {{2, "abc"}},
+		"a\\\xffb":      {{0, "ab"}}, // an escaped invalid byte is still dropped
+		// An escaped U+FFFD is a real character, not a decoding failure, so it
+		// survives the escape the way it does unescaped or single quoted.
+		"a\\�b":     {{0, "a�b"}},
+		"\"a\\�b\"": {{0, "a�b"}},
 	} {
 		if diff := cmp.Diff(expected, s(q)); diff != "" {
 			t.Fatalf("Failed for string: %#v\n%s", q, diff)
@@ -96,8 +107,13 @@ func TestSplitForCompletion(t *testing.T) {
 	test("a b", 2, "a", "b")
 	test("a b ", 4, "a", "b", "")
 	test("a b  ", 5, "a", "b", "")
+	test("ab cd ", 6, "ab", "cd", "")
+	test("launch --type ", 14, "launch", "--type", "")
+	test(`a "b c" `, 8, "a", "b c", "")
 	test(`a "b c"`, 2, "a", "b c")
 	test(`a "b c`, 2, "a", "b c")
+	test(`a "" b`, 5, "a", "", "b")
+	test(`a '' `, 5, "a", "", "")
 }
 
 func TestExpandANSICEscapes(t *testing.T) {

@@ -14,12 +14,16 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 #include <hb.h>
+#include <regex.h>
 #pragma GCC diagnostic pop
 
 #define OPT(name) global_state.opts.name
-#define debug_rendering(...) if (global_state.debug_rendering) { timed_debug_print(__VA_ARGS__); }
-#define debug_input(...) if (OPT(debug_keyboard)) { timed_debug_print(__VA_ARGS__); }
-#define debug_fonts(...) if (global_state.debug_font_fallback) { timed_debug_print(__VA_ARGS__); }
+#define debug_rendering(...) \
+    if (global_state.debug_rendering) { timed_debug_print(__VA_ARGS__); }
+#define debug_input(...) \
+    if (OPT(debug_keyboard)) { timed_debug_print(__VA_ARGS__); }
+#define debug_fonts(...) \
+    if (global_state.debug_font_fallback) { timed_debug_print(__VA_ARGS__); }
 
 typedef enum { LEFT_EDGE = 1, TOP_EDGE = 2, RIGHT_EDGE = 4, BOTTOM_EDGE = 8 } Edge;
 typedef enum { REPEAT_MIRROR, REPEAT_CLAMP, REPEAT_DEFAULT } RepeatStrategy;
@@ -40,9 +44,15 @@ typedef enum ShowHyperlinkTargets {
     SHOW_HYPERLINK_TARGETS_SUPER = 8,
     SHOW_HYPERLINK_TARGETS_ALT = 16
 } ShowHyperlinkTargets;
+typedef enum HyperlinkTargetPosition {
+    HYPERLINK_TARGET_TOP = 0,
+    HYPERLINK_TARGET_BOTTOM = 1,
+    HYPERLINK_TARGET_BELOW = 2,
+    HYPERLINK_TARGET_TOOLTIP = 3
+} HyperlinkTargetPosition;
 
 struct MenuItem {
-    const char* *location;
+    const char **location;
     size_t location_count;
     const char *definition;
 };
@@ -79,7 +89,8 @@ typedef struct Options {
         bool on_cross, on_drop;
     } focus_follows_mouse;
     unsigned int hide_window_decorations;
-    bool macos_hide_from_tasks, macos_quit_when_last_window_closed, macos_window_resizable, macos_traditional_fullscreen, macos_fullscreen_ignore_safe_area_insets, macos_use_physical_screen_frame;
+    bool macos_hide_from_tasks, macos_quit_when_last_window_closed, macos_window_resizable, macos_traditional_fullscreen,
+        macos_fullscreen_ignore_safe_area_insets, macos_use_physical_screen_frame;
     unsigned int macos_option_as_alt;
     float macos_thicken_font;
     WindowTitleIn macos_show_window_title_in;
@@ -103,10 +114,13 @@ typedef struct Options {
         unsigned generation;
     } background_images;
     BackgroundImageLayout background_image_layout;
+    PaddingFillStrategy padding_fill_strategy;
     ImageAnchorPosition window_logo_position;
     bool background_image_linear;
     float background_tint, background_tint_gaps, window_logo_alpha;
-    struct { float width, height; } window_logo_scale;
+    struct {
+        float width, height;
+    } window_logo_scale;
 
     bool dynamic_background_opacity;
     float inactive_text_alpha;
@@ -117,11 +131,24 @@ typedef struct Options {
     bool resize_in_steps;
     bool sync_to_monitor;
     bool close_on_child_death;
+    // remap_modifier: modifier_remap[i] is the mask that the modifier at bit i
+    // is presented as, or 0 to leave it alone. modifier_remap_mask is the OR of
+    // all remapped source bits, used as a fast path.
+    int modifier_remap[8];
+    int modifier_remap_mask;
+    // Bit i of wheel_mappings[button][grabbed] is set when mouse_map maps the
+    // wheel with the modifiers i, button is 0 for wheel_up, 1 for wheel_down,
+    // 2 for wheel_left and 3 for wheel_right
+    uint64_t wheel_mappings[4][2];
+    // Bit i is set when a mouse button opens the hovered URL with modifiers i.
+    uint64_t url_mappings[2]; // ungrabbed, grabbed
     bool window_alert_on_bell;
     bool macos_dock_badge_on_bell;
     bool debug_keyboard;
     bool allow_hyperlinks;
-    struct { monotonic_t on_end, on_pause; } resize_debounce_time;
+    struct {
+        monotonic_t on_end, on_pause;
+    } resize_debounce_time;
     MouseShape pointer_shape_when_grabbed;
     MouseShape default_pointer_shape;
     MouseShape pointer_shape_when_dragging, pointer_shape_when_dragging_rectangle;
@@ -131,7 +158,14 @@ typedef struct Options {
     } url_prefixes;
     char_type *url_excluded_characters;
     bool detect_urls;
+    struct {
+        regex_t *items;
+        size_t count;
+    } detect_url_regex;
     bool tab_bar_hidden;
+    struct {
+        unsigned padding, min_cols;
+    } vertical_tab_bar;
     double font_size;
     struct {
         double outer, inner;
@@ -139,14 +173,19 @@ typedef struct Options {
     long macos_menubar_title_max_length;
     int macos_colorspace;
     struct {
-        float val; AdjustmentUnit unit;
+        float val;
+        AdjustmentUnit unit;
     } underline_position, underline_thickness, strikethrough_position, strikethrough_thickness, cell_width, cell_height, baseline;
     ShowHyperlinkTargets show_hyperlink_targets;
+    HyperlinkTargetPosition hyperlink_target_position;
     UnderlineHyperlinks underline_hyperlinks;
     int background_blur;
     long macos_titlebar_color;
     unsigned long wayland_titlebar_color;
-    struct { struct MenuItem *entries; size_t count; } global_menu;
+    struct {
+        struct MenuItem *entries;
+        size_t count;
+    } global_menu;
     bool wayland_enable_ime;
     struct {
         size_t num;
@@ -156,14 +195,20 @@ typedef struct Options {
             hb_feature_t *features;
         } *entries;
     } font_features;
-    struct { Animation *cursor, *visual_bell; } animation;
+    struct {
+        Animation *cursor, *visual_bell;
+    } animation;
     unsigned undercurl_style;
-    struct { float thickness; int unit; } underline_exclusion;
+    struct {
+        float thickness;
+        int unit;
+    } underline_exclusion;
     float box_drawing_scale[4];
     double momentum_scroll;
     double window_drag_tolerance;
     bool generate_256_palette;
     int drag_threshold;
+    float text_fg_override_threshold;
 } Options;
 
 typedef struct WindowLogoRenderData {
@@ -218,7 +263,8 @@ typedef struct PendingClick {
 
 
 typedef struct WindowBarData {
-    unsigned width, height;
+    unsigned width, height, requested_width;
+    bool fit_to_text;
     uint8_t *buf;
     PyObject *last_drawn_title_object_id;
     hyperlink_id_type hyperlink_id_for_title_object;
@@ -226,32 +272,34 @@ typedef struct WindowBarData {
 } WindowBarData;
 
 typedef struct PendingEntry {
-    char *buf; size_t header_sz;
+    char *buf;
+    size_t header_sz;
     size_t data_sz;
     bool as_base64;
     uint32_t client_id;
 } PendingEntry;
 
 typedef struct PendingData {
-    PendingEntry *items; size_t count, capacity;
+    PendingEntry *items;
+    size_t count, capacity;
 } PendingData;
 
 typedef struct DirHandle {
-    char *path;           /* absolute path of the directory (malloc'd) */
-    char **entries;       /* array of entry names (each malloc'd) */
+    char *path;     /* absolute path of the directory (malloc'd) */
+    char **entries; /* array of entry names (each malloc'd) */
     size_t num_entries;
-    uint32_t id;          /* handle id, 1-based; 0 = invalid */
+    uint32_t id; /* handle id, 1-based; 0 = invalid */
 } DirHandle;
 
 typedef enum { DRAG_SOURCE_NONE, DRAG_SOURCE_BEING_BUILT, DRAG_SOURCE_STARTED, DRAG_SOURCE_DROPPED } DragSourceState;
 
 typedef struct DragRemoteItem {
-    int type;  // 0 regular file, 1 symlink, otherwise directory
-    int fd_plus_one;  // for regular files
+    int type;        // 0 regular file, 1 symlink, otherwise directory
+    int fd_plus_one; // for regular files
     int top_level_parent_dir_fd_plus_one;
-    uint8_t *data;  // for symlink targets and directory listing
+    uint8_t *data; // for symlink targets and directory listing
     size_t data_sz, data_capacity;
-    struct DragRemoteItem *children;  // for directories
+    struct DragRemoteItem *children; // for directories
     size_t children_sz;
     char *dir_entry_name;
     base64_state base64_state;
@@ -270,6 +318,14 @@ typedef struct Window {
     struct {
         unsigned int left, top, right, bottom;
     } padding;
+    // Compensatory padding arising from the window size not being an exact
+    // multiple of the cell size. This is the innermost slice of the padding,
+    // adjacent to the cells, and (when padding_fill_strategy is
+    // neighboring_cell) is colored to match the neighboring cell by the padding
+    // shader rather than being drawn in the background color.
+    struct {
+        unsigned int left, top, right, bottom;
+    } size_mismatch_padding;
     ClickQueue click_queues[8];
     monotonic_t last_drag_scroll_at;
     uint32_t last_special_key_pressed;
@@ -289,51 +345,73 @@ typedef struct Window {
         bool is_dragging;
         double drag_start_y;
         double drag_start_scrolled_by;
+        unsigned int drag_last_scrolled_by;
         bool is_hovering;
     } scrollbar;
     struct {
         bool wanted, hovered, dropped, is_remote_client;
         uint32_t client_id;
         char *registered_mimes;
-        char *uri_list; size_t uri_list_sz;
+        char *uri_list;
+        size_t uri_list_sz;
         PendingData pending;
 
-        const char **offerred_mimes; size_t num_offerred_mimes, offered_mimes_total_size;
+        const char **offerred_mimes;
+        size_t num_offerred_mimes, offered_mimes_total_size;
 
-        char *accepted_mimes; size_t accepted_mimes_sz;
-        int accepted_operation, allowed_operations; bool accept_in_progress;
+        char *accepted_mimes;
+        size_t accepted_mimes_sz;
+        int accepted_operation, allowed_operations;
+        bool accept_in_progress;
         char *getting_data_for_mime;
 
-        DirHandle *dir_handles; size_t num_dir_handles, dir_handles_capacity;
+        DirHandle *dir_handles;
+        size_t num_dir_handles, dir_handles_capacity;
         uint32_t next_dir_handle_id;
 
-        int file_fd_plus_one;           /* open file descriptor + 1 for chunked file send, 0 when none */
-        monotonic_t last_file_send_at;  /* time of last successful file chunk write */
-        id_type file_send_timer;        /* pending file-send retry timer, 0 = none */
+        int file_fd_plus_one;          /* open file descriptor + 1 for chunked file send, 0 when none */
+        monotonic_t last_file_send_at; /* time of last successful file chunk write */
+        id_type file_send_timer;       /* pending file-send retry timer, 0 = none */
 
         struct {
-            int32_t cell_x, cell_y;  /* x= and y= keys from request */
-            int32_t pixel_y;         /* Y= key from request (dir handle) */
+            int32_t cell_x, cell_y; /* x= and y= keys from request */
+            int32_t pixel_y;        /* Y= key from request (dir handle) */
         } data_requests[128];
         size_t num_data_requests;
         int32_t current_request_x, current_request_y, current_request_Y;
     } drop;
     struct {
         bool can_offer, is_remote_client;
-        struct { index_type x, y; bool active; } potential_url_drag;
-        struct { double x, y; monotonic_t at; } initial_left_press;
-        char *mimes_buf; size_t num_mimes, bufsz;
+        struct {
+            index_type x, y;
+            enum { POTENTIAL_DRAG_NONE, POTENTIAL_DRAG_URL, POTENTIAL_DRAG_SELECTION } type;
+        } potential_drag;
+        struct {
+            double x, y;
+            monotonic_t at;
+        } initial_left_press;
+        char *mimes_buf;
+        size_t num_mimes, bufsz;
         size_t total_remote_data_size;
         struct {
-            const char *mime_type; uint8_t *optional_data; size_t data_size, data_capacity; base64_state base64_state;
+            const char *mime_type;
+            uint8_t *optional_data;
+            size_t data_size, data_capacity;
+            base64_state base64_state;
             bool data_decode_initialized, is_uri_list, requested_remote_files, data_requested_from_client;
             int fd_plus_one;
-            char** uri_list; size_t num_uris;
-            DragRemoteItem *remote_items; size_t num_remote_items;
+            char **uri_list;
+            size_t num_uris;
+            DragRemoteItem *remote_items;
+            size_t num_remote_items;
             DragRemoteItem *currently_open_subdir;
         } *items;
         struct {
-            int width, height, fmt, opacity; uint8_t *data; size_t sz, capacity; bool started; base64_state base64_state;
+            int width, height, fmt, opacity;
+            uint8_t *data;
+            size_t sz, capacity;
+            bool started;
+            base64_state base64_state;
         } images[16];
         size_t pre_sent_total_sz, images_sent_total_sz;
         unsigned img_idx;
@@ -343,34 +421,59 @@ typedef struct Window {
         uint32_t client_id;
         char *base_dir_for_remote_items;
         int base_dir_fd_plus_one;
-        struct { size_t uri_item_idx; DragRemoteItem ri; } *file_promises;
+        struct {
+            size_t uri_item_idx;
+            DragRemoteItem ri;
+        } *file_promises;
         size_t file_promises_count, file_promises_capacity;
     } drag_source;
 } Window;
 
 typedef struct BorderRect {
     float left, top, right, bottom;
-    struct { unsigned left, top, right, bottom; } px;
+    struct {
+        unsigned left, top, right, bottom;
+    } px;
     uint32_t color;
     long long border_type;
     bool horizontal;
+    unsigned radius, thickness;
 } BorderRect;
 
 typedef struct BorderRects {
     BorderRect *rect_buf;
     unsigned int num_border_rects, capacity;
+    unsigned int num_rounded_rects;
     bool is_dirty;
     ssize_t vao_idx;
 } BorderRects;
 
+#define CURSOR_TRAIL_HISTORY_SIZE 8
+
+typedef struct CursorMove {
+    float from_x[2], from_y[2]; // cursor edges (NDC) before the move
+    float to_x[2], to_y[2];     // cursor edges (NDC) after the move
+    monotonic_t at;             // zero for an unused entry
+} CursorMove;
+
 typedef struct CursorTrail {
     bool needs_render;
+    bool target_updated;  // set when cursor moves to a new cell; consumed by child-monitor to fire shader events
+    bool prev_edge_valid; // true once cursor_edge_* has been set at least once
+    bool window_changed;  // set when the most recent cursor move was into a different window
+    id_type window_id;    // the window whose cursor the trail last followed
     monotonic_t updated_at;
+    monotonic_t cursor_changed_at; // time of most recent cursor position change (for custom shaders)
     float opacity;
     float corner_x[4];
     float corner_y[4];
+    float previous_corner_x[4]; // corner_x as of the previous frame
+    float previous_corner_y[4]; // corner_y as of the previous frame
     float cursor_edge_x[2];
     float cursor_edge_y[2];
+    float prev_cursor_edge_x[2];                   // cursor_edge_x before the most recent cursor move
+    float prev_cursor_edge_y[2];                   // cursor_edge_y before the most recent cursor move
+    CursorMove history[CURSOR_TRAIL_HISTORY_SIZE]; // recent cursor moves that started a trail, most recent first
 } CursorTrail;
 
 typedef struct Tab {
@@ -383,6 +486,8 @@ typedef struct Tab {
 
 enum RENDER_STATE { RENDER_FRAME_NOT_REQUESTED, RENDER_FRAME_REQUESTED, RENDER_FRAME_READY };
 typedef enum { NO_CLOSE_REQUESTED, CONFIRMABLE_CLOSE_REQUESTED, CLOSE_BEING_CONFIRMED, IMPERATIVE_CLOSE_REQUESTED } CloseRequest;
+// What caused kitty to quit, reported to on_close watchers
+typedef enum { QUIT_CAUSE_NONE, QUIT_CAUSE_ACTION, QUIT_CAUSE_OS_REQUEST, QUIT_CAUSE_LOGOUT, QUIT_CAUSE_SIGNAL, QUIT_CAUSE_FATAL_ERROR } QuitCause;
 
 typedef struct LiveResizeInfo {
     monotonic_t last_resize_event_at;
@@ -405,11 +510,73 @@ typedef struct WindowChromeState {
 } WindowChromeState;
 
 typedef struct BackgroundImageRenderSettings {
-    struct { unsigned width, height; } os_window;
+    struct {
+        unsigned width, height;
+    } os_window;
     unsigned instance_id;
     BackgroundImageLayout layout;
-    bool linear; uint32_t bgcolor; float opacity;
+    bool linear;
+    uint32_t bgcolor;
+    float opacity;
 } BackgroundImageRenderSettings;
+
+#define MAX_CUSTOM_SHADER_GROUPS 16
+// Passed to the custom shader pipeline as a preprocessor define by slang.py
+#define POINTER_MAP_SIZE 64
+
+// Summary of the custom shader animation state machine, cached once per frame
+// so the renderer can decide whether a new frame is needed without walking the
+// pipeline. Both deadlines use MONOTONIC_T_MAX as their "nothing to do"
+// sentinel, so this must never be left zero initialized -- see
+// init_shader_animation_state().
+typedef struct ShaderAnimState {
+    bool has_active_shaders; // at least one group will draw this frame
+    monotonic_t min_step;    // smallest animation_step across active groups, MONOTONIC_T_MAX if none want periodic redraws
+    monotonic_t next_end_at; // earliest expiry of a duration bounded active animation, MONOTONIC_T_MAX if none
+} ShaderAnimState;
+
+typedef struct ShaderGroupAnimState {
+    bool active;
+    monotonic_t started_at;
+    // When animation_progress would have been zero, before applying the
+    // easing curve, had it been rising since then without interruption
+    monotonic_t ramp_started_at;
+    // Non-zero while the group is active only to play its animation in
+    // reverse after being stopped, the time at which that finishes
+    monotonic_t reverse_ends_at;
+    // How many more times to play the animation forwards and in reverse
+    // after the current reverse finishes
+    unsigned loops_left;
+    // true while playing the animation forwards in one of those loops
+    bool looping;
+} ShaderGroupAnimState;
+
+typedef enum {
+    SHADER_ANIM_EVENT_POINTER_LEFT_BUTTON_PRESS,
+    SHADER_ANIM_EVENT_OS_WINDOW_FOCUS_IN,
+    SHADER_ANIM_EVENT_OS_WINDOW_FOCUS_OUT,
+    SHADER_ANIM_EVENT_WINDOW_FOCUS_IN,
+    SHADER_ANIM_EVENT_WINDOW_FOCUS_OUT,
+    SHADER_ANIM_EVENT_TAB_CHANGE,
+    SHADER_ANIM_EVENT_BELL_IN_WINDOW,
+    SHADER_ANIM_EVENT_USER_ACTIVITY,
+    SHADER_ANIM_EVENT_USER_IDLE,
+    SHADER_ANIM_EVENT_CURSOR_TRAIL_MOVE,
+    SHADER_ANIM_EVENT_CURSOR_TRAIL_STOP,
+    SHADER_ANIM_EVENT_COMMAND_START,
+    SHADER_ANIM_EVENT_COMMAND_FINISH,
+    SHADER_ANIM_EVENT_ALTERNATE_SCREEN_ENTER,
+    SHADER_ANIM_EVENT_ALTERNATE_SCREEN_EXIT,
+    NUM_SHADER_ANIM_EVENTS
+} ShaderAnimationEvent;
+// Events named by the pipeline itself, with the user: prefix, and fired by the
+// shader_event action occupy the bits above the builtin events
+#define SHADER_ANIM_FIRST_USER_EVENT 16
+_Static_assert(NUM_SHADER_ANIM_EVENTS <= SHADER_ANIM_FIRST_USER_EVENT, "Too many builtin shader animation events");
+#define MAX_SHADER_ANIM_USER_EVENTS (64 - SHADER_ANIM_FIRST_USER_EVENT)
+#define MAX_SHADER_ANIM_USER_EVENT_NAME_LEN 63
+// Bitmask of ShaderAnimationEvent values and user events
+typedef uint64_t ShaderAnimEventMask;
 
 typedef struct OSWindow {
     void *handle;
@@ -431,9 +598,13 @@ typedef struct OSWindow {
     } background_image;
     struct {
         uint32_t framebuffer_id, attached_texture_generation;
+        uint32_t extra_fbo_id, extra_fbo_generation;
+        uint32_t fbo_a_id, fbo_a_generation;
+        uint32_t fbo_b_id, fbo_b_generation;
     } indirect_output;
+    uint32_t persist_texture_id, persist_fbo_id, persist_texture_generation;
     unsigned int active_tab, num_tabs, capacity, last_active_tab, last_num_tabs, last_active_window_id;
-    bool focused_at_last_render, needs_render, needs_layers;
+    bool focused_at_last_render, needs_render, needs_layers, input_held;
     unsigned keep_rendering_till_swap;
     WindowRenderData tab_bar_render_data;
     struct {
@@ -441,10 +612,13 @@ typedef struct OSWindow {
     } tab_bar_edge_color;
     bool tab_bar_data_updated;
     bool is_focused;
+    bool bell_attention_requested;
     monotonic_t cursor_blink_zero_time, last_mouse_activity_at, mouse_activate_deadline;
+    bool user_is_idle;
     int mouse_show_threshold;
     bool has_received_cursor_pos_event;
     double mouse_x, mouse_y;
+    double mouse_left_press_x, mouse_left_press_y;
     bool mouse_button_pressed[32];
     bool has_too_few_tabs;
     PyObject *window_title;
@@ -455,22 +629,56 @@ typedef struct OSWindow {
     bool has_pending_resizes, shown_once, ignore_resize_events;
     unsigned int redraw_count;
     WindowChromeState last_window_chrome;
-    struct { float alpha; bool os_forces_opaque, supports_transparency; } background_opacity;
+    struct {
+        float alpha;
+        bool os_forces_opaque, supports_transparency;
+    } background_opacity;
     FONTS_DATA_HANDLE fonts_data;
     id_type temp_font_group_id;
     enum RENDER_STATE render_state;
-    monotonic_t last_render_frame_received_at;
+    monotonic_t last_render_frame_received_at, last_rendered_at;
     uint64_t render_calls;
+    uint32_t frame_counter;
     id_type last_focused_counter;
     CloseRequest close_request;
     bool is_layer_shell, hide_on_focus_loss;
-    struct { int x, y; } last_drag_event;
+    struct {
+        int x, y;
+    } last_drag_event;
+    struct {
+        double pending_pixels_x, pending_pixels_y;
+        int last_v120_dir_x, last_v120_dir_y;
+        // mouse_map wheel state: the partial steps and the window, modifiers
+        // and mouse mode they belong to, and whether the current gesture fired
+        // a mapping, so that its momentum is swallowed. mapped_last_event_at
+        // bounds the gesture in time, as there is no end-of-gesture event for a
+        // classic wheel.
+        double mapped_pending_pixels_x, mapped_pending_pixels_y;
+        id_type mapped_window_id;
+        int mapped_modifiers;
+        monotonic_t mapped_last_event_at;
+        bool mapped_gesture, mapped_grabbed;
+    } scroll;
+    ShaderAnimEventMask shader_anim_event_registry;
+    id_type last_bell_window_id; // ID of the most recent window that received a bell event
+    // Time up to which command and alternate screen changes in the active window have been turned into shader events
+    monotonic_t screen_state_checked_at;
+    ShaderGroupAnimState shader_group_anim[MAX_CUSTOM_SHADER_GROUPS];
+    ShaderAnimState shader_anim;
+    struct {
+        // POINTER_MAP_SIZE x POINTER_MAP_SIZE (x, y) pairs, rows from the bottom up, in viewport UV
+        float *data;
+        int viewport_width, viewport_height;
+        unsigned pipeline_generation;
+        // Bitmask of the groups whose pointer_map() functions data was computed
+        // from, zero when there are none and so pointer events are not moved
+        uint32_t groups;
+    } pointer_map;
 } OSWindow;
 
 static inline float
 effective_os_window_alpha(OSWindow *w) {
-    return (!w->background_opacity.supports_transparency || w->background_opacity.os_forces_opaque) ?
-        1.f : w->background_opacity.alpha;
+    return (!w->background_opacity.supports_transparency || w->background_opacity.os_forces_opaque) ? 1.f : w->background_opacity.alpha;
 }
 
 typedef struct GlobalState {
@@ -491,12 +699,21 @@ typedef struct GlobalState {
     bool debug_rendering, debug_font_fallback;
     bool has_pending_resizes, has_pending_closes;
     bool check_for_active_animated_images;
-    struct { double x, y; } default_dpi;
+    struct {
+        double x, y;
+    } default_dpi;
     id_type active_drag_in_window, tracked_drag_in_window, mouse_hover_in_window, active_drag_resize;
     int active_drag_button, tracked_drag_button;
     int mods_at_last_key_or_button_event;
     CloseRequest quit_request;
+    QuitCause quit_cause;
+    struct {
+        bool requested;
+        monotonic_t at;
+    } logout_quit;
     bool redirect_mouse_handling;
+    // Set once an IME composition has been seen, see sync_ime_position_with_cursor()
+    bool ime_used;
     WindowLogoTable *all_window_logos;
     int gl_version;
     bool supports_framebuffer_srgb;
@@ -522,50 +739,64 @@ typedef struct GlobalState {
         id_type os_window, window;
         char callback[32];
         bool include_tab_bar;
-        double scale; unsigned max_width;
+        double scale;
+        unsigned max_width;
+        bool no_scaling;
     } thumbnail_callback;
     struct {
-        id_type id; bool drag_started;
+        id_type id;
+        bool drag_started;
         double x, y;
     } tab_being_dragged;
     struct {
-        id_type id; bool drag_started;
+        id_type id;
+        bool drag_started;
         double x, y;
     } window_being_dragged;
     struct {
         uint32_t texture_id, framebuffer_id, texture_generation;
         int width, height;
+        uint32_t extra_texture_id, extra_texture_setup_fbo_id;
+        uint32_t texture_a_id, texture_a_fbo_id;
+        uint32_t texture_b_id, texture_b_fbo_id;
     } layers_render_texture;
 } GlobalState;
 
 extern GlobalState global_state;
 
-#define call_boss(name, ...) if (global_state.boss) { \
-    PyObject *cret_ = PyObject_CallMethod(global_state.boss, #name, __VA_ARGS__); \
-    if (cret_ == NULL) { PyErr_Print(); } \
-    else Py_DECREF(cret_); \
-}
+#define call_boss(name, ...)                                                          \
+    if (global_state.boss) {                                                          \
+        PyObject *cret_ = PyObject_CallMethod(global_state.boss, #name, __VA_ARGS__); \
+        if (cret_ == NULL) {                                                          \
+            PyErr_Print();                                                            \
+        } else Py_DECREF(cret_);                                                      \
+    }
 
 static inline void
 sprite_index_to_pos(unsigned idx, unsigned xnum, unsigned ynum, unsigned *x, unsigned *y, unsigned *z) {
     div_t r = div(idx & 0x7fffffff, ynum * xnum), r2 = div(r.rem, xnum);
-    *z = r.quot; *y = r2.quot; *x = r2.rem;
+    *z = r.quot;
+    *y = r2.quot;
+    *x = r2.rem;
 }
 
 
-void gl_init(void);
-void remove_vao(ssize_t vao_idx);
+void initialize_gpu(void);
+void free_vao(ssize_t vao_idx);
+void cleanup_shader_resources_on_terminate(void);
 bool remove_os_window(id_type os_window_id);
-void* make_os_window_context_current(OSWindow *w);
+void *make_os_window_context_current(OSWindow *w);
 void set_os_window_size(OSWindow *os_window, int x, int y);
 void get_os_window_size(OSWindow *os_window, int *w, int *h, int *fw, int *fh);
 void get_os_window_pos(OSWindow *os_window, int *x, int *y);
 void set_os_window_pos(OSWindow *os_window, int x, int y);
 void get_os_window_content_scale(OSWindow *os_window, double *xdpi, double *ydpi, float *xscale, float *yscale);
 void update_os_window_references(void);
-void mark_os_window_for_close(OSWindow* w, CloseRequest cr);
+void mark_os_window_for_close(OSWindow *w, CloseRequest cr);
 void update_os_window_viewport(OSWindow *window, bool notify_boss);
-bool should_os_window_be_rendered(OSWindow* w);
+bool should_os_window_be_rendered(OSWindow *w);
+bool is_os_window_potentially_visible(OSWindow *w);
+void update_os_window_visibility_reports(OSWindow *w);
 void wakeup_main_loop(void);
 bool make_window_context_current(id_type);
 void hide_mouse(OSWindow *w);
@@ -574,24 +805,27 @@ void destroy_os_window(OSWindow *w);
 void focus_os_window(OSWindow *w, bool also_raise, const char *activation_token);
 void run_with_activation_token_in_os_window(OSWindow *w, PyObject *callback);
 void set_os_window_title(OSWindow *w, const char *title);
-OSWindow* os_window_for_kitty_window(id_type);
-OSWindow* os_window_for_id(id_type);
-OSWindow* add_os_window(void);
-OSWindow* current_os_window(void);
-void os_window_regions(const OSWindow*, Region *main, Region *tab_bar);
-bool drag_scroll(Window *, OSWindow*);
+OSWindow *os_window_for_kitty_window(id_type);
+OSWindow *os_window_for_id(id_type);
+OSWindow *add_os_window(void);
+OSWindow *current_os_window(void);
+void os_window_regions(const OSWindow *, Region *main, Region *tab_bar);
+bool drag_scroll(Window *, OSWindow *);
 void draw_borders(ssize_t vao_idx, unsigned int num_border_rects, BorderRect *rect_buf, bool rect_data_is_dirty, color_type, unsigned int, bool, OSWindow *w);
+void draw_rounded_borders(BorderRects *, color_type, unsigned int, bool, OSWindow *);
 ssize_t create_cell_vao(void);
-ssize_t create_graphics_vao(void);
 ssize_t create_border_vao(void);
+void bind_shader_globals_to_current_context(void);
+void upload_gamma_lut(void);
 bool send_cell_data_to_gpu(ssize_t, Screen *, OSWindow *);
-void draw_cells(const WindowRenderData*, OSWindow *, bool, bool, bool, Window*);
+void draw_cells(const WindowRenderData *, OSWindow *, bool, bool, bool, Window *, const Window *, monotonic_t);
 bool update_cursor_trail(CursorTrail *ct, Window *w, monotonic_t now, OSWindow *os_window);
 void set_gpu_viewport(unsigned w, unsigned h);
-void free_texture(uint32_t*);
-void free_framebuffer(uint32_t*);
-void send_image_to_gpu(uint32_t*, const void*, int32_t, int32_t, bool, bool, bool, RepeatStrategy);
-void send_sprite_to_gpu(FONTS_DATA_HANDLE fg, sprite_index, pixel*, sprite_index);
+void free_texture(uint32_t *);
+void free_framebuffer(uint32_t *);
+void send_image_to_gpu(uint32_t *, const void *, int32_t, int32_t, bool, bool, bool, RepeatStrategy);
+void send_indexed_image_to_gpu(uint32_t *, const void *, int32_t, int32_t, unsigned, bool);
+void send_sprite_to_gpu(FONTS_DATA_HANDLE fg, sprite_index, pixel *, sprite_index);
 void blank_canvas(float, color_type, bool);
 void blank_os_window(OSWindow *);
 void set_os_window_chrome(OSWindow *w);
@@ -602,51 +836,77 @@ void send_prerendered_sprites_for_window(OSWindow *w);
 #endif
 void request_frame_render(OSWindow *w);
 void request_tick_callback(void);
-typedef void (* timer_callback_fun)(id_type, void*);
-typedef void (* tick_callback_fun)(void*);
+typedef void (*timer_callback_fun)(id_type, void *);
+typedef void (*tick_callback_fun)(void *);
 id_type add_main_loop_timer(monotonic_t interval, bool repeats, timer_callback_fun callback, void *callback_data, timer_callback_fun free_callback);
 void remove_main_loop_timer(id_type timer_id);
 void update_main_loop_timer(id_type timer_id, monotonic_t interval, bool enabled);
-void run_main_loop(tick_callback_fun, void*);
+void run_main_loop(tick_callback_fun, void *);
 void stop_main_loop(void);
 void on_os_window_font_size_change(OSWindow *window, double new_sz);
 void set_os_window_title_from_window(Window *w, OSWindow *os_window);
 void update_os_window_title(OSWindow *os_window);
 void fake_scroll(Window *w, int amount, bool upwards);
-Window* window_for_window_id(id_type kitty_window_id);
+Window *window_for_window_id(id_type kitty_window_id);
 bool mouse_open_url(Window *w);
 bool mouse_set_last_visited_cmd_output(Window *w);
 bool mouse_select_cmd_output(Window *w);
 bool move_cursor_to_mouse_if_at_shell_prompt(Window *w);
 void mouse_selection(Window *w, int code, int button);
-const char* format_mods(unsigned mods);
-void dispatch_pending_clicks(id_type, void*);
-void send_pending_click_to_window(Window*, int);
+const char *format_mods(unsigned mods);
+void dispatch_pending_clicks(id_type, void *);
+void send_pending_click_to_window(Window *, int);
 void get_platform_dependent_config_values(void *glfw_window);
 bool draw_window_title(double, double, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height, size_t *actual_width);
-uint8_t* draw_single_ascii_char(const char ch, size_t *result_width, size_t *result_height);
+uint8_t *draw_single_ascii_char(const char ch, size_t *result_width, size_t *result_height);
 bool is_os_window_fullscreen(OSWindow *);
-void update_ime_focus(OSWindow* osw, bool focused);
-void update_ime_position(Window* w, Screen *screen);
+void update_ime_focus(OSWindow *osw, bool focused);
+void update_ime_position(Window *w, Screen *screen);
 bool update_ime_position_for_window(id_type window_id, bool force, int update_focus);
+void update_ime_state_in_os_window(OSWindow *osw, Window *window, int update_focus);
 void set_ignore_os_keyboard_processing(bool enabled);
+void push_modifier_remap_to_glfw(void);
+bool set_wheel_mappings(PyObject *py_opts, Options *opts);
+bool set_url_mappings(PyObject *py_opts, Options *opts);
 void update_menu_bar_title(PyObject *title UNUSED);
-void change_live_resize_state(OSWindow*, bool);
+void change_live_resize_state(OSWindow *, bool);
 bool render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images);
 void update_mouse_pointer_shape(void);
 void apply_pending_mouse_pointer_shape(void);
+void update_pointer_shape_for_kitty_window(id_type kitty_window_id);
+bool update_link_hover_for_modifiers(int old_mods, int new_mods);
+void link_hover_cleared_by_output(Screen *screen);
 void adjust_window_size_for_csd(OSWindow *w, int width, int height, int *adjusted_width, int *adjusted_height);
 void dispatch_buffered_keys(Window *w);
+void free_buffered_keys(Window *w);
 bool screen_needs_rendering_in_layers(OSWindow *os_window, Window *w, Screen *screen);
-void setup_os_window_for_rendering(OSWindow*, Tab*, Window*, bool);
+void setup_os_window_for_rendering(OSWindow *, Tab *, Window *, bool, monotonic_t);
+monotonic_t update_custom_shader_animations(ShaderAnimEventMask event_mask, monotonic_t now, OSWindow *os_window);
+void init_shader_animation_state(OSWindow *os_window);
+
+// Records an OS window focus change for the custom shader animation state
+// machine. The pending events are only consumed when the OS window is next
+// rendered, which can be much later, for instance, when the window is hidden
+// or occluded. So a focus change replaces any pending opposite focus change
+// rather than accumulating with it, as both together would be indistinguishable
+// from simultaneous events, where focus-out wins.
+static inline void
+record_os_window_focus_change_for_shaders(OSWindow *osw, bool focused) {
+    const ShaderAnimEventMask in = (1u << SHADER_ANIM_EVENT_OS_WINDOW_FOCUS_IN) | (1u << SHADER_ANIM_EVENT_WINDOW_FOCUS_IN);
+    const ShaderAnimEventMask out = (1u << SHADER_ANIM_EVENT_OS_WINDOW_FOCUS_OUT) | (1u << SHADER_ANIM_EVENT_WINDOW_FOCUS_OUT);
+    osw->shader_anim_event_registry = (osw->shader_anim_event_registry & ~(focused ? out : in)) | (focused ? in : out);
+}
+bool custom_shader_needs_render(const ShaderAnimState *before, const ShaderAnimState *after, ShaderAnimEventMask event_mask, monotonic_t now);
+void map_pointer_position(const OSWindow *os_window, double *x, double *y);
+void set_os_window_mouse_position(OSWindow *window, double x, double y);
 void swap_window_buffers(OSWindow *w);
-void take_screenshot_of_rectangular_region(OSWindow *os_window, Region region, unsigned char *dst_buf, unsigned *thumb_w, unsigned *thumb_h);
+void take_screenshot_of_rectangular_region(OSWindow *os_window, Region region, unsigned char *dst_buf, unsigned *thumb_w, unsigned *thumb_h, bool no_scaling);
 bool current_framebuffer_is_ok(void);
 void request_drop_status_update(OSWindow *osw);
 void register_mimes_for_drop(OSWindow *w, const char **mimes, size_t sz);
-int request_drop_data(OSWindow *w, id_type wid, const char* mime);
+int request_drop_data(OSWindow *w, id_type wid, const char *mime);
 void cancel_current_drag_source(void);
 bool change_drag_image(int idx);
 int start_window_drag(Window *w, bool in_test_mode);
 int notify_drag_data_ready(id_type os_window_id, const char *mime_type, const char *data, size_t data_sz, int type);
-BackgroundImage* background_image_for_os_window(OSWindow *w);
+BackgroundImage *background_image_for_os_window(OSWindow *w);

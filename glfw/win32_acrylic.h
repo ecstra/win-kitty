@@ -24,8 +24,8 @@ bool _glfwWin32AcrylicActive(_GLFWwindow* window);
 // The effect graph applies that discount itself.
 void _glfwWin32AcrylicSetTint(_GLFWwindow* window, unsigned int rgb, float opacity);
 
-// Must run with the GL context current. Registers the swapchain back buffer
-// with GL and binds it, so drawing aimed at framebuffer 0 lands in it.
+// Must run with the GL context current. Shares a D3D texture with GL, which
+// each present fills from framebuffer 0 and copies into the swapchain.
 bool _glfwWin32AcrylicBindFramebuffer(_GLFWwindow* window);
 
 void _glfwWin32AcrylicResize(_GLFWwindow* window, int width, int height);

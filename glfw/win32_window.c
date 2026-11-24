@@ -1056,8 +1056,9 @@ void _glfwPlatformMaximizeWindow(_GLFWwindow* window) { ShowWindow(window->win32
 void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen) { (void) move_to_active_screen; ShowWindow(window->win32.handle, SW_SHOWNA); }
 void _glfwPlatformHideWindow(_GLFWwindow* window) { ShowWindow(window->win32.handle, SW_HIDE); }
 void _glfwPlatformFocusWindow(_GLFWwindow* window) { SetForegroundWindow(window->win32.handle); SetFocus(window->win32.handle); }
-void _glfwPlatformRequestWindowAttention(_GLFWwindow* window) {
-    // Deliberately a no-op on Windows: FlashWindowEx flashes the taskbar button.
+void _glfwPlatformSetWindowAttention(_GLFWwindow* window, bool requested) {
+    // Deliberately a no-op on Windows, for requests and cancels alike, since no
+    // flash is ever started to cancel. FlashWindowEx flashes the taskbar button.
     // Under a Windows pseudoconsole, conhost re-renders the child's output and
     // mangles the shell's BEL-terminated OSC sequences (window title, OSC 7 cwd,
     // OSC 133 prompt marks -- emitted on every command and prompt), delivering the
@@ -1066,7 +1067,7 @@ void _glfwPlatformRequestWindowAttention(_GLFWwindow* window) {
     // prompt), most of it from sources kitty does not control (e.g. the shell/p10k
     // title). So the taskbar alert is net-negative here and is disabled; the
     // (focus-gated) tab bell indicator still covers genuine cases.
-    (void)window;
+    (void)window; (void)requested;
 }
 int _glfwPlatformWindowBell(_GLFWwindow* window) { (void) window; return MessageBeep(0xFFFFFFFF) ? true : false; }
 

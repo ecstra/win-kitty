@@ -7,11 +7,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
 from functools import partial
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kitty.cli import parse_args
 from kitty.cli_stub import PanelCLIOptions
-from kitty.constants import is_macos, kitten_exe
+from kitty.constants import is_macos
 from kitty.fast_data_types import (
     GLFW_EDGE_BOTTOM,
     GLFW_EDGE_CENTER,
@@ -27,6 +27,8 @@ from kitty.fast_data_types import (
     GLFW_LAYER_SHELL_OVERLAY,
     GLFW_LAYER_SHELL_PANEL,
     GLFW_LAYER_SHELL_TOP,
+    current_focused_os_window_id,
+    get_options,
     layer_shell_config_for_os_window,
     set_layer_shell_config,
     toggle_os_window_visibility,
@@ -34,7 +36,10 @@ from kitty.fast_data_types import (
 from kitty.simple_cli_definitions import panel_options_spec
 from kitty.types import LayerShellConfig, run_once
 from kitty.typing_compat import BossType
-from kitty.utils import log_error
+from kitty.utils import log_error, resolved_shell
+
+if TYPE_CHECKING:
+    from kitty.tabs import SpecialWindowInstance
 
 args = PanelCLIOptions()
 help_text = 'Use a command line program to draw a GPU accelerated panel on your desktop'
@@ -43,15 +48,15 @@ usage = '[cmdline-to-run ...]'
 
 def panel_kitten_options_spec() -> str:
     if not hasattr(panel_kitten_options_spec, 'ans'):
-           setattr(panel_kitten_options_spec, 'ans', panel_options_spec())
+        setattr(panel_kitten_options_spec, 'ans', panel_options_spec())
     ans: str = getattr(panel_kitten_options_spec, 'ans')
     return ans
 
 
 def parse_panel_args(args: list[str], track_seen_options: dict[str, Any] | None = None) -> tuple[PanelCLIOptions, list[str]]:
     return parse_args(
-        args, panel_kitten_options_spec, usage, help_text, 'kitty +kitten panel',
-        result_class=PanelCLIOptions, track_seen_options=track_seen_options)
+        args, panel_kitten_options_spec, usage, help_text, 'kitty +kitten panel', result_class=PanelCLIOptions, track_seen_options=track_seen_options
+    )
 
 
 def dual_distance(spec: str, min_cell_value_if_no_pixels: int = 0) -> tuple[int, int]:
@@ -65,55 +70,63 @@ def dual_distance(spec: str, min_cell_value_if_no_pixels: int = 0) -> tuple[int,
 
 
 def layer_shell_config(opts: PanelCLIOptions) -> LayerShellConfig:
-    ltype = {
-        'background': GLFW_LAYER_SHELL_BACKGROUND,
-        'bottom': GLFW_LAYER_SHELL_PANEL,
-        'top': GLFW_LAYER_SHELL_TOP,
-        'overlay': GLFW_LAYER_SHELL_OVERLAY
-    }.get(opts.layer, GLFW_LAYER_SHELL_PANEL)
+    ltype = {'background': GLFW_LAYER_SHELL_BACKGROUND, 'bottom': GLFW_LAYER_SHELL_PANEL, 'top': GLFW_LAYER_SHELL_TOP, 'overlay': GLFW_LAYER_SHELL_OVERLAY}.get(
+        opts.layer, GLFW_LAYER_SHELL_PANEL
+    )
     ltype = GLFW_LAYER_SHELL_BACKGROUND if opts.edge == 'background' else ltype
     edge = {
-        'top': GLFW_EDGE_TOP, 'bottom': GLFW_EDGE_BOTTOM, 'left': GLFW_EDGE_LEFT, 'right': GLFW_EDGE_RIGHT,
-        'center': GLFW_EDGE_CENTER, 'none': GLFW_EDGE_NONE, 'center-sized': GLFW_EDGE_CENTER_SIZED,
+        'top': GLFW_EDGE_TOP,
+        'bottom': GLFW_EDGE_BOTTOM,
+        'left': GLFW_EDGE_LEFT,
+        'right': GLFW_EDGE_RIGHT,
+        'center': GLFW_EDGE_CENTER,
+        'none': GLFW_EDGE_NONE,
+        'center-sized': GLFW_EDGE_CENTER_SIZED,
     }.get(opts.edge, GLFW_EDGE_TOP)
-    focus_policy = {
-        'not-allowed': GLFW_FOCUS_NOT_ALLOWED, 'exclusive': GLFW_FOCUS_EXCLUSIVE, 'on-demand': GLFW_FOCUS_ON_DEMAND
-    }.get(opts.focus_policy, GLFW_FOCUS_NOT_ALLOWED)
+    focus_policy = {'not-allowed': GLFW_FOCUS_NOT_ALLOWED, 'exclusive': GLFW_FOCUS_EXCLUSIVE, 'on-demand': GLFW_FOCUS_ON_DEMAND}.get(
+        opts.focus_policy, GLFW_FOCUS_NOT_ALLOWED
+    )
     if opts.hide_on_focus_loss:
         focus_policy = GLFW_FOCUS_ON_DEMAND
     x, y = dual_distance(opts.columns, min_cell_value_if_no_pixels=1), dual_distance(opts.lines, min_cell_value_if_no_pixels=1)
-    return LayerShellConfig(type=ltype,
-                            edge=edge,
-                            x_size_in_cells=x[0], x_size_in_pixels=x[1],
-                            y_size_in_cells=y[0], y_size_in_pixels=y[1],
-                            requested_top_margin=max(0, opts.margin_top),
-                            requested_left_margin=max(0, opts.margin_left),
-                            requested_bottom_margin=max(0, opts.margin_bottom),
-                            requested_right_margin=max(0, opts.margin_right),
-                            focus_policy=focus_policy,
-                            requested_exclusive_zone=opts.exclusive_zone,
-                            override_exclusive_zone=opts.override_exclusive_zone,
-                            hide_on_focus_loss=opts.hide_on_focus_loss,
-                            output_name=opts.output_name or '')
+    return LayerShellConfig(
+        type=ltype,
+        edge=edge,
+        x_size_in_cells=x[0],
+        x_size_in_pixels=x[1],
+        y_size_in_cells=y[0],
+        y_size_in_pixels=y[1],
+        requested_top_margin=max(0, opts.margin_top),
+        requested_left_margin=max(0, opts.margin_left),
+        requested_bottom_margin=max(0, opts.margin_bottom),
+        requested_right_margin=max(0, opts.margin_right),
+        focus_policy=focus_policy,
+        requested_exclusive_zone=opts.exclusive_zone,
+        override_exclusive_zone=opts.override_exclusive_zone,
+        hide_on_focus_loss=opts.hide_on_focus_loss,
+        output_name=opts.output_name or '',
+    )
 
 
 @run_once
 def cli_option_to_lsc_configs_map() -> MappingProxyType[str, tuple[str, ...]]:
-    return MappingProxyType({
-        'lines': ('y_size_in_cells', 'y_size_in_pixels'),
-        'columns': ('x_size_in_cells', 'x_size_in_pixels'),
-        'margin_top': ('requested_top_margin',),
-        'margin_left': ('requested_left_margin',),
-        'margin_bottom': ('requested_bottom_margin',),
-        'margin_right': ('requested_right_margin',),
-        'edge': ('edge',),
-        'layer': ('type',),
-        'output_name': ('output_name',),
-        'focus_policy': ('focus_policy',),
-        'exclusive_zone': ('requested_exclusive_zone',),
-        'override_exclusive_zone': ('override_exclusive_zone',),
-        'hide_on_focus_loss': ('hide_on_focus_loss',)
-    })
+    return MappingProxyType(
+        {
+            'lines': ('y_size_in_cells', 'y_size_in_pixels'),
+            'columns': ('x_size_in_cells', 'x_size_in_pixels'),
+            'margin_top': ('requested_top_margin',),
+            'margin_left': ('requested_left_margin',),
+            'margin_bottom': ('requested_bottom_margin',),
+            'margin_right': ('requested_right_margin',),
+            'edge': ('edge',),
+            'layer': ('type',),
+            'output_name': ('output_name',),
+            'focus_policy': ('focus_policy',),
+            'exclusive_zone': ('requested_exclusive_zone',),
+            'override_exclusive_zone': ('override_exclusive_zone',),
+            'hide_on_focus_loss': ('hide_on_focus_loss',),
+        }
+    )
 
 
 def incrementally_update_layer_shell_config(existing: dict[str, Any], cli_options: Iterable[str]) -> LayerShellConfig:
@@ -154,10 +167,35 @@ def have_config_files_been_updated(config_files: Iterable[str]) -> bool:
     return ans
 
 
-def handle_single_instance_command(boss: BossType, sys_args: Sequence[str], environ: Mapping[str, str], notify_on_os_window_death: str | None = '') -> None:
+def window_for_command(cmd: list[str], environ: Mapping[str, str], launch_type: str, cwd: str = '') -> 'SpecialWindowInstance':
+    # The command is requested by the user via a separate invocation of the
+    # panel kitten, so it is passed to the launch wrapper, without a source
+    # window, since it is not run from any window in this kitty instance. The
+    # environment and working directory are those of the invocation, with the
+    # environment cleaned up as for other single instance commands.
+    from kitty.child import process_env
+    from kitty.launch_wrapper import LaunchRequest
+    from kitty.tabs import SpecialWindow
+
+    return SpecialWindow(cmd=cmd, env=process_env(environ), cwd=cwd or None, hold=args.hold, launch_request=LaunchRequest(launch_type))
+
+
+def run_in_existing_panel(boss: BossType, cmd: list[str], environ: Mapping[str, str], cwd: str) -> None:
+    tm = boss.os_window_map.get(current_focused_os_window_id()) or next(iter(boss.os_window_map.values()))
+    tab = tm.active_tab
+    if args.if_running == 'new-window' and tab is not None:
+        tab.new_special_window(window_for_command(cmd, environ, 'window', cwd))
+    else:
+        tm.new_tab(window_for_command(cmd, environ, 'tab', cwd))
+    boss.focus_os_window(tm.os_window_id)
+
+
+def handle_single_instance_command(
+    boss: BossType, sys_args: Sequence[str], environ: Mapping[str, str], notify_on_os_window_death: str | None = '', cwd: str = ''
+) -> None:
     global args
     from kitty.cli import parse_override
-    from kitty.tabs import SpecialWindow
+
     try:
         new_args, items = parse_panel_args(list(sys_args[1:]))
     except BaseException as e:
@@ -169,19 +207,27 @@ def handle_single_instance_command(boss: BossType, sys_args: Sequence[str], envi
     if config_changed:
         boss.load_config_file(*args.config, overrides=tuple(map(parse_override, new_args.override)))
     if args.toggle_visibility and boss.os_window_map:
+        run_in_existing = bool(items) and args.if_running != 'ignore'
         for os_window_id in boss.os_window_map:
             existing = layer_shell_config_for_os_window(os_window_id)
             layer_shell_config_changed = not existing or any(f for f in lsc._fields if getattr(lsc, f) != existing.get(f))
-            toggle_os_window_visibility(os_window_id, move_to_active_screen=args.move_to_active_monitor)
+            if run_in_existing:
+                toggle_os_window_visibility(os_window_id, visible=True, move_to_active_screen=args.move_to_active_monitor)
+            else:
+                toggle_os_window_visibility(os_window_id, move_to_active_screen=args.move_to_active_monitor)
             if layer_shell_config_changed:
                 set_layer_shell_config(os_window_id, lsc)
+        if run_in_existing:
+            run_in_existing_panel(boss, items, environ, cwd)
         return
-    items = items or [kitten_exe(), 'run-shell']
     os_window_id = boss.add_os_panel(lsc, args.cls, args.name)
     if notify_on_os_window_death:
         boss.os_window_death_actions[os_window_id] = partial(boss.notify_on_os_window_death, notify_on_os_window_death)
     tm = boss.os_window_map[os_window_id]
-    tm.new_tab(SpecialWindow(cmd=items, env=dict(environ)))
+    # Without a command run the shell, as a panel started without single
+    # instance does. Not kitty's run-shell kitten, so that the launch wrapper
+    # sees the actual shell.
+    tm.new_tab(window_for_command(items or resolved_shell(get_options()), environ, 'os-window', cwd))
 
 
 def main(sys_args: list[str]) -> None:
@@ -189,6 +235,7 @@ def main(sys_args: list[str]) -> None:
     # sys.modules, which means the module will be re-imported later, causing
     # global variables to be duplicated, so do it now.
     from kittens.panel.main import actual_main
+
     actual_main(sys_args)
     return
 
@@ -224,10 +271,13 @@ def actual_main(sys_args: list[str]) -> None:
         sys.argv.append(f'--instance-group={args.instance_group}')
     if args.listen_on:
         sys.argv.append(f'--listen-on={args.listen_on}')
+    if args.hold:
+        sys.argv.append('--hold')
 
     sys.argv.extend(items)
     from kitty.main import main as real_main
     from kitty.main import run_app
+
     run_app.cached_values_name = 'panel'
     run_app.layer_shell_config = layer_shell_config(args)
     real_main(called_from_panel=True)
