@@ -202,13 +202,13 @@ An empty config gets these built in. An explicit setting in kitty.conf still win
 
 ## Building from source
 
-You need the MSYS2 mingw64 toolchain, the mingw64 build of Python 3, and Go on PATH. Run the build from git-bash or an MSYS2 shell.
+You need the MSYS2 UCRT64 toolchain, the UCRT64 build of Python 3, and Go on PATH. Install the packages from an MSYS2 UCRT64 shell (`C:\msys64\msys2_shell.cmd -ucrt64`); the README lists the full `pacman -S` command. Run the build from git-bash or an MSYS2 shell.
 
 ```
-PATH="/c/msys64/mingw64/bin:$PATH" PYTHONUTF8=1 /c/msys64/mingw64/bin/python.exe setup.py build
+PATH="/c/msys64/ucrt64/bin:$PATH" PYTHONUTF8=1 /c/msys64/ucrt64/bin/python.exe setup.py build
 ```
 
-Putting the mingw64 bin directory first matters. The compiler loads its own DLLs through PATH, and without it the build fails while working out the target architecture.
+Putting the ucrt64 bin directory first matters. The compiler loads its own DLLs through PATH, and without it the build fails while working out the target architecture.
 
 The build emits `.so` names and Windows imports `.pyd`, so copy both extensions afterwards. A stale `.pyd` is imported silently in preference to the `.so` you just built, which is a good way to test a binary that has none of your changes in it.
 

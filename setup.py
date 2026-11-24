@@ -58,12 +58,12 @@ def ensure_mingw_python() -> None:
     if platform.startswith('mingw'):
         return
     raise SystemExit(
-        '\nThis build needs the MSYS2 mingw64 Python, not a native Windows one.\n\n'
+        '\nThis build needs the MSYS2 UCRT64 Python, not a native Windows one.\n\n'
         f'  running : {sys.executable}\n'
         f'            platform {platform}, no sys.abiflags\n'
-        '  needs   : C:\\msys64\\mingw64\\bin\\python.exe\n'
+        '  needs   : C:\\msys64\\ucrt64\\bin\\python.exe\n'
         '            platform mingw_*\n\n'
-        'Run it from an MSYS2 MINGW64 shell, or name that interpreter directly.\n'
+        'Run it from an MSYS2 UCRT64 shell, or name that interpreter directly.\n'
         'Note that "py" is the Windows Python Launcher and always picks the native one.\n'
     )
 
@@ -331,7 +331,7 @@ def pkg_config(pkg: str, *args: str, extra_pc_dir: str = '', fatal: bool = True)
         if is_windows:
             raise SystemExit(
                 f'The command {error(PKGCONFIG)} was not found. You might need to install MSYS2 and its'
-                ' mingw-w64-x86_64-pkg-config package, or use WSL.')
+                ' mingw-w64-ucrt-x86_64-pkgconf package, or use WSL.')
         raise
     except subprocess.CalledProcessError:
         if fatal:
