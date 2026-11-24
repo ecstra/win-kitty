@@ -417,6 +417,37 @@ def worker_main(write_fd: int, ids_fd: int, verbosity: Optional[int] = None) -> 
     run_test_worker(tests, write_fd, verbosity)
 
 
+def worker_main_from_handles(write_handle: int, ids_handle: int, verbosity: Optional[int] = None) -> None:
+    """Windows entry point for a spawned worker, which inherits OS handles rather than fds."""
+    import msvcrt
+
+    write_fd = msvcrt.open_osfhandle(write_handle, os.O_WRONLY)  # ty: ignore[unresolved-attribute]
+    ids_fd = msvcrt.open_osfhandle(ids_handle, os.O_RDONLY)  # ty: ignore[unresolved-attribute]
+    worker_main(write_fd, ids_fd, verbosity)
+
+
+def wait_until_readable(fds: list[int]) -> list[int]:
+    if sys.platform != 'win32':
+        return select.select(fds, [], [])[0]
+    # select() takes only sockets on Windows, so poll the pipes instead. A pipe
+    # whose writer has exited counts as readable, so that os.read() sees EOF.
+    import _winapi
+    import msvcrt
+
+    while True:
+        ready = []
+        for fd in fds:
+            try:
+                available = _winapi.PeekNamedPipe(msvcrt.get_osfhandle(fd), 0)[0]  # ty: ignore[unresolved-attribute]
+            except OSError:
+                available = 1
+            if available:
+                ready.append(fd)
+        if ready:
+            return ready
+        time.sleep(0.01)
+
+
 def spawn_test_worker(tests: list[unittest.TestCase], verbosity: Optional[int] = None) -> tuple['subprocess.Popen[bytes]', int]:
     """Spawn a worker subprocess via kitty +runpy. Returns (proc, read_fd).
 
@@ -428,14 +459,31 @@ def spawn_test_worker(tests: list[unittest.TestCase], verbosity: Optional[int] =
     ids_r, ids_w = os.pipe()
     test_ids = [{'module': t.__class__.__module__, 'cls': t.__class__.__name__, 'method': t._testMethodName} for t in tests]
     detached = verbosity is None
+    entry = f'from kitty_tests.main import *; worker_main({w}, {ids_r}, {verbosity!r})'
+    platform_kw: dict[str, Any] = {'pass_fds': (w, ids_r), 'start_new_session': detached}  # see detach_from_controlling_terminal()
+    std_out_err = None
+    if sys.platform == 'win32':
+        # pass_fds is POSIX only, so the worker inherits the two pipe handles
+        # through the handle list and opens fds on them again.
+        import msvcrt
+
+        handles = [msvcrt.get_osfhandle(w), msvcrt.get_osfhandle(ids_r)]  # ty: ignore[unresolved-attribute]
+        for h in handles:
+            os.set_handle_inheritable(h, True)  # ty: ignore[unresolved-attribute]
+        si = subprocess.STARTUPINFO()  # ty: ignore[unresolved-attribute]
+        si.lpAttributeList = {'handle_list': handles}
+        platform_kw = {'startupinfo': si}
+        entry = f'from kitty_tests.main import *; worker_main_from_handles({handles[0]}, {handles[1]}, {verbosity!r})'
+        # kitty.exe is a GUI subsystem binary, which sees the parent's
+        # stdout and stderr only when they are passed explicitly.
+        std_out_err = sys.stdout
     try:
         proc: subprocess.Popen[bytes] = subprocess.Popen(
-            [kitty_exe(), '+runpy', f'from kitty_tests.main import *; worker_main({w}, {ids_r}, {verbosity!r})'],
-            pass_fds=(w, ids_r),
+            [kitty_exe(), '+runpy', entry],
             stdin=subprocess.DEVNULL if detached else None,
-            stdout=subprocess.DEVNULL if detached else None,
-            stderr=subprocess.DEVNULL if detached else None,
-            start_new_session=detached,  # see detach_from_controlling_terminal()
+            stdout=subprocess.DEVNULL if detached else std_out_err,
+            stderr=subprocess.DEVNULL if detached else std_out_err,
+            **platform_kw,
         )
     except BaseException:
         os.close(r)
@@ -471,7 +519,7 @@ def run_serial_tests(tests: list[unittest.TestCase], verbosity: int) -> bool:
     """Run tests in a single child process that shares our terminal, printing
     results as they happen. The child is used so that it exiting before all
     tests have run is detected."""
-    if sys.platform == 'darwin':
+    if sys.platform in ('darwin', 'win32'):  # Windows has no fork()
         proc, r = spawn_test_worker(tests, verbosity)
         pids: list[int] = []
         procs = [proc]
@@ -586,7 +634,7 @@ def collect_worker_results(
         watch = list(active_py)
         if go_active and go_proc is not None:
             watch.append(go_proc.stdout_fd)
-        readable, _, _ = select.select(watch, [], [])
+        readable = wait_until_readable(watch)
 
         for fd in readable:
             if go_proc is not None and fd == go_proc.stdout_fd:
@@ -869,7 +917,7 @@ def run_tests(report_env: bool = False) -> None:
     worker_procs: list[subprocess.Popen[bytes]] = []
     read_fds: list[int] = []
     if use_parallel:
-        if sys.platform == 'darwin':
+        if sys.platform in ('darwin', 'win32'):  # Windows has no fork()
             worker_procs, read_fds = spawn_test_workers(tests_list)
         else:
             # Pre-initialize fonts once before forking so all worker processes inherit
