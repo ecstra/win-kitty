@@ -4,9 +4,11 @@ package dnd
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"io"
+	"io/fs"
 	"maps"
 	"net/url"
 	"os"
@@ -90,7 +92,7 @@ type dnd struct {
 	drop_output_dir                        *os.File
 	base_tempdir                           *os.File
 	tdir_counter                           int
-	is_case_sensitive_filesystem           bool
+	is_case_sensitive_filesystem           bool // false if names differing in case or Unicode normalization are aliases
 	num_dropped_files                      int
 	drag_status                            drag_status
 	in_test_mode                           bool
@@ -118,26 +120,57 @@ func (dnd *dnd) setup_base_dir(base_dir string) (err error) {
 	if dnd.drop_output_dir != nil {
 		dnd.drop_output_dir.Close()
 	}
-	if dnd.drop_output_dir, err = os.Open(base_dir); err != nil {
-		return err
-	}
-	base_tdir, err := os.MkdirTemp(base_dir, ".dnd-kitten-drop-*")
-	if err != nil {
-		return err
-	}
-	bf, err := os.Open(base_tdir)
-	if err != nil {
-		os.RemoveAll(base_tdir)
-		return err
-	}
-	dnd.base_tempdir = bf
-	if _, serr := os.Stat(filepath.Join(base_dir, strings.ToUpper(filepath.Base(base_tdir)))); serr == nil {
-		dnd.is_case_sensitive_filesystem = false
-	}
+	dnd.drop_output_dir, err = os.Open(base_dir)
 	return err
 }
 
+// Create the base temporary directory used for staging drops. This is done
+// lazily, on the first drop, so that the kitten works in directories that are
+// not writable when no drop into them is performed.
+func (dnd *dnd) ensure_base_tempdir() (err error) {
+	if dnd.base_tempdir != nil {
+		return nil
+	}
+	base_dir := dnd.drop_output_dir.Name()
+	base_tdir, err := os.MkdirTemp(base_dir, ".dnd-kitten-drop-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary directory for drop in %s with error: %w", base_dir, err)
+	}
+	bf, err := os.Open(base_tdir)
+	if err != nil {
+		if rerr := os.RemoveAll(base_tdir); rerr != nil {
+			return errors.Join(err, rerr)
+		}
+		return err
+	}
+	dnd.base_tempdir = bf
+	dnd.is_case_sensitive_filesystem = names_are_distinct(base_tdir)
+	return nil
+}
+
+// Return true if names that differ only in case or Unicode normalization
+// refer to different entries in the empty directory dir. Any failure to
+// determine this is treated as them being aliases, which is the safe choice.
+func names_are_distinct(dir string) bool {
+	is_absent := func(path string) bool {
+		_, err := os.Lstat(path)
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	if !is_absent(filepath.Join(filepath.Dir(dir), strings.ToUpper(filepath.Base(dir)))) {
+		return false
+	}
+	probe := filepath.Join(dir, "\u00e9")
+	if err := os.WriteFile(probe, nil, 0o600); err != nil {
+		return false
+	}
+	defer os.Remove(probe)
+	return is_absent(filepath.Join(dir, "e\u0301"))
+}
+
 func (dnd *dnd) remove_tdir() error {
+	if dnd.base_tempdir == nil {
+		return nil
+	}
 	path := dnd.base_tempdir.Name()
 	dnd.base_tempdir.Close()
 	dnd.base_tempdir = nil
@@ -353,6 +386,8 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 		}
 	}
 	drag_sources := make(map[string]*drag_source)
+	var stdin_data []byte
+	stdin_read := false
 	for _, spec := range opts.Drag {
 		mime, src, found := strings.Cut(spec, ":")
 		if !found {
@@ -360,13 +395,14 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 		}
 		s := &drag_source{human_name: src, mime_type: mime}
 		if src == "-" || src == "/dev/stdin" {
-			data, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				return 1, err
+			if !stdin_read {
+				stdin_data, err = io.ReadAll(os.Stdin)
+				if err != nil {
+					return 1, err
+				}
+				stdin_read = true
 			}
-			if len(data) > 0 {
-				drag_sources["text/plain"] = &drag_source{human_name: "STDIN", mime_type: "text/plain", data: data}
-			}
+			s.human_name, s.data = "STDIN", stdin_data
 		} else {
 			path, err := filepath.Abs(utils.Expanduser(src))
 			if err != nil {
@@ -377,7 +413,7 @@ func dnd_main(cmd *cli.Command, opts *Options, args []string) (rc int, err error
 		drag_sources[mime] = s
 	}
 
-	if _, has_plain := drag_sources["text/plain"]; os.Stdin != nil && !has_plain && !tty.IsTerminal(os.Stdin.Fd()) {
+	if _, has_plain := drag_sources["text/plain"]; os.Stdin != nil && !stdin_read && !has_plain && !tty.IsTerminal(os.Stdin.Fd()) {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return 1, err

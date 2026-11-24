@@ -2,6 +2,7 @@
 # License: GPLv3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
+import string
 import subprocess
 import sys
 from collections import defaultdict
@@ -9,6 +10,7 @@ from typing import Any, DefaultDict, Union
 
 if __name__ == '__main__' and not __package__:
     import __main__
+
     __main__.__package__ = 'gen'
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -30,11 +32,11 @@ def enum(keymap: KeymapType) -> str:
     lines = []
     for ch, (attr, atype) in keymap.items():
         lines.append(f"{attr}='{ch}'")
-    return '''
+    return """
     enum KEYS {{
         {}
     }};
-    '''.format(',\n'.join(lines))
+    """.format(',\n'.join(lines))
 
 
 def parse_key(keymap: KeymapType) -> str:
@@ -45,12 +47,31 @@ def parse_key(keymap: KeymapType) -> str:
     return '        \n'.join(lines)
 
 
+def disallowed_checks(var: str, allowed_values: frozenset[str]) -> list[str]:
+    # Collapse runs of consecutive characters into range checks
+    runs: list[list[int]] = []
+    for x in sorted(map(ord, allowed_values)):
+        if runs and runs[-1][1] == x - 1:
+            runs[-1][1] = x
+        else:
+            runs.append([x, x])
+    ans = []
+    for first, last in runs:
+        if last - first < 2:
+            ans.extend(f"{var} != '{chr(x)}'" for x in range(first, last + 1))
+        else:
+            ans.append(f"({var} < '{chr(first)}' || {var} > '{chr(last)}')")
+    return ans
+
+
 def parse_flag(keymap: KeymapType, type_map: dict[str, Any], command_class: str) -> str:
     lines = []
     for ch in type_map['flag']:
         attr, allowed_values = keymap[ch]
-        q = ' && '.join(f"g.{attr} != '{x}'" for x in sorted(allowed_values))
-        lines.append(f'''
+        if not isinstance(allowed_values, frozenset):
+            raise TypeError(f'The allowed values for the flag key {ch} must be a frozenset, not: {allowed_values!r}')
+        q = ' && '.join(disallowed_checks(f'g.{attr}', allowed_values))
+        lines.append(f"""
             case {attr}: {{
                 g.{attr} = parser_buf[pos++];
                 if ({q}) {{
@@ -59,7 +80,7 @@ def parse_flag(keymap: KeymapType, type_map: dict[str, Any], command_class: str)
                 }};
             }}
             break;
-        ''')
+        """)
     return '        \n'.join(lines)
 
 
@@ -128,7 +149,7 @@ def generate(
         payload_after_value = "case ';': state = PAYLOAD; break;"
         payload = ', PAYLOAD'
         if payload_is_base64:
-            payload_case = f'''
+            payload_case = f"""
                 case PAYLOAD: {{
                     sz = parser_buf_pos - pos;
                     g.payload_sz = MAX(BUF_EXTRA, sz);
@@ -138,17 +159,17 @@ def generate(
     invalid base64 data in chunk of size: %zu with output buffer size: %zu", sz, g.payload_sz); return; }}
                     pos = parser_buf_pos;
                     }} break;
-            '''
+            """
             callback = f'{callback_name}(self->screen, &g, parser_buf)'
         else:
-            payload_case = '''
+            payload_case = """
                 case PAYLOAD: {
                     sz = parser_buf_pos - pos;
                     payload_start = pos;
                     g.payload_sz = sz;
                     pos = parser_buf_pos;
                 } break;
-            '''
+            """
             extra_init = 'size_t payload_start = 0;'
             callback = f'{callback_name}(self->screen, &g, parser_buf + payload_start)'
 
@@ -156,7 +177,7 @@ def generate(
         payload_after_value = payload = payload_case = ''
         callback = f'{callback_name}(self->screen, &g)'
 
-    return f'''
+    return f"""
     #include "base64.h"
 
 static inline void
@@ -167,7 +188,7 @@ static inline void
     enum PARSER_STATES state = KEY, value_state = FLAG;
     {command_class} g = {{0}};{post_init_line}
     unsigned int i, code;
-    uint64_t lcode; int64_t accumulator;
+    uint64_t lcode;
     bool is_negative; (void)is_negative;
     size_t sz;
     {keys_enum}
@@ -206,12 +227,12 @@ static inline void
 
             case INT:
 #define READ_UINT \\
-                for (i = pos, accumulator=0; i < MIN(parser_buf_pos, pos + 10); i++) {{ \\
-                    int64_t n = parser_buf[i] - '0'; if (n < 0 || n > 9) break; \\
-                    accumulator += n * digit_multipliers[i - pos]; \\
+                for (i = pos, lcode=0; i < MIN(parser_buf_pos, pos + 10); i++) {{ \\
+                    uint8_t n = parser_buf[i] - '0'; if (n > 9) break; \\
+                    lcode = lcode * 10 + n; \\
                 }} \\
                 if (i == pos) {{ REPORT_ERROR("Malformed {command_class} control block, expecting an integer value for key: %c", key & 0xFF); return; }} \\
-                lcode = accumulator / digit_multipliers[i - pos - 1]; pos = i; \\
+                pos = i; \\
                 if (lcode > UINT32_MAX) {{ REPORT_ERROR("Malformed {command_class} control block, number is too large"); return; }} \\
                 code = lcode;
 
@@ -272,15 +293,16 @@ static inline void
 
     {callback};
 }}
-    '''
+    """
 
 
 def write_header(text: str, path: str) -> None:
     with open(path, 'w') as f:
         print(f'// This file is generated by {os.path.basename(__file__)} do not edit!', file=f, end='\n\n')
         print('#pragma once', file=f)
+        text = '\n'.join(x.rstrip() for x in text.splitlines())
         print(text, file=f)
-    subprocess.check_call(['clang-format', '-i', path])
+    subprocess.check_call([os.path.abspath('autoformat')])
 
 
 def parsers() -> None:
@@ -316,6 +338,8 @@ def parsers() -> None:
         'N': ('usage_hints', 'uint'),
         'H': ('offset_from_parent_x', 'int'),
         'V': ('offset_from_parent_y', 'int'),
+        # any letter is accepted so that queries for unknown actions get a reply
+        'e': ('report_supported', flag(string.ascii_letters)),
     }
     text = generate('parse_graphics_code', 'screen_handle_graphics_command', 'graphics_command', keymap, 'GraphicsCommand')
     write_header(text, 'kitty/parse-graphics-command.h')
@@ -329,8 +353,15 @@ def parsers() -> None:
         'h': ('horizontal_align', 'uint'),
     }
     text = generate(
-        'parse_multicell_code', 'screen_handle_multicell_command', 'multicell_command', keymap, 'MultiCellCommand',
-        payload_is_base64=False, start_parsing_at=0, field_sep=':')
+        'parse_multicell_code',
+        'screen_handle_multicell_command',
+        'multicell_command',
+        keymap,
+        'MultiCellCommand',
+        payload_is_base64=False,
+        start_parsing_at=0,
+        field_sep=':',
+    )
     write_header(text, 'kitty/parse-multicell-command.h')
 
     keymap = {
@@ -344,16 +375,17 @@ def parsers() -> None:
         'Y': ('pixel_y', 'int'),
     }
     text = generate(
-        'parse_dnd_code', 'screen_handle_dnd_command', 'dnd_command', keymap, 'DnDCommand',
-        payload_is_base64=False, start_parsing_at=0, field_sep=':')
+        'parse_dnd_code', 'screen_handle_dnd_command', 'dnd_command', keymap, 'DnDCommand', payload_is_base64=False, start_parsing_at=0, field_sep=':'
+    )
     write_header(text, 'kitty/parse-dnd-command.h')
 
 
-def main(args: list[str]=sys.argv) -> None:
+def main(args: list[str] = sys.argv) -> None:
     parsers()
 
 
 if __name__ == '__main__':
     import runpy
+
     m = runpy.run_path(os.path.dirname(os.path.abspath(__file__)))
     m['main']([sys.executable, 'apc-parsers'])

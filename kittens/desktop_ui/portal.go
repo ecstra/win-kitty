@@ -23,6 +23,7 @@ import (
 	"github.com/kovidgoyal/dbus/introspect"
 	"github.com/kovidgoyal/dbus/prop"
 	"github.com/kovidgoyal/kitty/tools/utils"
+	"github.com/kovidgoyal/kitty/tools/utils/shlex"
 	"github.com/kovidgoyal/kitty/tools/utils/style"
 )
 
@@ -67,11 +68,18 @@ type Portal struct {
 	opts                        *Config
 	server_options              *ServerOptions
 	file_chooser_first_instance *exec.Cmd
+	// closed when file_chooser_first_instance exits
+	file_chooser_first_instance_exited chan struct{}
+}
+
+func color_variant(col style.RGBA) dbus.Variant {
+	return dbus.MakeVariant([]float64{float64(col.Red) / 255., float64(col.Green) / 255., float64(col.Blue) / 255.})
 }
 
 func to_color(spec string) (v dbus.Variant, err error) {
-	if col, err := style.ParseColor(spec); err == nil {
-		return dbus.MakeVariant([]float64{float64(col.Red) / 255., float64(col.Green) / 255., float64(col.Blue) / 255.}), nil
+	col, err := style.ParseColor(spec)
+	if err == nil {
+		v = color_variant(col)
 	}
 	return
 }
@@ -92,7 +100,7 @@ func NewPortal(opts *Config, server_options *ServerOptions) (p *Portal, err erro
 	default:
 		ans.settings[PORTAL_APPEARANCE_NAMESPACE][PORTAL_COLOR_SCHEME_KEY] = dbus.MakeVariant(uint32(NO_PREFERENCE))
 	}
-	ans.settings[PORTAL_APPEARANCE_NAMESPACE][PORTAL_ACCENT_COLOR_KEY], err = to_color(opts.Accent_color)
+	ans.settings[PORTAL_APPEARANCE_NAMESPACE][PORTAL_ACCENT_COLOR_KEY] = color_variant(opts.Accent_color)
 	var contrast uint32
 	if opts.Contrast == Contrast_high {
 		contrast = 1
@@ -388,6 +396,23 @@ func patch_portals_conf(text []byte) []byte {
 	return utils.UnsafeStringToBytes(strings.Join(lines, "\n"))
 }
 
+// dbus_service_exec_line returns the value for the Exec key of a D-Bus
+// .service file. D-Bus first unescapes the value (\\, \n, \t) and then
+// parses it as a shell-style command line.
+func dbus_service_exec_line(argv ...string) (string, error) {
+	quoted := make([]string, len(argv))
+	for i, arg := range argv {
+		// D-Bus decodes \r as a newline and rejects files with a raw CR
+		if strings.ContainsRune(arg, '\r') {
+			return "", fmt.Errorf("cannot use %#v in a D-Bus service file as it contains a carriage return", arg)
+		}
+		quoted[i] = dbus_service_value_escaper.Replace(shlex.Quote(arg))
+	}
+	return strings.Join(quoted, " "), nil
+}
+
+var dbus_service_value_escaper = strings.NewReplacer(`\`, `\\`, "\n", `\n`, "\t", `\t`)
+
 func enable_portal() (err error) {
 	if len(WritableDataDirs()) == 0 {
 		return fmt.Errorf("Could not find any writable data directories. Make sure XDG_DATA_DIRS is set and contains at least one directory for which you have write permission")
@@ -427,16 +452,22 @@ Interfaces=%s;
 	dbus_service_defn := filepath.Join(dbus_service_dir, PORTAL_BUS_NAME+".service")
 	exe_path, eerr := os.Executable()
 	if eerr != nil {
-		exe_path = utils.Which("kitten")
+		if exe_path = utils.Which("kitten"); exe_path == "" {
+			return fmt.Errorf("failed to get path to kitten executable with error: %w", eerr)
+		}
 	}
-	if exe_path, err = filepath.Abs(exe_path); eerr != nil {
+	if exe_path, err = filepath.Abs(exe_path); err != nil {
 		return fmt.Errorf("failed to get path to kitten executable with error: %w", err)
+	}
+	exec_line, err := dbus_service_exec_line(exe_path, "desktop-ui", "run-server")
+	if err != nil {
+		return err
 	}
 	if err = os.WriteFile(dbus_service_defn, utils.UnsafeStringToBytes(fmt.Sprintf(
 		`[D-BUS Service]
 Name=%s
-Exec=%s desktop-ui run-server
-`, PORTAL_BUS_NAME, exe_path)), 0o644); err != nil {
+Exec=%s
+`, PORTAL_BUS_NAME, exec_line)), 0o644); err != nil {
 		return err
 	}
 	fmt.Println("Wrote kitty DBUS activation service file to:", dbus_service_defn)
@@ -712,18 +743,14 @@ func (self *Portal) Cleanup() {
 	defer self.lock.Unlock()
 	if self.file_chooser_first_instance != nil {
 		self.file_chooser_first_instance.Process.Signal(syscall.SIGTERM)
-		ch := make(chan int)
-		go func() {
-			self.file_chooser_first_instance.Wait()
-			ch <- 0
-		}()
 		select {
-		case <-ch:
+		case <-self.file_chooser_first_instance_exited:
 		case <-time.After(time.Second):
 			self.file_chooser_first_instance.Process.Kill()
-			self.file_chooser_first_instance.Wait()
+			<-self.file_chooser_first_instance_exited
 		}
 		self.file_chooser_first_instance = nil
+		self.file_chooser_first_instance_exited = nil
 	}
 }
 
@@ -798,6 +825,15 @@ func (self *Portal) run_file_chooser(cfd ChooseFilesData) (response uint32, resu
 		for _, x := range self.opts.File_chooser_kitty_override {
 			args = append(args, `-o`, x)
 		}
+		if self.file_chooser_first_instance != nil {
+			select {
+			case <-self.file_chooser_first_instance_exited:
+				log.Println("file chooser panel process exited, restarting it")
+				self.file_chooser_first_instance = nil
+				self.file_chooser_first_instance_exited = nil
+			default:
+			}
+		}
 		if self.file_chooser_first_instance == nil {
 			fifo_path := filepath.Join(tdir, "fifo")
 			if err := make_fifo(fifo_path, 0600); err != nil {
@@ -809,21 +845,42 @@ func (self *Portal) run_file_chooser(cfd ChooseFilesData) (response uint32, resu
 			cmd := exec.Command(utils.KittyExe(), fa...)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
-			cmd.Start()
-			ch := make(chan int)
+			if err := cmd.Start(); err != nil {
+				log.Println("cannot run file chooser as failed to start kitty panel with error: ", err)
+				return nil
+			}
+			exited := make(chan struct{})
+			go func() {
+				_ = cmd.Wait()
+				close(exited)
+			}()
+			fifo_written := make(chan struct{})
 			go func() {
 				f, err := os.OpenFile(fifo_path, os.O_RDONLY, os.ModeNamedPipe)
 				if err != nil {
 					log.Println("cannot run file chooser as failed to open fifo for read with error: ", err)
+					return
 				}
+				defer f.Close()
 				b := []byte{'a', 'b', 'c', 'd'}
-				f.Read(b)
-				ch <- 0
+				if n, _ := f.Read(b); n > 0 {
+					close(fifo_written)
+				}
 			}()
+			// unblocks the reader goroutine if the panel never writes to the fifo
+			unblock_reader := func() { open_fifo_for_writing_and_close(fifo_path) }
 			select {
-			case <-ch:
+			case <-fifo_written:
 				self.file_chooser_first_instance = cmd
+				self.file_chooser_first_instance_exited = exited
+			case <-exited:
+				unblock_reader()
+				log.Printf("cannot run file chooser as the kitty panel process exited with %s, check its output above for errors. "+
+					"Note that the file chooser requires the window manager/compositor to support panels, see "+
+					"https://sw.kovidgoyal.net/kitty/kittens/panel/#compatibility-with-various-platforms", cmd.ProcessState)
+				return nil
 			case <-time.After(5 * time.Second):
+				unblock_reader()
 				log.Println("cannot run file chooser as panel script timed out writing to fifo")
 				return nil
 			}
@@ -844,7 +901,18 @@ func (self *Portal) run_file_chooser(cfd ChooseFilesData) (response uint32, resu
 			}
 		}
 		args = append(args, "--write-pid-to", pid_path)
-		args = append(args, utils.IfElse(cfd.Cwd == "", "~", cfd.Cwd))
+		target := cfd.Cwd
+		if target == "" {
+			target = "~"
+		} else {
+			if st, err := os.Stat(cfd.Cwd); err == nil && st.IsDir() && utils.Access(cfd.Cwd, utils.AccessRead|utils.AccessExec) == nil {
+				target = cfd.Cwd
+			} else {
+				target = "~"
+			}
+
+		}
+		args = append(args, target)
 		cmd := exec.Command(utils.KittyExe(), args...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

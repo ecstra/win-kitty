@@ -170,3 +170,47 @@ func TestThemeCollections(t *testing.T) {
 		t.Fatal("failed to load code for alabaster theme")
 	}
 }
+
+func TestColorSettingsAsEscapeCodes(t *testing.T) {
+	ans := ColorSettingsAsEscapeCodes(map[string]string{"color1": "#ff0000", "color17": "#00ff00"})
+	for _, q := range []string{";1;#ff0000;", ";17;#00ff00;", ";16;#000000;", ";255;#eeeeee\x1b\\"} {
+		if !strings.Contains(ans, q) {
+			t.Fatalf("%#v not found in %#v", q, ans)
+		}
+	}
+	if strings.Contains(ans, ";16;#ffffff") {
+		t.Fatalf("Unset color 16 was set to white: %#v", ans)
+	}
+	_, osc21, found := strings.Cut(ans, "\x1b]21;")
+	if !found {
+		t.Fatalf("No OSC 21 in %#v", ans)
+	}
+	if !strings.HasPrefix(osc21, "16=;18=;") || !strings.HasSuffix(osc21, ";255=\x1b\\") || strings.Contains(osc21, ";17=") {
+		t.Fatalf("Incorrect OSC 21: %#v", osc21)
+	}
+}
+
+func TestColorSettingsAsSpec(t *testing.T) {
+	settings := map[string]string{"color1": "#ff0000", "color17": "#00ff00", "background": "#010203", "cursor": "", "foreground": "invalid"}
+	ans := ColorSettingsAsSpec(settings)
+	expected := map[string]any{"background": uint32(0x010203), "color1": uint32(0xff0000), "color17": uint32(0x00ff00), "color16": nil, "color255": nil}
+	for k, v := range expected {
+		if actual, found := ans[k]; !found || actual != v {
+			t.Fatalf("Incorrect value for %s: %#v != %#v", k, actual, v)
+		}
+	}
+	// colors reset to their configured value by the escape codes are not present
+	for _, k := range []string{"cursor", "foreground"} {
+		if _, found := ans[k]; found {
+			t.Fatalf("%s should not be present in %#v", k, ans)
+		}
+	}
+	// colors not specified by the theme get the same defaults as with escape codes
+	if ans["selection_background"] != uint32(0xfffacd) || ans["color0"] != uint32(0) || len(ans) != 256+3 {
+		t.Fatalf("Incorrect default colors in: %#v", ans)
+	}
+	if codes := ColorSettingsAsEscapeCodes(settings); !strings.Contains(codes, "\x1b]11;#010203\x1b\\") || !strings.Contains(codes, "\x1b]112\x1b\\") ||
+		!strings.Contains(codes, "\x1b]4;0;#000000;") {
+		t.Fatalf("Escape codes not consistent with spec: %#v", codes)
+	}
+}

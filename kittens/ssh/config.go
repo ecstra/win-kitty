@@ -199,11 +199,8 @@ func get_arcname(loc, dest, home string) (arcname string) {
 		arcname = dest
 	} else {
 		arcname = filepath.Clean(loc)
-		if strings.HasPrefix(arcname, home) {
-			ra, err := filepath.Rel(home, arcname)
-			if err == nil {
-				arcname = ra
-			}
+		if ra, err := filepath.Rel(home, arcname); err == nil && filepath.IsLocal(ra) {
+			arcname = ra
 		}
 	}
 	prefix := "home/"
@@ -237,6 +234,15 @@ func ParseCopyInstruction(spec string) (ans []*CopyInstruction, err error) {
 		return nil, fmt.Errorf("Specifying a remote location with more than one file is not supported")
 	}
 	home := paths_ctx.HomePath()
+	if opts.SymlinkStrategy == "resolve" {
+		// The copied paths have their symlinks resolved, so HOME must be resolved
+		// as well, otherwise paths under a HOME that is itself reached via a
+		// symlink, such as /home -> /usr/home, are not recognized as being in HOME.
+		// If HOME cannot be resolved fall back to using it as is.
+		if rh, err := filepath.EvalSymlinks(home); err == nil {
+			home = rh
+		}
+	}
 	ans = make([]*CopyInstruction, 0, len(locations))
 	for _, loc := range locations {
 		ci := CopyInstruction{local_path: loc, exclude_patterns: opts.Exclude}
@@ -275,14 +281,14 @@ func get_file_data(callback func(h *tar.Header, data []byte) error, seen map[fil
 	if err != nil {
 		return err
 	}
-	cb := func(h *tar.Header, data []byte, arcname string) error {
+	cb := func(h *tar.Header, data []byte, arcname string, st os.FileInfo) error {
 		h.Name = arcname
 		if h.Typeflag == tar.TypeDir {
 			h.Name = strings.TrimRight(h.Name, "/") + "/"
 		}
 		h.Size = int64(len(data))
-		h.Mode = int64(s.Mode().Perm())
-		h.ModTime = s.ModTime()
+		h.Mode = int64(st.Mode().Perm()) // discard the setuid, setgid and sticky bits
+		h.ModTime = st.ModTime()
 		h.Format = tar.FormatPAX
 		return callback(h, data)
 	}
@@ -296,7 +302,7 @@ func get_file_data(callback func(h *tar.Header, data []byte) error, seen map[fil
 		err = cb(&tar.Header{
 			Typeflag: tar.TypeSymlink,
 			Linkname: target,
-		}, nil, arcname)
+		}, nil, arcname, s)
 		if err != nil {
 			return err
 		}
@@ -309,6 +315,16 @@ func get_file_data(callback func(h *tar.Header, data []byte) error, seen map[fil
 		for len(stack) > 0 {
 			x := stack[0]
 			stack = stack[1:]
+			// Each directory needs its own metadata, re-check its type as it
+			// may have been replaced since its parent was read
+			ds := s
+			if x.path != local_path {
+				st, err := os.Lstat(x.path)
+				if err != nil || !st.IsDir() {
+					continue
+				}
+				ds = st
+			}
 			entries, err := os.ReadDir(x.path)
 			if err != nil {
 				if x.path == local_path {
@@ -316,7 +332,7 @@ func get_file_data(callback func(h *tar.Header, data []byte) error, seen map[fil
 				}
 				continue
 			}
-			err = cb(&tar.Header{Typeflag: tar.TypeDir}, nil, x.arcname)
+			err = cb(&tar.Header{Typeflag: tar.TypeDir}, nil, x.arcname, ds)
 			if err != nil {
 				return err
 			}
@@ -346,14 +362,14 @@ func get_file_data(callback func(h *tar.Header, data []byte) error, seen map[fil
 	case s.Mode().IsRegular(): // Regular file
 		fid := get_file_unique_id(s)
 		if prev, ok := seen[fid]; ok { // Hard link
-			return cb(&tar.Header{Typeflag: tar.TypeLink, Linkname: prev}, nil, arcname)
+			return cb(&tar.Header{Typeflag: tar.TypeLink, Linkname: prev}, nil, arcname, s)
 		}
 		seen[fid] = arcname
 		data, err := os.ReadFile(local_path)
 		if err != nil {
 			return err
 		}
-		err = cb(&tar.Header{Typeflag: tar.TypeReg}, data, arcname)
+		err = cb(&tar.Header{Typeflag: tar.TypeReg}, data, arcname, s)
 		if err != nil {
 			return err
 		}

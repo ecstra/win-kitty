@@ -12,6 +12,7 @@ from kitty.types import run_once
 def xdg_data_dirs() -> tuple[str, ...]:
     return tuple(os.environ.get('XDG_DATA_DIRS', '/usr/local/share/:/usr/share/').split(os.pathsep))
 
+
 @run_once
 def xdg_data_home() -> str:
     return os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share/'))
@@ -20,6 +21,7 @@ def xdg_data_home() -> str:
 @run_once
 def icon_dirs() -> list[str]:
     ans = []
+
     def a(x: str) -> None:
         if os.path.isdir(x):
             ans.append(x)
@@ -32,7 +34,6 @@ def icon_dirs() -> list[str]:
 
 
 class XDGIconCache:
-
     def __init__(self) -> None:
         self.existing_icon_names: set[str] = set()
         self.scanned = False
@@ -70,7 +71,7 @@ class XDGIconCache:
 
     def scan_theme_dir(self, base: str) -> None:
         with suppress(OSError):
-            for (dirpath, dirnames, filenames) in os.walk(base):
+            for dirpath, dirnames, filenames in os.walk(base):
                 for q in filenames:
                     icon_name, sep, ext = q.lower().rpartition('.')
                     if sep == '.' and ext in ('svg', 'png', 'xpm'):
@@ -98,7 +99,7 @@ class AppIconCache:
         for d in xdg_data_dirs():
             d = os.path.join(d, 'applications')
             with suppress(OSError):
-                for (dirpath, dirnames, filenames) in os.walk(d):
+                for dirpath, dirnames, filenames in os.walk(d):
                     for fname in filenames:
                         if fname.endswith('.desktop'):
                             path = os.path.join(dirpath, fname)
@@ -140,3 +141,41 @@ class AppIconCache:
 
 app_icon_cache = AppIconCache()
 icon_for_appname = app_icon_cache.icon_for_appname
+
+
+def desktop_file_id_for_appname(appname: str) -> str:
+    # Return the desktop file id (without the .desktop suffix) of the
+    # installed desktop file for appname. Matches either appname.desktop or
+    # reverse DNS names such as net.kovidgoyal.appname.desktop. Earlier
+    # directories take precedence as per the XDG spec.
+    q = appname.lower()
+    suffix_match = ''
+    for d in (xdg_data_home(),) + xdg_data_dirs():
+        d = os.path.join(d, 'applications')
+        with suppress(OSError):
+            for dirpath, dirnames, filenames in os.walk(d):
+                for fname in filenames:
+                    if not fname.endswith('.desktop'):
+                        continue
+                    file_id = os.path.relpath(os.path.join(dirpath, fname), d).replace(os.sep, '-')[: -len('.desktop')]
+                    name = fname[: -len('.desktop')].lower()
+                    if name == q:
+                        return file_id
+                    if not suffix_match and name.rpartition('.')[2] == q:
+                        suffix_match = file_id
+    return suffix_match
+
+
+@run_once
+def kitty_desktop_entry() -> str:
+    # The name of the desktop file kitty was launched from, without the
+    # .desktop suffix, for use as the desktop-entry hint in notifications.
+    from .constants import appname
+
+    if flatpak_id := os.environ.get('FLATPAK_ID'):
+        return flatpak_id
+    if (gio_df := os.environ.get('GIO_LAUNCHED_DESKTOP_FILE')) and os.environ.get('GIO_LAUNCHED_DESKTOP_FILE_PID') == str(os.getpid()):
+        bname = os.path.basename(gio_df)
+        if bname.endswith('.desktop'):
+            return bname[: -len('.desktop')]
+    return desktop_file_id_for_appname(appname)

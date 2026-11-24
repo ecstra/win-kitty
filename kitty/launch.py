@@ -14,12 +14,14 @@ from .cli import parse_args
 from .cli_stub import LaunchCLIOptions
 from .clipboard import set_clipboard_string, set_primary_selection
 from .constants import is_wayland
-from .fast_data_types import add_timer, get_boss, get_options, get_os_window_title, patch_color_profiles
+from .fast_data_types import COLOR_LAYER_WINDOW, add_timer, get_boss, get_options, get_os_window_title, patch_color_profiles
+from .launch_wrapper import LaunchRequest
 from .options.utils import env as parse_env
 from .tabs import Tab, TabManager
-from .types import LayerShellConfig, OverlayType, run_once
+from .types import DockSpec, LayerShellConfig, OverlayType, dock_edges, parse_dock_spec, run_once
 from .utils import get_editor, log_error, resolve_custom_file, which
 from .window import CwdRequest, CwdRequestType, Watchers, Window
+from .window_list import WindowGroup
 
 
 class LaunchSpec(NamedTuple):
@@ -28,16 +30,16 @@ class LaunchSpec(NamedTuple):
 
 
 # Options definition {{{
-env_docs = '''\
+env_docs = """\
 type=list
 Environment variables to set in the child process. Can be specified multiple
 times to set different environment variables. Syntax: :code:`name=value`. Using
 :code:`name=` will set to empty string and just :code:`name` will remove the
 environment variable.
-'''
+"""
 
 
-remote_control_password_docs = '''\
+remote_control_password_docs = """\
 type=list
 Restrict the actions remote control is allowed to take. This works like
 :opt:`remote_control_password`. You can specify a password and list of actions
@@ -55,11 +57,13 @@ You can also disable all :opt:`remote_control_password` global passwords for thi
 This option only takes effect if :option:`--allow-remote-control`
 is also specified. Can be specified multiple times to create multiple passwords.
 This option was added to kitty in version 0.26.0
-'''
+"""
 
 
 @run_once
 def options_spec() -> str:
+    from .rc.set_spacing import SPACING_SETTINGS_DOC
+
     return f"""
 --source-window
 A match expression to select the window from which data such as title, colors, env vars,
@@ -83,11 +87,28 @@ of the active window in the tab is used as the tab title. The special value
 --type
 type=choices
 default=window
-choices=window,tab,os-window,os-panel,overlay,overlay-main,background,clipboard,primary
+choices=window,window-dock,tab,tab-dock,os-window-dock,os-window,os-panel,overlay,overlay-main,background,clipboard,primary
 Where to launch the child process:
 
 :code:`window`
     A new :term:`kitty window <window>` in the current tab
+
+:code:`window-dock`
+    A new :term:`kitty window <window>` docked to an edge of the active window
+    in the current tab. It is shown whenever that window is shown and is closed
+    when that window is closed. Use :option:`launch --dock-edge` and
+    :option:`launch --dock-size` to control where it is placed. See :ref:`docks`.
+
+:code:`tab-dock`
+    A new :term:`kitty window <window>` docked to an edge of the current tab,
+    the layout arranges the other windows in the remaining space. It is closed
+    when the last non-docked window in the tab is closed. See :ref:`docks`.
+
+:code:`os-window-dock`
+    A new :term:`kitty window <window>` docked to an edge of the current
+    :term:`OS window <os_window>`, below the tab bar. It is shown in every tab of the OS
+    window, outside the docks of the tab, and is closed when the OS window is
+    closed. See :ref:`docks`.
 
 :code:`tab`
     A new :term:`tab` in the current OS window. Not available when the
@@ -126,10 +147,59 @@ Where to launch the child process:
 #placeholder_for_formatting#
 
 
+--dock-edge
+type=choices
+default=bottom
+choices={','.join(dock_edges)}
+The edge at which to place a :code:`window-dock`, :code:`tab-dock` or
+:code:`os-window-dock` window.
+When there are multiple docks at an edge, later docks are placed inside earlier
+ones.
+
+
+--dock-size
+default=1
+The size of a :code:`window-dock`, :code:`tab-dock` or :code:`os-window-dock`
+window. For docks at the
+top or bottom edge this is a number of rows, for docks at the left or right edge
+a number of columns. The space for the window's margin, border and padding is
+added to it. Alternately, add a :code:`%` suffix to specify the size as a
+percentage of the window, tab or OS window being docked to, including the window's
+decorations, for example: :code:`25%`.
+
+
+--dock-skip-focus
+type=bool-set
+Prevent a :code:`window-dock`, :code:`tab-dock` or :code:`os-window-dock` window from ever getting
+keyboard focus. Useful for docks that only display information, such as status
+bars.
+
+
 --keep-focus --dont-take-focus
 type=bool-set
 Keep the focus on the currently active window instead of switching to the newly
 opened window.
+
+
+--focus-existing
+A match expression to select an existing window or tab. If a match is found,
+it is focused and nothing new is launched, otherwise the launch proceeds as
+normal. When :option:`--type <launch --type>` is :code:`tab` the expression
+selects tabs, otherwise it selects windows, in all OS Windows. See :ref:`search_syntax` for the
+syntax for specifying windows and tabs. The special value :code:`@title` matches
+the tab whose title is exactly the value of :option:`--tab-title <launch --tab-title>`
+or, for other types, the window whose title is exactly the value of
+:option:`--window-title <launch --window-title>`. Unlike a match expression,
+:code:`@title` only considers the tabs shown in the tab bar of the OS Window in
+which the new tab/window would be created, so tabs hidden by :opt:`tab_bar_filter`
+are ignored. For the :code:`os-window` and :code:`os-panel` types, it considers
+windows in all OS Windows. If :option:`--keep-focus <launch --keep-focus>`
+is also specified, the matched window/tab is not focused. Has no effect for the
+:code:`background`, :code:`clipboard` and :code:`primary` types and in
+:ref:`startup sessions <sessions>`. Useful for mapping a key to switch to a
+window or tab, creating it if it does not exist, for example::
+
+    map ctrl+1 launch --type=tab --tab-title=1 --location=by-title --focus-existing=@title
 
 
 --cwd
@@ -142,6 +212,10 @@ by the shell (needs :ref:`shell_integration` to work). The special value
 oldest foreground process associated with the currently active window rather
 than the newest foreground process. Finally, the special value :code:`root`
 refers to the process that was originally started when the window was created.
+If kitty itself started that process via a wrapper, such as :file:`/usr/bin/login`
+on macOS, the wrapper is ignored and its first child is used instead. The
+working directory reported by the shell is used only when the root process is in
+the foreground.
 
 When opening in the same working directory as the current window causes the new
 window to connect to a remote host, you can use the :option:`--hold-after-ssh`
@@ -204,13 +278,16 @@ or the kitty remote control feature with :option:`kitten @ launch --copy-env`.
 --location
 type=choices
 default=default
-choices=first,after,before,neighbor,last,vsplit,hsplit,split,default
+choices=first,after,before,neighbor,last,vsplit,hsplit,split,by-title,default
 Where to place the newly created window when it is added to a tab which already
 has existing windows in it. :code:`after` and :code:`before` place the new
 window before or after the active window. :code:`neighbor` is a synonym for
 :code:`after`. Also applies to creating a new tab, where the value of
 :code:`after` will cause the new tab to be placed next to the current tab
-instead of at the end. The values of :code:`vsplit`, :code:`hsplit` and
+instead of at the end. The value :code:`by-title` applies only to new tabs,
+it places the new tab before the first tab whose title sorts after the title
+of the new tab, as specified by :option:`--tab-title <launch --tab-title>`. This
+keeps tabs in alphabetical order, if they already are. The values of :code:`vsplit`, :code:`hsplit` and
 :code:`split` are only used by the :code:`splits` layout and control if the new
 window is placed in a vertical, horizontal or automatic split with the currently
 active window. The default is to place the window in a layout dependent manner,
@@ -395,8 +472,7 @@ from, or specify them individually, for example::
 --spacing
 type=list
 Set the margin and padding for the newly created window.
-For example: :code:`margin=20` or :code:`padding-left=10` or :code:`margin-h=30`. The shorthand form sets
-all values, the :code:`*-h` and :code:`*-v` variants set horizontal and vertical values.
+{SPACING_SETTINGS_DOC}
 Can be specified multiple times. Note that this is ignored for overlay windows as these use the settings
 from the base window.
 
@@ -428,6 +504,8 @@ When using :option:`--cwd`:code:`=current` or similar from a window that is runn
 the new window will run a local shell after disconnecting from the remote host, when this option
 is specified.
 """
+
+
 # }}}
 
 
@@ -440,7 +518,7 @@ def parse_launch_args(args: Sequence[str] | None = None) -> LaunchSpec:
     return LaunchSpec(opts, args)
 
 
-def get_env(opts: LaunchCLIOptions, active_child: Child | None = None, base_env: dict[str,str] | None = None) -> dict[str, str]:
+def get_env(opts: LaunchCLIOptions, active_child: Child | None = None, base_env: dict[str, str] | None = None) -> dict[str, str]:
     env: dict[str, str] = {}
     if opts.copy_env and active_child:
         env.update(active_child.foreground_environ)
@@ -454,6 +532,7 @@ def get_env(opts: LaunchCLIOptions, active_child: Child | None = None, base_env:
 
 def layer_shell_config_from_panel_opts(panel_opts: Iterable[str]) -> LayerShellConfig:
     from kittens.panel.main import layer_shell_config, parse_panel_args
+
     args = [('' if x.startswith('--') else '--') + x for x in panel_opts]
     try:
         opts, _ = parse_panel_args(args)
@@ -482,11 +561,12 @@ def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, n
                     wname=opts.os_window_name,
                     window_state=opts.os_window_state,
                     override_title=opts.os_window_title or None,
-                    x=x, y=y)
+                    x=x,
+                    y=y,
+                )
             tm = boss.os_window_map[oswid]
-        tab = tm.new_tab(empty_tab=True, location=opts.location)
-        if opts.tab_title:
-            tab.set_title(opts.tab_title)
+            tm.created_in_session_name = add_to_session
+        tab = tm.new_tab(empty_tab=True, location=opts.location, title=opts.tab_title or '')
         tab.created_in_session_name = add_to_session
         return tab
 
@@ -514,9 +594,11 @@ watcher_modules: dict[str, Any] = {}
 
 
 def load_watch_modules(watchers: Iterable[str]) -> Watchers | None:
+    watchers = tuple(watchers)
     if not watchers:
         return None
     import runpy
+
     ans = Watchers()
     boss = get_boss()
     for path in watchers:
@@ -527,6 +609,7 @@ def load_watch_modules(watchers: Iterable[str]) -> Watchers | None:
                 m = runpy.run_path(path, run_name='__kitty_watcher__')
             except Exception as err:
                 import traceback
+
                 log_error(traceback.format_exc())
                 log_error(f'Failed to load watcher from {path} with error: {err}')
                 watcher_modules[path] = False
@@ -538,6 +621,7 @@ def load_watch_modules(watchers: Iterable[str]) -> Watchers | None:
                     w(boss, {})
                 except Exception as err:
                     import traceback
+
                     log_error(traceback.format_exc())
                     log_error(f'Failed to call on_load() in watcher from {path} with error: {err}')
         if m is False:
@@ -557,9 +641,15 @@ def load_watch_modules(watchers: Iterable[str]) -> Watchers | None:
         w = m.get('on_title_change')
         if callable(w):
             ans.on_title_change.append(w)
+        w = m.get('on_cwd_change')
+        if callable(w):
+            ans.on_cwd_change.append(w)
         w = m.get('on_cmd_startstop')
         if callable(w):
             ans.on_cmd_startstop.append(w)
+        w = m.get('on_program_status_change')
+        if callable(w):
+            ans.on_program_status_change.append(w)
         w = m.get('on_color_scheme_preference_change')
         if callable(w):
             ans.on_color_scheme_preference_change.append(w)
@@ -573,7 +663,6 @@ def load_watch_modules(watchers: Iterable[str]) -> Watchers | None:
 
 
 class LaunchKwds(TypedDict):
-
     allow_remote_control: bool
     remote_control_passwords: dict[str, Sequence[str]] | None
     cwd_from: CwdRequest | None
@@ -584,6 +673,8 @@ class LaunchKwds(TypedDict):
     marker: str | None
     cmd: list[str] | None
     overlay_for: int | None
+    dock: DockSpec | None
+    os_window_dock: bool
     stdin: bytes | None
     hold: bool
     bias: float | None
@@ -592,9 +683,10 @@ class LaunchKwds(TypedDict):
 
 def apply_colors(window: Window, spec: Sequence[str]) -> None:
     from .colors import parse_colors
+
     colors, transparent_background_colors = parse_colors(spec)
-    profiles = window.screen.color_profile,
-    patch_color_profiles(colors, transparent_background_colors, profiles, True)
+    profiles = (window.screen.color_profile,)
+    patch_color_profiles(colors, transparent_background_colors, profiles, COLOR_LAYER_WINDOW)
 
 
 def parse_var(defn: Iterable[str]) -> Iterator[tuple[str, str]]:
@@ -604,7 +696,6 @@ def parse_var(defn: Iterable[str]) -> Iterator[tuple[str, str]]:
 
 
 class ForceWindowLaunch:
-
     def __init__(self) -> None:
         self.force = False
 
@@ -624,17 +715,40 @@ class ForceWindowLaunch:
 
 force_window_launch = ForceWindowLaunch()
 non_window_launch_types = 'background', 'clipboard', 'primary'
+dock_launch_types = 'window-dock', 'tab-dock', 'os-window-dock'
 
 
 def parse_remote_control_passwords(allow_remote_control: bool, passwords: Sequence[str]) -> dict[str, Sequence[str]] | None:
     remote_control_restrictions: dict[str, Sequence[str]] | None = None
     if allow_remote_control and passwords:
         from kitty.options.utils import remote_control_password
+
         remote_control_restrictions = {}
         for rcp in passwords:
             for pw, rcp_items in remote_control_password(rcp, {}):
                 remote_control_restrictions[pw] = rcp_items
     return remote_control_restrictions
+
+
+def find_existing(boss: Boss, opts: LaunchCLIOptions, rc_from_window: Window | None = None, tm: TabManager | None = None) -> Window | Tab | None:
+    # @title only considers the tabs visible in the tab bar of tm, the OS Window the
+    # new tab/window would be created in, so that it respects tab_bar_filter
+    q = opts.focus_existing
+    if not q:
+        return None
+    visible_tabs: tuple[Tab, ...] = tuple(tm.tabs_to_be_shown_in_tab_bar) if tm is not None else ()
+    if opts.type == 'tab':
+        if q == '@title':
+            if not opts.tab_title:
+                raise ValueError('--focus-existing=@title requires --tab-title to also be specified')
+            return next((t for t in visible_tabs if t.effective_title == opts.tab_title), None)
+        return next(boss.match_tabs(q), None)
+    if q == '@title':
+        if not opts.window_title:
+            raise ValueError('--focus-existing=@title requires --window-title to also be specified')
+        candidates: Iterable[Window] = boss.all_windows if opts.type in ('os-window', 'os-panel') else (w for t in visible_tabs for w in t)
+        return next((w for w in candidates if w.title == opts.window_title), None)
+    return next(boss.match_windows(q, rc_from_window), None)
 
 
 def _launch(
@@ -648,6 +762,8 @@ def _launch(
     base_env: dict[str, str] | None = None,
     child_death_callback: Callable[[int, Exception | None], None] | None = None,
     startup_command_via_shell_integration: Sequence[str] | str = (),
+    restored_scrollback: bytes = b'',
+    use_launch_wrapper: bool = True,
 ) -> Window | None:
     source_window = boss.active_window_for_cwd
     if opts.source_window:
@@ -674,6 +790,21 @@ def _launch(
         if source_window and (qt := source_window.tabref()) and (qr := qt.tab_manager_ref()):
             tm = qr
         opts.os_window_title = get_os_window_title(tm.os_window_id) if tm else None
+    if opts.focus_existing and not force_target_tab and opts.type not in non_window_launch_types:
+        scope_tm = boss.active_tab_manager
+        if target_tab is not None:
+            scope_tm = target_tab.tab_manager_ref() or scope_tm
+        elif next_to is not None and (nt := next_to.tabref()) is not None:
+            scope_tm = nt.tab_manager_ref() or scope_tm
+        if (existing := find_existing(boss, opts, rc_from_window, scope_tm)) is not None:
+            if not opts.keep_focus:
+                if isinstance(existing, Window):
+                    boss.set_active_window(existing, switch_os_window_if_needed=True)
+                elif (aw := existing.active_window) is not None:
+                    boss.set_active_window(aw, switch_os_window_if_needed=True)
+                elif (etm := existing.tab_manager_ref()) is not None:
+                    etm.set_active_tab(existing)
+            return existing if isinstance(existing, Window) else existing.active_window
     env = get_env(opts, source_child, base_env)
     kw: LaunchKwds = {
         'allow_remote_control': opts.allow_remote_control,
@@ -686,14 +817,17 @@ def _launch(
         'marker': opts.marker or None,
         'cmd': None,
         'overlay_for': None,
+        'dock': None,
+        'os_window_dock': False,
         'stdin': None,
         'hold': False,
         'bias': None,
-        'hold_after_ssh': False
+        'hold_after_ssh': False,
     }
     spacing = {}
     if opts.spacing:
         from .rc.set_spacing import parse_spacing_settings, patch_window_edges
+
         spacing = parse_spacing_settings(opts.spacing)
     if opts.bias:
         kw['bias'] = max(-100, min(opts.bias, 100))
@@ -714,10 +848,10 @@ def _launch(
             kw['cwd'] = opts.cwd
     if opts.hold_after_ssh:
         if opts.cwd not in ('current', 'last_reported', 'oldest'):
-            raise ValueError("--hold-after-ssh can only be supplied if --cwd=current or similar is also supplied")
+            raise ValueError('--hold-after-ssh can only be supplied if --cwd=current or similar is also supplied')
         kw['hold_after_ssh'] = True
 
-    if opts.location != 'default':
+    if opts.location not in ('default', 'by-title'):
         kw['location'] = opts.location
     if opts.copy_colors and source_window:
         kw['copy_colors_from'] = source_window
@@ -725,8 +859,15 @@ def _launch(
     if opts.stdin_source != 'none':
         q = str(opts.stdin_source)
         if opts.stdin_add_formatting:
-            if q in ('@screen', '@screen_scrollback', '@alternate', '@alternate_scrollback',
-                     '@first_cmd_output_on_screen', '@last_cmd_output', '@last_visited_cmd_output'):
+            if q in (
+                '@screen',
+                '@screen_scrollback',
+                '@alternate',
+                '@alternate_scrollback',
+                '@first_cmd_output_on_screen',
+                '@last_cmd_output',
+                '@last_visited_cmd_output',
+            ):
                 q = f'@ansi_{q[1:]}'
         if opts.stdin_add_line_wrap_markers:
             q += '_wrap'
@@ -771,12 +912,8 @@ def _launch(
                         elif x == '@last-line-on-screen':
                             x = str(screen.visual_line(screen.lines - 1) or '')
             final_cmd.append(x)
-        if rc_from_window is None and final_cmd:
-            exe = which(final_cmd[0])
-            if exe:
-                final_cmd[0] = exe
         kw['cmd'] = final_cmd
-    if force_window_launch and opts.type not in non_window_launch_types:
+    if force_window_launch and opts.type not in non_window_launch_types and opts.type not in dock_launch_types:
         opts.type = 'window'
     if next_to and opts.type in non_window_launch_types:
         next_to = None
@@ -789,9 +926,18 @@ def _launch(
         cmd = kw['cmd']
         if not cmd:
             raise ValueError('The cmd to run must be specified when running a background process')
+        if rc_from_window is None:
+            # Background processes are not run via Child, which handles
+            # programs that are not in PATH, such as via exe_search_path
+            cmd = [which(cmd[0]) or cmd[0]] + cmd[1:]
         boss.run_background_process(
-            cmd, cwd=kw['cwd'], cwd_from=kw['cwd_from'], env=env or None, stdin=kw['stdin'],
-            allow_remote_control=kw['allow_remote_control'], remote_control_passwords=kw['remote_control_passwords'],
+            cmd,
+            cwd=kw['cwd'],
+            cwd_from=kw['cwd_from'],
+            env=env or None,
+            stdin=kw['stdin'],
+            allow_remote_control=kw['allow_remote_control'],
+            remote_control_passwords=kw['remote_control_passwords'],
             notify_on_death=child_death_callback,
         )
     elif opts.type in ('clipboard', 'primary'):
@@ -809,22 +955,47 @@ def _launch(
         add_to_session = opts.add_to_session or ''
         match add_to_session:
             case '.':
-                add_to_session = source_window.created_in_session_name if source_window else ''
+                add_to_session = source_window.effective_session_name if source_window else ''
             case '!':
                 add_to_session = ''
             case '':
                 if kw['cwd_from'] is not None and source_window:
-                    add_to_session = source_window.created_in_session_name
+                    add_to_session = source_window.effective_session_name
         kw['hold'] = opts.hold
+        dock_owner: WindowGroup | None = None
+        if opts.type in dock_launch_types:
+            kw['dock'] = parse_dock_spec(opts.dock_edge, opts.dock_size, not opts.dock_skip_focus)
         if force_target_tab and target_tab is not None:
             tab = target_tab
         else:
             tab = tab_for_window(boss, opts, target_tab, next_to, add_to_session)
+        if opts.type == 'window-dock':
+            owner_window = tab.windows.main_window_for(next_to) if next_to is not None and next_to in tab else None
+            owner_window = owner_window or tab.windows.active_main_window
+            if owner_window is None or (dock_owner := tab.windows.group_for_window(owner_window)) is None:
+                raise ValueError('A window-dock can only be created in a tab that has a window to dock it to')
+        elif opts.type == 'os-window-dock':
+            if (tm := tab.tab_manager_ref()) is None:
+                raise ValueError('An os-window-dock can only be created in a tab that belongs to an OS window')
+            # The OS window docks are in the active tab, the tab is None only
+            # while the first tab of a session is being created
+            tab = tm.active_tab or tab
+            tm.host_os_window_docks_in(tab)
+            kw['os_window_dock'] = True
         watchers = load_watch_modules(opts.watcher)
+        launch_request = LaunchRequest(opts.type, source_window.id if source_window else None, tuple(parse_var(opts.var))) if use_launch_wrapper else None
         with Window.set_ignore_focus_changes_for_new_windows(opts.keep_focus):
             new_window: Window = tab.new_window(
-                env=env or None, watchers=watchers or None, is_clone_launch=is_clone_launch, next_to=next_to,
-                startup_command_via_shell_integration=startup_command_via_shell_integration, **kw)
+                env=env or None,
+                watchers=watchers or None,
+                is_clone_launch=is_clone_launch,
+                next_to=next_to,
+                startup_command_via_shell_integration=startup_command_via_shell_integration,
+                restored_scrollback=restored_scrollback,
+                dock_owner=dock_owner,
+                launch_request=launch_request,
+                **kw,
+            )
             new_window.created_in_session_name = add_to_session
             if child_death_callback is not None:
                 boss.monitor_pid(new_window.child.pid or 0, child_death_callback)
@@ -870,25 +1041,57 @@ def launch(
     base_env: dict[str, str] | None = None,
     child_death_callback: Callable[[int, Exception | None], None] | None = None,
     startup_command_via_shell_integration: Sequence[str] | str = (),
+    restored_scrollback: bytes = b'',
+    use_launch_wrapper: bool = True,
 ) -> Window | None:
     active = boss.active_window
     if opts.keep_focus and active:
         orig, active.ignore_focus_changes = active.ignore_focus_changes, True
     try:
         return _launch(
-            boss, opts, args, target_tab, force_target_tab, is_clone_launch, rc_from_window, base_env,
-            child_death_callback, startup_command_via_shell_integration)
+            boss,
+            opts,
+            args,
+            target_tab,
+            force_target_tab,
+            is_clone_launch,
+            rc_from_window,
+            base_env,
+            child_death_callback,
+            startup_command_via_shell_integration,
+            restored_scrollback,
+            use_launch_wrapper,
+        )
     finally:
         if opts.keep_focus and active:
             active.ignore_focus_changes = orig
 
+
 @run_once
 def clone_safe_opts() -> frozenset[str]:
-    return frozenset((
-        'window_title', 'tab_title', 'type', 'keep_focus', 'cwd', 'var', 'hold',
-        'location', 'os_window_class', 'os_window_name', 'os_window_title', 'os_window_state',
-        'os_window_position', 'logo', 'logo_position', 'logo_alpha', 'spacing', 'next_to', 'hold_after_ssh'
-    ))
+    return frozenset(
+        (
+            'window_title',
+            'tab_title',
+            'type',
+            'keep_focus',
+            'cwd',
+            'var',
+            'hold',
+            'location',
+            'os_window_class',
+            'os_window_name',
+            'os_window_title',
+            'os_window_state',
+            'os_window_position',
+            'logo',
+            'logo_position',
+            'logo_alpha',
+            'spacing',
+            'next_to',
+            'hold_after_ssh',
+        )
+    )
 
 
 def parse_opts_for_clone(args: list[str], allow_env: bool = False) -> tuple[LaunchCLIOptions, list[str]]:
@@ -920,6 +1123,7 @@ def parse_null_env(text: str) -> dict[str, str]:
 
 def parse_message(msg: str, simple: Container[str]) -> Iterator[tuple[str, str]]:
     from base64 import standard_b64decode
+
     for x in msg.split(','):
         try:
             k, v = x.split('=', 1)
@@ -930,35 +1134,102 @@ def parse_message(msg: str, simple: Container[str]) -> Iterator[tuple[str, str]]
         yield k, v
 
 
+AbortSignal = Literal['closed', 'replaced', 'disconnected', 'interrupt', '']
+
+
+class EditRequest(NamedTuple):
+    args: list[str]
+    cwd: str
+    file_inode: tuple[int, int]
+    file_size: int
+    file_data: bytes
+    version: int
+    abort_signaled: AbortSignal
+
+
+def parse_edit_message(msg: str) -> EditRequest:
+    # Only keys that are part of the edit protocol are recognized, all others
+    # are ignored. In particular, values from the message must never be used to
+    # set attributes on the EditCmd object directly, as that would allow any
+    # program that can write to the terminal to overwrite internal state, such
+    # as the temporary directory that is deleted once editing is finished.
+    args: list[str] = []
+    cwd = ''
+    file_inode = -1, -1
+    file_size = -1
+    file_data = b''
+    version = 0
+    abort_signaled: AbortSignal = ''
+    simple = 'file_inode', 'file_data', 'abort_signaled', 'version'
+    for k, v in parse_message(msg, simple):
+        if k == 'file_inode':
+            parts = v.split(':')
+            if len(parts) > 2:
+                with suppress(ValueError):
+                    dev, inode, sz = int(parts[0]), int(parts[1]), int(parts[2])
+                    file_inode, file_size = (dev, inode), sz
+        elif k == 'a':
+            args.append(v)
+        elif k == 'file_data':
+            import base64
+
+            file_data = base64.standard_b64decode(v)
+        elif k == 'version':
+            version = int(v)
+        elif k == 'cwd':
+            cwd = v
+        elif k == 'abort_signaled':
+            # interrupt is the only abort signal clients can send, the other
+            # values of abort_signaled are used for internal state only.
+            abort_signaled = 'interrupt' if v else ''
+    return EditRequest(args, cwd, file_inode, file_size, file_data, version, abort_signaled)
+
+
 class EditCmd:
-    abort_signaled: Literal['closed', 'replaced', 'disconnected', ''] = ''
+    # Using __slots__ means an attribute that is not listed here cannot be
+    # created on this object, not even accidentally, which keeps internal state
+    # such as tdir safe from data received over the edit protocol.
+    __slots__ = (
+        'abort_signaled',
+        'args',
+        'child_is_remote',
+        'cwd',
+        'editor_exit_code',
+        'editor_window_id',
+        'file_data',
+        'file_inode',
+        'file_localpath',
+        'file_name',
+        'file_size',
+        'file_spec',
+        'is_local_file',
+        'last_mod_time',
+        'line_number',
+        'opts',
+        'source_window_id',
+        'tdir',
+        'version',
+    )
+    abort_signaled: AbortSignal
+    opts: LaunchCLIOptions
 
     def __init__(self, msg: str, child_is_remote: bool) -> None:
+        # set up the internal state that __del__ needs first, so that it works
+        # even if parsing the message below fails
         self.child_is_remote = child_is_remote
         self.tdir = ''
-        self.args: list[str] = []
-        self.cwd = self.file_name = self.file_localpath = ''
-        self.file_data = b''
-        self.file_inode = -1, -1
-        self.file_size = -1
-        self.version = 0
+        self.abort_signaled = ''
+        self.file_name = self.file_localpath = ''
         self.source_window_id = self.editor_window_id = -1
         self.editor_exit_code: int | None = None
-        simple = 'file_inode', 'file_data', 'abort_signaled', 'version'
-        for k, v in parse_message(msg, simple):
-            if k == 'file_inode':
-                q = map(int, v.split(':'))
-                self.file_inode = next(q), next(q)
-                self.file_size = next(q)
-            elif k == 'a':
-                self.args.append(v)
-            elif k == 'file_data':
-                import base64
-                self.file_data = base64.standard_b64decode(v)
-            elif k == 'version':
-                self.version = int(v)
-            else:
-                setattr(self, k, v)
+        req = parse_edit_message(msg)
+        self.args = req.args
+        self.cwd = req.cwd
+        self.file_inode = req.file_inode
+        self.file_size = req.file_size
+        self.file_data = req.file_data
+        self.version = req.version
+        self.abort_signaled = req.abort_signaled
         if self.abort_signaled:
             return
         if self.version > 0:
@@ -967,6 +1238,7 @@ class EditCmd:
         self.file_spec = extra_args.pop()
         self.line_number = 0
         import re
+
         pat = re.compile(r'\+(-?\d+)')
         for x in extra_args:
             m = pat.match(x)
@@ -980,6 +1252,7 @@ class EditCmd:
             self.is_local_file = (st.st_dev, st.st_ino) == self.file_inode and os.access(self.file_localpath, os.W_OK | os.R_OK)
         if not self.is_local_file:
             import tempfile
+
             self.tdir = tempfile.mkdtemp()
             self.file_localpath = os.path.join(self.tdir, self.file_name)
             with open(self.file_localpath, 'wb') as f:
@@ -990,6 +1263,8 @@ class EditCmd:
             self.opts.cwd = os.path.dirname(self.file_localpath)
 
     def __del__(self) -> None:
+        # tdir is only ever set to a directory created by us in __init__, never
+        # to a value coming from the edit protocol message.
         if self.tdir:
             if not self.abort_signaled == 'disconnected':
                 with suppress(OSError):
@@ -1056,6 +1331,7 @@ class EditCmd:
         window.write_to_child(f'KITTY_DATA_START\n{data_type}\n')
         if data:
             import base64
+
             mv = memoryview(base64.standard_b64encode(data))
             while mv:
                 window.write_to_child(bytes(mv[:512]))
@@ -1066,33 +1342,71 @@ class EditCmd:
 
 @run_once
 def excluded_env_vars() -> frozenset[str]:
-    return frozenset({
-        'HOME', 'LOGNAME', 'USER', 'PWD',
-        # some people export these. We want the shell rc files to recreate them
-        'PS0', 'PS1', 'PS2', 'PS3', 'PS4', 'RPS1', 'PROMPT_COMMAND', 'SHLVL',
-        # conda state env vars
-        'CONDA_SHLVL', 'CONDA_PREFIX', 'CONDA_PROMPT_MODIFIER', 'CONDA_EXE', 'CONDA_PYTHON_EXE', '_CE_CONDA', '_CE_M',
-        # skip SSH environment variables
-        'SSH_CLIENT', 'SSH_CONNECTION', 'SSH_ORIGINAL_COMMAND', 'SSH_TTY', 'SSH2_TTY',
-        'SSH_TUNNEL', 'SSH_USER_AUTH', 'SSH_AUTH_SOCK',
-        # Dont clone KITTY_WINDOW_ID
-        'KITTY_WINDOW_ID',
-        # Bash variables from "bind -x" and "complete -C" (needed not to confuse bash-preexec)
-        'READLINE_ARGUMENT', 'READLINE_LINE', 'READLINE_MARK', 'READLINE_POINT',
-        'COMP_LINE', 'COMP_POINT', 'COMP_TYPE',
-        # GPG gpg-agent
-        'GPG_TTY',
-        # Session variables of XDG
-        'XDG_SESSION_CLASS', 'XDG_SESSION_ID', 'XDG_SESSION_TYPE',
-        # Session variables of GNU Screen
-        'STY', 'WINDOW',
-        # Session variables of interactive shell plugins
-        'ATUIN_SESSION', 'ATUIN_HISTORY_ID',
-        'BLE_SESSION_ID', '_ble_util_fdlist_cloexec', '_ble_util_fdvars_export',
-        '_GITSTATUS_CLIENT_PID', '_GITSTATUS_REQ_FD', '_GITSTATUS_RESP_FD', 'GITSTATUS_DAEMON_PID',
-        'MCFLY_SESSION_ID',
-        'STARSHIP_SESSION_KEY',
-    })
+    return frozenset(
+        {
+            'HOME',
+            'LOGNAME',
+            'USER',
+            'PWD',
+            # some people export these. We want the shell rc files to recreate them
+            'PS0',
+            'PS1',
+            'PS2',
+            'PS3',
+            'PS4',
+            'RPS1',
+            'PROMPT_COMMAND',
+            'SHLVL',
+            # conda state env vars
+            'CONDA_SHLVL',
+            'CONDA_PREFIX',
+            'CONDA_PROMPT_MODIFIER',
+            'CONDA_EXE',
+            'CONDA_PYTHON_EXE',
+            '_CE_CONDA',
+            '_CE_M',
+            # skip SSH environment variables
+            'SSH_CLIENT',
+            'SSH_CONNECTION',
+            'SSH_ORIGINAL_COMMAND',
+            'SSH_TTY',
+            'SSH2_TTY',
+            'SSH_TUNNEL',
+            'SSH_USER_AUTH',
+            'SSH_AUTH_SOCK',
+            # Dont clone KITTY_WINDOW_ID
+            'KITTY_WINDOW_ID',
+            # Bash variables from "bind -x" and "complete -C" (needed not to confuse bash-preexec)
+            'READLINE_ARGUMENT',
+            'READLINE_LINE',
+            'READLINE_MARK',
+            'READLINE_POINT',
+            'COMP_LINE',
+            'COMP_POINT',
+            'COMP_TYPE',
+            # GPG gpg-agent
+            'GPG_TTY',
+            # Session variables of XDG
+            'XDG_SESSION_CLASS',
+            'XDG_SESSION_ID',
+            'XDG_SESSION_TYPE',
+            # Session variables of GNU Screen
+            'STY',
+            'WINDOW',
+            # Session variables of interactive shell plugins
+            'ATUIN_SESSION',
+            'ATUIN_HISTORY_ID',
+            'BLE_SESSION_ID',
+            '_ble_util_fdlist_cloexec',
+            '_ble_util_fdvars_export',
+            '_GITSTATUS_CLIENT_PID',
+            '_GITSTATUS_REQ_FD',
+            '_GITSTATUS_RESP_FD',
+            'GITSTATUS_DAEMON_PID',
+            'MCFLY_SESSION_ID',
+            'STARSHIP_SESSION_KEY',
+        }
+    )
 
 
 def is_excluded_env_var(x: str) -> bool:
@@ -1101,7 +1415,6 @@ def is_excluded_env_var(x: str) -> bool:
 
 
 class CloneCmd:
-
     def __init__(self, msg: str) -> None:
         self.args: list[str] = []
         self.env: dict[str, str] | None = None
@@ -1127,6 +1440,7 @@ class CloneCmd:
             elif k == 'env':
                 if self.envfmt == 'bash':
                     from .bash import parse_bash_env
+
                     env = parse_bash_env(v, self.bash_version)
                 else:
                     env = parse_null_env(v)
@@ -1149,7 +1463,9 @@ def remote_edit(msg: str, window: Window) -> None:
         return
     cmdline = get_editor(path_to_edit=c.file_localpath, line_number=c.line_number)
     c.opts.source_window = c.opts.next_to = f'id:{window.id}'
-    w = launch(get_boss(), c.opts, cmdline)
+    # The editor edits a temporary file kitty creates locally, so it must not
+    # be run via the user's launch wrapper, which might run it in a container
+    w = launch(get_boss(), c.opts, cmdline, use_launch_wrapper=False)
     if w is not None:
         c.source_window_id = window.id
         c.editor_window_id = w.id
@@ -1160,9 +1476,11 @@ def remote_edit(msg: str, window: Window) -> None:
         w.actions_on_close.append(c.on_edit_window_close)
         editor_pid = w.child.pid
         if editor_pid:
+
             def on_editor_pid_death(wait_status: int, err: Exception | None) -> None:
                 c.editor_exit_code = os.waitstatus_to_exitcode(wait_status) if err is None else 1
                 c.check_status()
+
             try:
                 get_boss().monitor_pid(editor_pid, on_editor_pid_death)
             except RuntimeError:
@@ -1176,6 +1494,7 @@ def remote_edit(msg: str, window: Window) -> None:
 
 def clone_and_launch(msg: str, window: Window) -> None:
     from .shell_integration import serialize_env
+
     c = CloneCmd(msg)
     if c.cwd and not c.opts.cwd:
         c.opts.cwd = c.cwd
@@ -1186,21 +1505,25 @@ def clone_and_launch(msg: str, window: Window) -> None:
     env_to_serialize = c.env or {}
     if env_to_serialize.get('PATH') and env_to_serialize.get('VIRTUAL_ENV'):
         # only pass VIRTUAL_ENV if it is currently active
-        if f"{env_to_serialize['VIRTUAL_ENV']}/bin" not in env_to_serialize['PATH'].split(os.pathsep):
+        if f'{env_to_serialize["VIRTUAL_ENV"]}/bin' not in env_to_serialize['PATH'].split(os.pathsep):
             del env_to_serialize['VIRTUAL_ENV']
     env_to_serialize['KITTY_CLONE_SOURCE_STRATEGIES'] = ',' + ','.join(get_options().clone_source_strategies) + ','
     is_clone_launch = serialize_env(c.shell, env_to_serialize)
     ssh_kitten_cmdline = window.ssh_kitten_cmdline()
     if ssh_kitten_cmdline:
         from kittens.ssh.utils import patch_cmdline, set_cwd_in_cmdline, set_env_in_cmdline
+
         cmdline = ssh_kitten_cmdline
         if c.opts.cwd:
             set_cwd_in_cmdline(c.opts.cwd, cmdline)
             c.opts.cwd = None
         if c.env:
-            set_env_in_cmdline({
-                'KITTY_IS_CLONE_LAUNCH': is_clone_launch,
-            }, cmdline)
+            set_env_in_cmdline(
+                {
+                    'KITTY_IS_CLONE_LAUNCH': is_clone_launch,
+                },
+                cmdline,
+            )
             c.env = None
         if c.opts.env:
             for entry in reversed(c.opts.env):

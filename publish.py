@@ -27,6 +27,9 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 docs_dir = os.path.abspath('docs')
 publish_dir = os.path.abspath(os.path.join('..', 'kovidgoyal.github.io', 'kitty'))
 building_nightly = False
+# The git branch the release is being made from, either master or a version-X.Y branch for patch releases
+release_branch = 'master'
+VERSION_BRANCH_PAT = re.compile(r'^version-(\d+)\.(\d+)$')
 with open('kitty/constants.py') as f:
     raw = f.read()
 nv = re.search(r'^version: Version\s+=\s+Version\((\d+), (\d+), (\d+)\)', raw, flags=re.MULTILINE)
@@ -80,8 +83,14 @@ def run_build(args: Any) -> None:
 
     m = runpy.run_path('./setup.py', run_name='__publish__')
     vcs_rev: str = m['get_vcs_rev']()
+    program_data = vcs_rev
+    setup_options = [f'--vcs-rev={vcs_rev}']
+    if building_nightly:
+        commit_time: int = m['get_vcs_commit_time'](vcs_rev)
+        program_data += f':nightly:{commit_time}'
+        setup_options += ['--nightly', f'--vcs-commit-time={commit_time}']
 
-    def run_with_retry(cmd: str, timeout: float | None = 20 * 60, retry_cmd: str = '') -> None:
+    def run_with_retry(cmd: str, timeout: float | None = 30 * 60, retry_cmd: str = '') -> None:
         try:
             call(cmd, echo=True, timeout=timeout)
         except (SystemExit, Exception):
@@ -94,18 +103,22 @@ def run_build(args: Any) -> None:
 
     for x, retry_cmd in {'64': '', 'arm64': 'pkill -9 -f -e qemu-aarch64-static'}.items():
         prefix = f'python ../bypy linux --arch {x} '
-        run_with_retry(prefix + f'program --non-interactive --extra-program-data "{vcs_rev}"', retry_cmd=retry_cmd)
+        run_with_retry(prefix + f'program --non-interactive --extra-program-data "{program_data}"', retry_cmd=retry_cmd)
     run_with_retry(
-        f'python ../bypy macos program --sign-installers --notarize --non-interactive --extra-program-data "{vcs_rev}"',
-        retry_cmd='python ../bypy macos shutdown'
+        f'python ../bypy macos program --sign-installers --notarize --non-interactive --extra-program-data "{program_data}"',
+        retry_cmd='python ../bypy macos shutdown',
+        timeout=60 * 60,  # notarization can be slow
     )
     call('python ../bypy macos shutdown', echo=True)
     call('make debug')
-    call('./setup.py build-static-binaries')
+    call('./setup.py', 'build-static-binaries', *setup_options)
 
 
 def run_tag(args: Any) -> None:
-    call('git push')
+    if release_branch == 'master':
+        call('git push')
+    else:
+        call('git', 'push', '-u', 'origin', release_branch)
     call('git tag -s v{0} -m version-{0}'.format(version))
     call(f'git push origin v{version}')
 
@@ -168,6 +181,9 @@ def run_docs(args: Any) -> None:
 
 
 def run_website(args: Any) -> None:
+    if not is_newest_release():
+        print(f'\x1b[93mNot updating website as a release newer than {version} exists\x1b[m', flush=True)  # ]]
+        return
     if os.path.exists(publish_dir):
         shutil.rmtree(publish_dir)
     shutil.copytree(os.path.join(docs_dir, '_build', 'dirhtml'), publish_dir, symlinks=True)
@@ -185,10 +201,7 @@ def sign_file(path: str) -> None:
     dest = f'{path}.sig'
     with suppress(FileNotFoundError):
         os.remove(dest)
-    subprocess.check_call([
-        os.environ['PENV'] + '/gpg-as-kovid', '--output', f'{path}.sig',
-        '--detach-sig', path
-    ])
+    subprocess.check_call([os.environ['PENV'] + '/gpg-as-kovid', '--output', f'{path}.sig', '--detach-sig', path])
 
 
 def run_sdist(args: Any) -> None:
@@ -243,11 +256,10 @@ class ReadFileWithProgressReporting(io.FileIO):  # {{{
         eta = int((self._total - self.tell()) / bit_rate) + 1
         eta_m, eta_s = divmod(eta, 60)
         if sys.stdout.isatty():
-            write(
-                f'\r\033[K\033[?7h {frac}% {mb_pos:.1f}/{mb_tot:.1f}MB {kb_rate:.1f} KB/sec {eta_m} minutes, {eta_s} seconds left\033[?7l')
+            write(f'\r\033[K\033[?7h {frac}% {mb_pos:.1f}/{mb_tot:.1f}MB {kb_rate:.1f} KB/sec {eta_m} minutes, {eta_s} seconds left\033[?7l')
         if self.tell() >= self._total:
             t = int(time.monotonic() - self.start_time) + 1
-            print(f'\nUpload took {t//60} minutes and {t%60} seconds at {kb_rate:.1f} KB/sec')
+            print(f'\nUpload took {t // 60} minutes and {t % 60} seconds at {kb_rate:.1f} KB/sec')
         sys.stdout.flush()
 
 
@@ -255,7 +267,6 @@ class ReadFileWithProgressReporting(io.FileIO):  # {{{
 
 
 class GitHub:  # {{{
-
     API = 'https://api.github.com'
 
     def __init__(
@@ -265,10 +276,12 @@ class GitHub:  # {{{
         version: str,
         username: str,
         password: str,
-        replace: bool = False
+        replace: bool = False,
+        target_commitish: str = 'master',
+        make_latest: bool = True,
     ):
-        self.files, self.reponame, self.version, self.username, self.password, self.replace = (
-            files, reponame, version, username, password, replace)
+        self.files, self.reponame, self.version, self.username, self.password, self.replace = (files, reponame, version, username, password, replace)
+        self.target_commitish, self.make_latest = target_commitish, make_latest
         self.current_tag_name = self.version if self.version == 'nightly' else f'v{self.version}'
         self.is_nightly = self.current_tag_name == 'nightly'
         self.auth = 'Basic ' + base64.standard_b64encode(f'{self.username}:{self.password}'.encode()).decode()
@@ -281,11 +294,14 @@ class GitHub:  # {{{
         print(*args, flush=True, file=sys.stderr)
 
     def make_request(
-        self, url: str, data: Optional[Dict[str, Any]] = None, method:str = 'GET',
+        self,
+        url: str,
+        data: Optional[Dict[str, Any]] = None,
+        method: str = 'GET',
         upload_data: Optional[ReadFileWithProgressReporting] = None,
         params: Optional[Dict[str, str]] = None,
     ) -> HTTPSConnection:
-        headers={
+        headers = {
             'Authorization': self.auth,
             'Accept': 'application/vnd.github+json',
             'User-Agent': 'kitty',
@@ -309,8 +325,12 @@ class GitHub:  # {{{
         return conn
 
     def make_request_with_retries(
-        self, url: str, data: Optional[Dict[str, str]] = None, method:str = 'GET',
-        num_tries: int = 2, sleep_between_tries: float = 15,
+        self,
+        url: str,
+        data: Optional[Dict[str, str]] = None,
+        method: str = 'GET',
+        num_tries: int = 2,
+        sleep_between_tries: float = 15,
         success_codes: Tuple[int, ...] = (200,),
         failure_msg: str = 'Request failed',
         return_data: bool = False,
@@ -350,9 +370,10 @@ class GitHub:  # {{{
         now = str(datetime.datetime.now(datetime.timezone.utc)).split('.')[0] + ' UTC'
         commit = subprocess.check_output(['git', 'rev-parse', '--verify', '--end-of-options', 'master^{commit}']).decode('utf-8').strip()
         self.patch(
-            url, 'Failed to update nightly release description',
+            url,
+            'Failed to update nightly release description',
             body=f'Nightly release, generated on: {now} from commit: {commit}.'
-            ' For how to install nightly builds, see: https://sw.kovidgoyal.net/kitty/binary/#customizing-the-installation'
+            ' For how to install nightly builds, see: https://sw.kovidgoyal.net/kitty/binary/#customizing-the-installation',
         )
 
     def __call__(self) -> None:
@@ -360,15 +381,20 @@ class GitHub:  # {{{
         release = self.create_release()
         upload_url = release['upload_url'].partition('{')[0]
         all_assest_for_release = self.existing_assets_for_release(release)
-        assets_by_fname = {a['name']:a for a in all_assest_for_release}
+        assets_by_fname = {a['name']: a for a in all_assest_for_release}
 
         def delete_asset(asset: Dict[str, Any], allow_not_found: bool = True) -> None:
             success_codes = [204]
             if allow_not_found:
                 success_codes.append(404)
             self.make_request_with_retries(
-                asset['url'], method='DELETE', num_tries=5, sleep_between_tries=2, success_codes=tuple(success_codes),
-                failure_msg='Failed to delete asset from GitHub')
+                asset['url'],
+                method='DELETE',
+                num_tries=5,
+                sleep_between_tries=2,
+                success_codes=tuple(success_codes),
+                failure_msg='Failed to delete asset from GitHub',
+            )
 
         def upload_with_retries(path: str, desc: str, num_tries: int = 8, sleep_time: float = 60.0) -> None:
             fname = os.path.basename(path)
@@ -380,8 +406,13 @@ class GitHub:  # {{{
             params = {'name': fname, 'label': desc}
 
             self.make_request_with_retries(
-                upload_url, upload_path=path, params=params, num_tries=num_tries, sleep_between_tries=sleep_time,
-                failure_msg=f'Failed to upload file: {fname}', success_codes=(201,),
+                upload_url,
+                upload_path=path,
+                params=params,
+                num_tries=num_tries,
+                sleep_between_tries=sleep_time,
+                failure_msg=f'Failed to upload file: {fname}',
+                success_codes=(201,),
             )
 
         if self.is_nightly:
@@ -413,11 +444,12 @@ class GitHub:  # {{{
             d: List[Dict[str, Any]] = release['assets']
         else:
             d = self.make_request_with_retries(
-                release['assets_url'], params={'per_page': '64'}, failure_msg='Failed to get assets for release', return_data=True)
+                release['assets_url'], params={'per_page': '64'}, failure_msg='Failed to get assets for release', return_data=True
+            )
         return d
 
     def create_release(self) -> Dict[str, Any]:
-        ' Create a release on GitHub or if it already exists, return the existing release '
+        "Create a release on GitHub or if it already exists, return the existing release"
         # Check for existing release
         url = f'{self.url_base}/tags/{self.current_tag_name}'
         with contextlib.closing(self.make_request(url)) as conn:
@@ -428,19 +460,22 @@ class GitHub:  # {{{
             self.fail(r, 'No existing nightly release found on GitHub')
         data = {
             'tag_name': self.current_tag_name,
-            'target_commitish': 'master',
+            'target_commitish': self.target_commitish,
             'name': f'version {self.version}',
             'body': f'Release version {self.version}.'
             ' For changelog, see https://sw.kovidgoyal.net/kitty/changelog/#detailed-list-of-changes'
             ' GPG key used for signing tarballs is: https://calibre-ebook.com/signatures/kovid.gpg',
             'draft': False,
-            'prerelease': False
+            'prerelease': False,
+            'make_latest': 'true' if self.make_latest else 'false',
         }
         with contextlib.closing(self.make_request(self.url_base, method='POST', data=data)) as conn:
             r = conn.getresponse()
             if r.status != 201:
                 self.fail(r, f'Failed to create release for version: {self.version}')
             return {str(k): v for k, v in json.loads(r.read()).items()}
+
+
 # }}}
 
 
@@ -489,12 +524,12 @@ def files_for_upload() -> Dict[str, str]:
 def run_upload(args: Any) -> None:
     gd = get_github_data()
     files = files_for_upload()
-    gh = GitHub(files, appname, version, gd['username'], gd['password'])
+    gh = GitHub(files, appname, version, gd['username'], gd['password'], target_commitish=release_branch, make_latest=is_newest_release())
     gh()
 
 
 def run_upload_nightly(args: Any) -> None:
-    subprocess.check_call(['git', 'tag', '-f', 'nightly'])
+    subprocess.check_call(['git', 'tag', '--no-sign', '-f', 'nightly'])
     subprocess.check_call(['git', 'push', 'origin', 'nightly', '-f'])
     gd = get_github_data()
     files = files_for_upload()
@@ -509,6 +544,55 @@ def current_branch() -> str:
 def require_git_master(branch: str = 'master') -> None:
     if current_branch() != branch:
         raise SystemExit(f'You must be in the {branch} git branch')
+
+
+def parse_version(v: str) -> Optional[Tuple[int, int, int]]:
+    m = re.match(r'^v?(\d+)\.(\d+)\.(\d+)$', v)
+    if m is None:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def released_versions() -> List[Tuple[int, int, int]]:
+    tags = subprocess.check_output(['git', 'tag', '--list', 'v*']).decode('utf-8').split()
+    return [v for v in map(parse_version, tags) if v is not None]
+
+
+def is_newest_release() -> bool:
+    current = parse_version(version)
+    if current is None:
+        raise SystemExit(f'Invalid version: {version}')
+    return not any(v > current for v in released_versions())
+
+
+def git_ref_exists(ref: str) -> bool:
+    return subprocess.run(['git', 'rev-parse', '-q', '--verify', '--end-of-options', ref], stdout=subprocess.DEVNULL).returncode == 0
+
+
+def check_release_branch(will_tag: bool) -> str:
+    "Return the branch to release from, ensuring it is either master or a valid version-X.Y branch"
+    branch = current_branch()
+    if branch == 'master':
+        return branch
+    m = VERSION_BRANCH_PAT.match(branch)
+    if m is None:
+        raise SystemExit('You must be in the master git branch or a version-X.Y git branch')
+    current = parse_version(version)
+    if current is None:
+        raise SystemExit(f'Invalid version: {version}')
+    major, minor = int(m.group(1)), int(m.group(2))
+    if current[:2] != (major, minor):
+        raise SystemExit(f'The version {version} in kitty/constants.py does not match the branch {branch}')
+    if current[2] == 0:
+        raise SystemExit(f'Cannot release {version} from the branch {branch}, X.Y.0 releases must be made from master')
+    base_tag = f'v{major}.{minor}.0'
+    if not git_ref_exists(f'refs/tags/{base_tag}'):
+        raise SystemExit(f'The tag {base_tag} does not exist')
+    if subprocess.run(['git', 'merge-base', '--is-ancestor', base_tag, 'HEAD']).returncode != 0:
+        raise SystemExit(f'The branch {branch} is not based on the release {base_tag}')
+    if will_tag and git_ref_exists(f'refs/tags/v{version}'):
+        raise SystemExit(f'The tag v{version} already exists')
+    return branch
 
 
 def safe_read(path: str) -> str:
@@ -562,24 +646,13 @@ def exec_actions(actions: Iterable[str], args: Any) -> None:
 
 
 def main() -> None:
-    global building_nightly
+    global building_nightly, release_branch
     parser = argparse.ArgumentParser(description='Publish kitty')
     parser.add_argument(
-        '--only',
-        default=False,
-        action='store_true',
-        help='Only run the specified action, by default the specified action and all sub-sequent actions are run')
-    parser.add_argument(
-        '--nightly',
-        default=False,
-        action='store_true',
-        help='Upload a nightly release, ignores all other arguments')
-    parser.add_argument(
-        'action',
-        default='all',
-        nargs='?',
-        choices=list(ALL_ACTIONS) + ['all', 'upload_nightly'],
-        help='The action to start with')
+        '--only', default=False, action='store_true', help='Only run the specified action, by default the specified action and all sub-sequent actions are run'
+    )
+    parser.add_argument('--nightly', default=False, action='store_true', help='Upload a nightly release, ignores all other arguments')
+    parser.add_argument('action', default='all', nargs='?', choices=list(ALL_ACTIONS) + ['all', 'upload_nightly'], help='The action to start with')
     args = parser.parse_args()
     require_penv()
     if args.nightly:
@@ -588,7 +661,6 @@ def main() -> None:
             exec_actions(NIGHTLY_ACTIONS, args)
             subprocess.run(['make', 'clean', 'debug'])
         return
-    require_git_master()
     if args.action == 'all':
         actions = list(ALL_ACTIONS)
     elif args.action == 'upload_nightly':
@@ -598,9 +670,14 @@ def main() -> None:
         actions = ALL_ACTIONS[idx:]
     if args.only:
         del actions[1:]
+    if actions == ['upload_nightly']:
+        require_git_master()
     else:
+        release_branch = check_release_branch('tag' in actions)
+    if not args.only:
+        from_branch = '' if release_branch == 'master' else f' from branch \033[91m{release_branch}\033[m'
         try:
-            ans = input(f'Publish version \033[91m{version}\033[m (y/n): ')
+            ans = input(f'Publish version \033[91m{version}\033[m{from_branch} (y/n): ')
         except KeyboardInterrupt:
             ans = 'n'
         if ans.lower() != 'y':
@@ -608,6 +685,11 @@ def main() -> None:
     if actions == ['website']:
         actions.insert(0, 'html')
     exec_actions(actions, args)
+    if release_branch != 'master':
+        print(
+            f'\n\x1b[93mReminder: Add the changelog entry for {version} to the master branch'
+            f' and ensure the version on master is greater than {version} before its next release\x1b[m'  # ]]
+        )
 
 
 if __name__ == '__main__':

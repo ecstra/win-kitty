@@ -12,19 +12,35 @@
 #define GRAPHICS_USAGE_HINT_TRANSIENT 1u
 
 typedef struct {
-    unsigned char action, transmission_type, compressed, delete_action;
+    unsigned char action, transmission_type, compressed, delete_action, report_supported;
     uint32_t format, more, id, image_number, data_sz, data_offset, placement_id, quiet, parent_id, parent_placement_id, usage_hints;
     uint32_t width, height, x_offset, y_offset;
-    union { uint32_t cursor_movement, compose_mode; };
-    union { uint32_t cell_x_offset; };
-    union { uint32_t cell_y_offset, bgcolor; };
-    union { uint32_t data_width, animation_state; };
-    union { uint32_t data_height, loop_count; };
-    union { uint32_t num_lines, frame_number; };
-    union { uint32_t num_cells, other_frame_number; };
-    union { int32_t z_index, gap; };
+    union {
+        uint32_t cursor_movement, compose_mode;
+    };
+    union {
+        uint32_t cell_x_offset, blend_mode;
+    };
+    union {
+        uint32_t cell_y_offset, bgcolor;
+    };
+    union {
+        uint32_t data_width, animation_state;
+    };
+    union {
+        uint32_t data_height, loop_count;
+    };
+    union {
+        uint32_t num_lines, frame_number;
+    };
+    union {
+        uint32_t num_cells, other_frame_number;
+    };
+    union {
+        int32_t z_index, gap;
+    };
     size_t payload_sz;
-    bool unicode_placement;
+    uint32_t unicode_placement;
     int32_t offset_from_parent_x, offset_from_parent_y;
 } GraphicsCommand;
 
@@ -36,13 +52,18 @@ typedef struct {
     ImageRect src_rect, dest_rect;
     uint32_t texture_id, group_count;
     int z_index;
+    // Zero for normal images, otherwise the number of bytes per pixel of an indexed color image
+    uint8_t indexed_px_sz;
+    // True for indexed color images drawn at their natural size, which can use
+    // a cheaper shader. Always false for normal images.
+    bool is_unscaled;
     id_type image_id, ref_id;
 } ImageRenderData;
 
 typedef struct {
     uint32_t texture_id;
     unsigned int height, width;
-    uint8_t* bitmap;
+    uint8_t *bitmap;
     uint32_t refcnt, id;
     size_t mmap_size;
 } BackgroundImage;
@@ -66,7 +87,9 @@ typedef struct {
 
     struct {
         id_type img, ref;
-        struct { int32_t x, y; } offset;
+        struct {
+            int32_t x, y;
+        } offset;
     } parent;
 
     id_type internal_id;
@@ -77,7 +100,7 @@ typedef struct {
     bool is_opaque, is_4byte_aligned, alpha_blend, transient;
 } Frame;
 
-typedef enum { ANIMATION_STOPPED = 0, ANIMATION_LOADING = 1, ANIMATION_RUNNING = 2} AnimationState;
+typedef enum { ANIMATION_STOPPED = 0, ANIMATION_LOADING = 1, ANIMATION_RUNNING = 2 } AnimationState;
 
 typedef struct TextureRef {
     uint32_t id, refcnt;
@@ -85,18 +108,21 @@ typedef struct TextureRef {
 
 #define NAME ref_map
 #define KEY_TY id_type
-#define VAL_TY ImageRef*
+#define VAL_TY ImageRef *
 #include "kitty-verstable.h"
 
 typedef struct {
     uint32_t client_id, client_number, width, height;
     TextureRef *texture;
     id_type internal_id;
+    // Zero for normal images, otherwise the number of bytes per pixel of an
+    // indexed color image. Such images cannot have more than one frame.
+    uint8_t indexed_px_sz;
 
     bool root_frame_data_loaded;
     id_type ref_id_counter;
     Frame *extra_frames, root_frame;
-    uint32_t current_frame_index, frame_id_counter;
+    uint32_t current_frame_index, frame_id_counter, displayed_frame_id;
     uint64_t animation_duration;
     size_t extra_framecnt;
     monotonic_t atime;
@@ -117,13 +143,11 @@ typedef struct {
     uint8_t *buf;
     size_t buf_capacity, buf_used;
 
-    uint8_t *mapped_file;
-    size_t mapped_file_sz;
-
     size_t data_sz;
     uint8_t *data;
     bool is_4byte_aligned;
     bool is_opaque, loading_completed_successfully;
+    uint8_t indexed_px_sz;
     uint32_t width, height;
     GraphicsCommand start_command;
     ImageAndFrame loading_for;
@@ -131,13 +155,13 @@ typedef struct {
 
 #define NAME image_map
 #define KEY_TY id_type
-#define VAL_TY Image*
+#define VAL_TY Image *
 #include "kitty-verstable.h"
 
 typedef struct {
     PyObject_HEAD
 
-    size_t storage_limit;
+        size_t storage_limit;
     LoadData currently_loading;
     id_type image_id_counter;
     struct {
@@ -147,6 +171,8 @@ typedef struct {
     bool layers_dirty;
     // The number of images below MIN_ZINDEX / 2, then the number of refs between MIN_ZINDEX / 2 and -1 inclusive, then the number of refs above 0 inclusive.
     size_t num_of_below_refs, num_of_negative_refs, num_of_positive_refs;
+    // The number of visible refs to indexed color images
+    size_t num_of_indexed_refs;
     unsigned int last_scrolled_by;
     float last_scroll_offset_lines;
     size_t used_storage;
@@ -156,13 +182,17 @@ typedef struct {
     image_map images_by_internal_id;
 } GraphicsManager;
 #else
-typedef struct {int x;} *GraphicsManager;
+typedef struct {
+    int x;
+} *GraphicsManager;
 #endif
 
 typedef struct {
     int32_t amt, limit;
     index_type margin_top, margin_bottom;
     bool has_margins;
+    // The history scrolls with the screen: lines move into it (amt < 0) or are popped back from it (amt > 0)
+    bool scroll_history;
 } ScrollData;
 
 
@@ -198,27 +228,50 @@ tex_pos_y(const int px_from_top_margin, const unsigned texture_height) {
 
 
 typedef struct GraphicsRenderData {
-    size_t count, capacity, num_of_below_refs, num_of_negative_refs, num_of_positive_refs;
+    size_t count, capacity, num_of_below_refs, num_of_negative_refs, num_of_positive_refs, num_of_indexed_refs;
     ImageRenderData *images;
 } GraphicsRenderData;
 
-GraphicsManager* grman_alloc(bool for_paused_rendering);
-void grman_clear(GraphicsManager*, bool, CellPixelSize fg);
-const char* grman_handle_command(GraphicsManager *self, const GraphicsCommand *g, const uint8_t *payload, Cursor *c, bool *is_dirty, CellPixelSize fg);
-void grman_put_cell_image(GraphicsManager *self, uint32_t row, uint32_t col, uint32_t image_id, uint32_t placement_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, CellPixelSize cell);
-bool grman_update_layers(GraphicsManager *self, unsigned int scrolled_by, float scroll_offset_lines, float screen_left, float screen_top, float dx, float dy, unsigned int num_cols, unsigned int num_rows, CellPixelSize);
-void grman_scroll_images(GraphicsManager *self, const ScrollData*, CellPixelSize fg);
-void grman_resize(GraphicsManager*, index_type, index_type, index_type, index_type, index_type, index_type);
+GraphicsManager *grman_alloc(bool for_paused_rendering);
+void grman_clear(GraphicsManager *, bool, CellPixelSize fg);
+const char *grman_handle_command(GraphicsManager *self, const GraphicsCommand *g, const uint8_t *payload, Cursor *c, bool *is_dirty, CellPixelSize fg);
+void grman_put_cell_image(
+    GraphicsManager *self,
+    uint32_t row,
+    uint32_t col,
+    uint32_t image_id,
+    uint32_t placement_id,
+    uint32_t x,
+    uint32_t y,
+    uint32_t w,
+    uint32_t h,
+    CellPixelSize cell);
+bool grman_update_layers(
+    GraphicsManager *self,
+    unsigned int scrolled_by,
+    float scroll_offset_lines,
+    float screen_left,
+    float screen_top,
+    float dx,
+    float dy,
+    unsigned int num_cols,
+    unsigned int num_rows,
+    CellPixelSize);
+void grman_scroll_images(GraphicsManager *self, const ScrollData *, CellPixelSize fg);
+bool grman_has_any_images(GraphicsManager *self);
+void grman_resize(GraphicsManager *, index_type, index_type, index_type, index_type, index_type, index_type);
 void grman_rescale(GraphicsManager *self, CellPixelSize fg);
 void grman_remove_cell_images(GraphicsManager *self, int32_t top, int32_t bottom);
 void grman_remove_all_cell_images(GraphicsManager *self);
 void gpu_data_for_image(ImageRenderData *ans, float left, float top, float right, float bottom);
-bool png_from_file_pointer(FILE* fp, const char *path, uint8_t** data, unsigned int* width, unsigned int* height, size_t* sz);
-bool png_path_to_bitmap(const char *path, uint8_t** data, unsigned int* width, unsigned int* height, size_t* sz);
-bool png_from_data(void *png_data, size_t png_data_sz, const char *path_for_error_messages, uint8_t** data, unsigned int* width, unsigned int* height, size_t* sz);
-bool image_path_to_bitmap(const char *path, uint8_t** data, unsigned int* width, unsigned int* height, size_t* sz);
+bool png_from_file_pointer(FILE *fp, const char *path, uint8_t **data, unsigned int *width, unsigned int *height, size_t *sz);
+bool png_path_to_bitmap(const char *path, uint8_t **data, unsigned int *width, unsigned int *height, size_t *sz);
+bool
+png_from_data(void *png_data, size_t png_data_sz, const char *path_for_error_messages, uint8_t **data, unsigned int *width, unsigned int *height, size_t *sz);
+bool image_path_to_bitmap(const char *path, uint8_t **data, unsigned int *width, unsigned int *height, size_t *sz);
 bool scan_active_animations(GraphicsManager *self, const monotonic_t now, monotonic_t *minimum_gap, bool os_window_context_set);
 void grman_pause_rendering(GraphicsManager *self, GraphicsManager *dest);
+PyObject *grman_render_data_as_python(GraphicsManager *self);
 void grman_mark_layers_dirty(GraphicsManager *self);
 void grman_set_window_id(GraphicsManager *self, id_type id);
 bool grman_has_images(GraphicsManager *self);

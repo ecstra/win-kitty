@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kovidgoyal/go-shm"
+	shm "github.com/kovidgoyal/go-shm/v2"
 	"github.com/kovidgoyal/kitty/tools/tui"
 	"github.com/kovidgoyal/kitty/tools/tui/graphics"
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
@@ -272,49 +272,54 @@ func next_random() (ans uint32) {
 
 func write_unicode_placeholder(imgd *image_data) {
 	prefix := ""
+	buf := strings.Builder{}
+	buf.Grow(imgd.height_cells * (imgd.width_cells*16 + 16))
 	r, g, b := (imgd.image_id>>16)&255, (imgd.image_id>>8)&255, imgd.image_id&255
 	// The lower 24 bits of the image id are carried in this foreground colour.
 	// conhost forwards only the legacy semicolon-form truecolor SGR, not the colon
 	// (ITU) form kitty normally uses, so fall back to semicolons on Windows.
-	foreground := fmt.Sprintf("\033[38:2:%d:%d:%dm", r, g, b)
 	if windows_gfx_bypass {
-		foreground = fmt.Sprintf("\033[38;2;%d;%d;%dm", r, g, b)
+		fmt.Fprintf(&buf, "\033[38;2;%d;%d;%dm", r, g, b)
+	} else {
+		fmt.Fprintf(&buf, "\033[38:2:%d:%d:%dm", r, g, b)
 	}
-	os.Stdout.WriteString(foreground)
 	restore := "\033[39m"
 	if imgd.move_to.y > 0 {
-		os.Stdout.WriteString(loop.SAVE_CURSOR)
+		buf.WriteString(loop.SAVE_CURSOR)
 		restore += loop.RESTORE_CURSOR
 	} else if imgd.move_x_by > 0 {
 		prefix = strings.Repeat(" ", imgd.move_x_by)
 	}
-	defer func() { os.Stdout.WriteString(restore) }()
 	if imgd.move_to.y > 0 {
-		fmt.Printf(loop.MoveCursorToTemplate, imgd.move_to.y, 0)
+		fmt.Fprintf(&buf, loop.MoveCursorToTemplate, imgd.move_to.y, 0)
 	}
-	id_char := string(images.NumberToDiacritic[(imgd.image_id>>24)&255])
+	id_char := images.NumberToDiacritic[(imgd.image_id>>24)&255]
 	for r := 0; r < imgd.height_cells; r++ {
 		if imgd.move_to.x > 0 {
-			fmt.Printf("\x1b[%dC", imgd.move_to.x-1)
+			fmt.Fprintf(&buf, "\x1b[%dC", imgd.move_to.x-1)
 		} else {
-			os.Stdout.WriteString(prefix)
+			buf.WriteString(prefix)
 		}
 		for c := 0; c < imgd.width_cells; c++ {
+			buf.WriteRune(kitty.ImagePlaceholderChar)
 			if windows_gfx_bypass && c > 0 {
 				// Only the first cell of each row carries the row/column/id diacritics;
 				// kitty infers the rest from the run. Bare cells are a single column, so
 				// conhost (which counts each combining diacritic as an extra column) no
 				// longer over-counts the row width and wraps it, which was desyncing its
 				// cursor from kitty's and making the prompt jump.
-				os.Stdout.WriteString(string(kitty.ImagePlaceholderChar))
-			} else {
-				os.Stdout.WriteString(string(kitty.ImagePlaceholderChar) + string(images.NumberToDiacritic[r]) + string(images.NumberToDiacritic[c]) + id_char)
+				continue
 			}
+			buf.WriteRune(images.NumberToDiacritic[r])
+			buf.WriteRune(images.NumberToDiacritic[c])
+			buf.WriteRune(id_char)
 		}
 		if r < imgd.height_cells-1 {
-			os.Stdout.WriteString("\n\r")
+			buf.WriteString("\n\r")
 		}
 	}
+	buf.WriteString(restore)
+	os.Stdout.WriteString(buf.String())
 }
 
 var seen_image_ids *utils.Set[uint32]

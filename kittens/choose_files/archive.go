@@ -17,6 +17,7 @@ import (
 	"github.com/nwaples/rardecode/v2"
 	"github.com/ulikunitz/xz"
 
+	"github.com/kovidgoyal/go-parallel"
 	"github.com/kovidgoyal/kitty/tools/utils"
 )
 
@@ -45,9 +46,13 @@ type archive_preview struct {
 	mp               *MessagePreview
 }
 
+// The maximum number of entries shown in an archive preview, including the
+// blank separator line
+const max_archive_entries = 500
+
 func displayFilename(s string) string {
 	if isPrintableUTF8(s) {
-		return s
+		return sanitize_name(s)
 	}
 	return fmt.Sprintf("%X", utils.UnsafeStringToBytes(s))
 }
@@ -61,13 +66,26 @@ func isPrintableUTF8(s string) bool {
 	return true
 }
 
-func (p *archive_preview) render() {
+// render runs in a worker goroutine. It must send its result only on output
+// and never access p.ch or p.mp, as those are owned by the main thread.
+func (p *archive_preview) render(output chan<- *MessagePreview, base *MessagePreview) {
+	var result *MessagePreview
+	// Send the result from here so that exactly one result is sent even if
+	// something, including one of the deferred Close() calls below, panics.
+	defer func() {
+		if r := recover(); r != nil {
+			result = NewFileMetadataPreviewWithError(p.path, p.metadata, fmt.Errorf("Failed to read the archive with error: %w", parallel.Format_stacktrace_on_panic(r, 1)))
+		}
+		output <- result
+		close(output)
+		p.WakeupMainThread()
+	}()
 	name := strings.ToLower(filepath.Base(p.path))
 	ext := filepath.Ext(name)
 	names := []string{""}
 	populate_tar := func(r io.Reader) {
 		tr := tar.NewReader(r)
-		for len(names) < 500 {
+		for len(names) < max_archive_entries {
 			hdr, err := tr.Next()
 			if err != nil {
 				break
@@ -80,20 +98,15 @@ func (p *archive_preview) render() {
 		r, err := zip.OpenReader(p.path)
 		if err == nil || errors.Is(err, zip.ErrInsecurePath) {
 			defer r.Close()
-			for _, f := range r.File {
-				if f.NonUTF8 {
-					names = append(names, displayFilename(f.Name))
-				} else {
-					names = append(names, f.Name)
-				}
-
+			for _, f := range r.File[:min(len(r.File), max_archive_entries-len(names))] {
+				names = append(names, displayFilename(f.Name))
 			}
 		}
 	case ".rar":
 		r, err := rardecode.OpenReader(p.path, rardecode.SkipCheck)
 		if err == nil {
 			defer r.Close()
-			for len(names) < 500 {
+			for len(names) < max_archive_entries {
 				hdr, err := r.Next()
 				if err != nil {
 					break
@@ -130,10 +143,9 @@ func (p *archive_preview) render() {
 			}
 		}
 	}
-	mp := *p.mp
+	mp := *base
 	mp.trailers = append(mp.trailers, names...)
-	p.ch <- &mp
-	p.WakeupMainThread()
+	result = &mp
 }
 
 func (p *archive_preview) IsReady() bool                         { return true }
@@ -146,7 +158,6 @@ func (p *archive_preview) Render(h *Handler, x, y, width, height int) {
 		select {
 		case mp := <-p.ch:
 			p.mp = mp
-			close(p.ch)
 			p.ch = nil
 		default:
 		}
@@ -161,6 +172,6 @@ func NewArchivePeview(
 	ans := &archive_preview{
 		path: abspath, metadata: metadata, WakeupMainThread: WakeupMainThread, ch: make(chan *MessagePreview, 1), mp: mp,
 	}
-	go ans.render()
+	go ans.render(ans.ch, mp)
 	return ans
 }

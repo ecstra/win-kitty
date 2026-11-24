@@ -8,14 +8,13 @@ import tempfile
 
 from kitty.constants import is_windows, kitty_exe
 from kitty.fast_data_types import Color, test_cursor_blink_easing_function
-from kitty.options.utils import DELETE_ENV_VAR, EasingFunction, to_color
+from kitty.options.utils import DELETE_ENV_VAR, EasingFunction, build_action_aliases, to_color
 from kitty.utils import log_error, shlex_split
 
-from . import BaseTest, skip_on_windows
+from .base import BaseTest, skip_on_windows
 
 
 class TestConfParsing(BaseTest):
-
     def setUp(self):
         super().setUp()
         self.error_messages = []
@@ -37,10 +36,134 @@ class TestConfParsing(BaseTest):
     def test_cli_parsing(self):
         cli_parsing(self)
 
+    def test_font_size_clamping(self):
+        font_size_clamping(self)
+
+    def test_patch_global_special_colors(self):
+        from kitty.fast_data_types import patch_global_colors
+
+        self.set_options()
+        try:
+            for name, value in (
+                ('wayland_titlebar_color', 0x80000002),
+                ('scrollbar_handle_color', 0xFF000002),
+                ('scrollbar_track_color', 0xFFFFFF02),
+                ('macos_titlebar_color', -1),
+                ('macos_titlebar_color', -2),
+            ):
+                with self.subTest(name=name, value=value):
+                    patch_global_colors({name: value}, False)
+            # These options are decoded as unsigned, so negative values must be
+            # rejected on all platforms, not silently stored.
+            for name in ('wayland_titlebar_color', 'scrollbar_handle_color', 'scrollbar_track_color'):
+                with self.subTest(name=name, value=-1), self.assertRaises(OverflowError):
+                    patch_global_colors({name: -1}, False)
+        finally:
+            self.set_options()
+
+    def test_session_launch_option_expansion(self) -> None:
+        from kitty.launch import LaunchSpec
+        from kitty.options.types import defaults
+        from kitty.session import parse_session
+
+        for command in (
+            '--title bash --cwd $SESSION_DIR bash $COMMAND_ARG',
+            '--title=bash --cwd=$SESSION_DIR bash $COMMAND_ARG',
+            '--title bash --cwd $SESSION_DIR -- bash $COMMAND_ARG',
+            '--title other --cwd $SESSION_DIR bash $COMMAND_ARG',
+        ):
+            with self.subTest(command=command):
+                (session,) = parse_session(f'launch {command}', defaults, environ={'SESSION_DIR': '/tmp/session', 'COMMAND_ARG': 'expanded'})
+                spec = session.tabs[0].windows[0].launch_spec
+                assert isinstance(spec, LaunchSpec)
+                self.ae(spec.opts.cwd, '/tmp/session')
+                self.ae(spec.args, ['bash', '$COMMAND_ARG'])
+
+    def test_session_discovery(self):
+        from unittest.mock import patch
+
+        from kitty.config import load_config
+        from kitty.constants import config_dir
+        from kitty.fast_data_types import set_options
+        from kitty.session import get_all_known_sessions, seen_session_paths
+
+        def discover(*lines):
+            bad_lines = []
+            opts = load_config(overrides=('clear_all_shortcuts yes', *lines), accumulate_bad_lines=bad_lines)
+            self.assertFalse(bad_lines)
+            set_options(opts)
+            return get_all_known_sessions()
+
+        with patch.dict(seen_session_paths, {}, clear=True):
+            for args, name in (
+                ('work.kitty-session', 'work'),
+                ('--sort-by alphabetical work.kitty-session', 'work'),
+                ('--sort-by=alphabetical work.kitty-session', 'work'),
+                ('--active-only=no --sort-by recent work.kitty-session', 'work'),
+                ('work.kitty-session --sort-by alphabetical', 'work'),
+                ('-- "-work project.kitty-session"', '-work project'),
+                ('-- -0', '-0'),
+                ('', ''),
+                ('--sort-by alphabetical', ''),
+                ('--sort-by=alphabetical', ''),
+                ('--active-only', ''),
+                ('-1', ''),
+                ('-- -1', ''),
+                ('--sort-by alphabetical -- -2', ''),
+                ('--sort-by', ''),
+                ('--sort-by invalid work.kitty-session', ''),
+                ('--unknown work.kitty-session', ''),
+                ('--active-only=invalid work.kitty-session', ''),
+            ):
+                with self.subTest(args=args):
+                    filename = f'{name}.kitty-session' if name != '-0' else name
+                    expected = {name: os.path.join(config_dir, filename)} if name else {}
+                    self.ae(discover(f'map f7 goto_session {args}'), expected)
+
+            seen_path = os.path.join(self.tdir, 'work.kitty-session')
+            seen_session_paths['work'] = seen_path
+            self.ae(
+                discover(
+                    'action_alias project goto_session --sort-by alphabetical',
+                    'map f7 project work.kitty-session',
+                    'map f8 combine : goto_session --sort-by : project other.kitty-session',
+                ),
+                {'work': seen_path, 'other': os.path.join(config_dir, 'other.kitty-session')},
+            )
+
+    def test_launch_transparent_color_overrides(self) -> None:
+        from kitty.launch import apply_colors
+        from kitty.window import Window
+
+        cases = (
+            (('transparent_background_colors=#ffffff@0.5', 'foreground=red'), ((Color(255, 255, 255), 0.5),)),
+            (('foreground=red', 'transparent_background_colors=#ffffff@0.5'), ((Color(255, 255, 255), 0.5),)),
+            (('transparent_background_colors=#ffffff@0.5', 'foreground=red', 'transparent_background_colors='), ()),
+            (('transparent_background_colors=#ffffff@0.5', 'transparent_background_colors=#000000@0.25', 'foreground=red'), ((Color(0, 0, 0), 0.25),)),
+        )
+        for colors, expected in cases:
+            with self.subTest(colors=colors):
+                window = Window.__new__(Window)
+                window.screen = self.create_screen()
+                apply_colors(window, colors)
+                actual = window.screen.color_profile.as_dict()
+                self.ae(actual.get('transparent_background_colors', ()), expected)
+                self.ae(actual['foreground'], 0xFF0000)
+
+        # colors that do not mention transparent_background_colors must leave existing ones unchanged
+        window = Window.__new__(Window)
+        window.screen = self.create_screen()
+        apply_colors(window, ('transparent_background_colors=#ffffff@0.5',))
+        apply_colors(window, ('foreground=red',))
+        self.ae(window.screen.color_profile.as_dict().get('transparent_background_colors', ()), ((Color(255, 255, 255), 0.5),))
+        apply_colors(window, ('transparent_background_colors=',))
+        self.ae(window.screen.color_profile.as_dict().get('transparent_background_colors', ()), ())
+
 
 def cli_parsing(self):
     from kitty.cli import CLIOptions, Options, parse_cmdline, parse_option_spec
-    seq, disabled = parse_option_spec('''\
+
+    seq, disabled = parse_option_spec("""\
 --simple-string -s
 a simple string
 
@@ -78,7 +201,7 @@ a float
 --version -v
 type=bool-set
 version
-''')
+""")
     oc = Options(seq, usage='xxx', message='yyy', appname='test')
     oc.do_print = False
 
@@ -125,13 +248,41 @@ version
     t('-f=3.142 --int 17', float=3.142, int=17)
 
 
+def font_size_clamping(self: 'BaseTest') -> None:
+    from kitty.options.utils import MAXIMUM_FONT_SIZE, MINIMUM_FONT_SIZE, clamp_font_size
+
+    # the floor applies whatever the configured size
+    self.ae(clamp_font_size(0, 11), MINIMUM_FONT_SIZE)
+    self.ae(clamp_font_size(-100, 11), MINIMUM_FONT_SIZE)
+
+    # sizes inside the range come back untouched
+    self.ae(clamp_font_size(11, 11), 11)
+    self.ae(clamp_font_size(64, 11), 64)
+
+    # the ceiling is the larger of the multiple and the absolute maximum, so a
+    # small configured size no longer implies a small maximum zoom
+    self.ae(clamp_font_size(1e6, 4), MAXIMUM_FONT_SIZE)
+    self.ae(clamp_font_size(1e6, 11), MAXIMUM_FONT_SIZE)
+    self.ae(clamp_font_size(200, 4), 200)
+
+    # a large configured size keeps its proportional ceiling
+    self.ae(clamp_font_size(1e6, 40), 400)
+    self.ae(clamp_font_size(1e6, 100), 1000)
+
+    # and the ceiling is never below the absolute maximum
+    for configured in (1, 4, 11, 25.6, 40, 100):
+        self.assertGreaterEqual(clamp_font_size(1e6, configured), MAXIMUM_FONT_SIZE)
+
+
 def launcher(self):
     import tempfile
 
     from kitty.constants import is_macos
+
     kexe = kitty_exe()
     cfgdir = None
-    def get_report(cmdline: str, launch_services= False, config_dir: str = ''):
+
+    def get_report(cmdline: str, launch_services=False, config_dir: str = ''):
         nonlocal cfgdir
         args = list(shlex_split(cmdline))
         env = dict(os.environ)
@@ -139,7 +290,7 @@ def launcher(self):
             env['KITTY_LAUNCHED_BY_LAUNCH_SERVICES'] = '1'
         if config_dir:
             env['KITTY_CONFIG_DIRECTORY'] = config_dir
-        cp = subprocess.run([kexe, "+testing-launcher-code"] + args, env=env, stdout=subprocess.PIPE)
+        cp = subprocess.run([kexe, '+testing-launcher-code'] + args, env=env, stdout=subprocess.PIPE)
         self.assertEqual(cp.returncode, 0)
         ans = {}
         # splitlines, not split('\n'): the launcher ends lines with \r\n on
@@ -160,6 +311,7 @@ def launcher(self):
             if key == 'config_dir':
                 cfgdir = val
         return ans, cp.stdout.decode().replace('\x1e', ' ')
+
     def test(cmdline, assertions):
         r, output = get_report(cmdline, launch_services=assertions.get('launched_by_launch_services', '0') != '0')
         for key, expected in assertions.items():
@@ -196,8 +348,14 @@ def launcher(self):
         test(cmdline, assertions)
 
     t('', original_argv=[kexe], argv=[])
-    t('--title=xxx --start-as maximized -c=a -c b cat', title='xxx', start_as='maximized', config=['a', 'b'], original_argv=[
-        kexe, '--title=xxx', '--start-as', 'maximized', '-c=a', '-c', 'b', 'cat'], argv=['cat'])
+    t(
+        '--title=xxx --start-as maximized -c=a -c b cat',
+        title='xxx',
+        start_as='maximized',
+        config=['a', 'b'],
+        original_argv=[kexe, '--title=xxx', '--start-as', 'maximized', '-c=a', '-c', 'b', 'cat'],
+        argv=['cat'],
+    )
     k('icat abc xyz')
     t('+kitten unwrapped xyz', argv=['+kitten', 'unwrapped', 'xyz'])
     t('+ kitten unwrapped xyz', original_argv=[kexe, '+', 'kitten', 'unwrapped', 'xyz'])
@@ -206,8 +364,15 @@ def launcher(self):
     t('+open -1 --help', argv=['+open', '-1', '--help'])
     si('+open -1 moose', argv=[kexe, '+open', '-1', 'moose'], open_urls=['moose'])
     si('+open -1 --instance-group=g x y', instance_group='g', open_urls=['x', 'y'])
-    dt('--detach --session=moose --detached-log=xyz', detached_log='xyz', session='moose')
+    dt(
+        '--detach --session=moose --detached-log=xyz',
+        detached_log='xyz',
+        session='moose',
+        detach_exec_argv=[kexe, '--detach', '--session=moose', '--detached-log=xyz'],
+    )
     pn('+kitten panel -1 --edge=left', edge='left')
+    dt('+kitten panel --detach --edge=top', detach_exec_argv=[kexe, '+kitten', 'panel', '--detach', '--edge=top'])
+    dt('+ kitten panel --detach', detach_exec_argv=[kexe, '+', 'kitten', 'panel', '--detach'])
 
     if is_macos:
         with tempfile.TemporaryDirectory() as tdir:
@@ -227,6 +392,7 @@ def conf_parsing(self):
     from kitty.fast_data_types import LEFT_EDGE, RIGHT_EDGE
     from kitty.fonts import FontModification, ModificationType, ModificationUnit, ModificationValue
     from kitty.options.utils import to_modifiers
+
     bad_lines = []
 
     def p(*lines, bad_line_num=0, num_err=None):
@@ -249,6 +415,14 @@ def conf_parsing(self):
 
     opts = p('font_size 11.37', 'clear_all_shortcuts y', 'color23 red')
     self.ae(opts.font_size, 11.37)
+    radius_opts = p('window_border_radius 7px')
+    self.ae(radius_opts.window_border_radius, (7.0, 'px'))
+    self.ae(defaults.hyperlink_target_position, 'top')
+    for pos in ('top', 'bottom', 'below', 'tooltip'):
+        self.ae(p(f'hyperlink_target_position {pos}').hyperlink_target_position, pos)
+    self.ae(p('hyperlink_target_position xxx', bad_line_num=1).hyperlink_target_position, 'top')
+    radius_opts = p('window_border_radius -2')
+    self.ae(radius_opts.window_border_radius, (0.0, 'pt'))
     self.ae(opts.mouse_hide_wait[0], 0 if is_macos else 3)
     self.ae(opts.mouse_hide_wait[1], 0)
     self.ae(opts.mouse_hide_wait[2], 40)
@@ -275,17 +449,29 @@ def conf_parsing(self):
     self.ae(len(opts.keyboard_modes[''].keymap), 1)
     opts = p('clear_all_mouse_actions y', 'mouse_map left click ungrabbed mouse_click_url_or_select')
     self.ae(len(opts.mousemap), 1)
+    opts = p(
+        'clear_all_mouse_actions y',
+        'mouse_map ctrl+wheel_up press ungrabbed,grabbed change_font_size all +1',
+        'mouse_map shift+wheel_right press ungrabbed next_tab',
+    )
+    self.ae(
+        {k.human_repr() for k in opts.mousemap},
+        {'ctrl+wheel_up press ungrabbed', 'ctrl+wheel_up press grabbed', 'shift+wheel_right press ungrabbed'},
+    )
     opts = p('strip_trailing_spaces always')
     self.ae(opts.strip_trailing_spaces, 'always')
     self.assertFalse(bad_lines)
     opts = p('pointer_shape_when_grabbed XXX', bad_line_num=1)
     self.ae(opts.pointer_shape_when_grabbed, defaults.pointer_shape_when_grabbed)
     opts = p('modify_font underline_position -2', 'modify_font underline_thickness 150%', 'modify_font size Test -1px')
-    self.ae(opts.modify_font, {
-        'underline_position': FontModification(ModificationType.underline_position, ModificationValue(-2., ModificationUnit.pt)),
-        'underline_thickness': FontModification(ModificationType.underline_thickness, ModificationValue(150, ModificationUnit.percent)),
-        'size:Test': FontModification(ModificationType.size, ModificationValue(-1., ModificationUnit.pixel), 'Test'),
-    })
+    self.ae(
+        opts.modify_font,
+        {
+            'underline_position': FontModification(ModificationType.underline_position, ModificationValue(-2.0, ModificationUnit.pt)),
+            'underline_thickness': FontModification(ModificationType.underline_thickness, ModificationValue(150, ModificationUnit.percent)),
+            'size:Test': FontModification(ModificationType.size, ModificationValue(-1.0, ModificationUnit.pixel), 'Test'),
+        },
+    )
 
     # test the aliasing options
     opts = p('env A=1', 'env B=x$A', 'env C=', 'env D', 'clear_all_shortcuts y', 'kitten_alias a b --moo', 'map f1 kitten a arg')
@@ -330,6 +516,11 @@ def conf_parsing(self):
     self.ae(ka.func, 'change_font_size')
     self.ae(ka.args, (False, '+', 2.0))
 
+    opts = p('clear_all_shortcuts y', 'map f1 clear_bell_indicators')
+    self.ae((ac().func, ac().args), ('clear_bell_indicators', ()))
+    opts = p('clear_all_shortcuts y', 'map f1 clear_bell_indicators state:parent_active and not id:1')
+    self.ae((ac().func, ac().args), ('clear_bell_indicators', ('state:parent_active and not id:1',)))
+
     opts = p('clear_all_shortcuts y', 'action_alias la launch --moo', 'map f1 combine : new_window : la ')
     self.ae((ac().func, ac(1).func), ('new_window', 'launch'))
 
@@ -339,6 +530,11 @@ def conf_parsing(self):
 
     opts = p('clear_all_shortcuts y', 'action_alias ss kitten "space 1"', 'map f1 ss "space 2"')
     self.ae(ac().args, ('space 1', 'space 2'))
+
+    am = build_action_aliases({'la': 'launch --moo'})
+    self.ae(am.resolve_aliases('la XXX')[0].args, ('--moo', 'XXX'))
+    am.update(build_action_aliases({'la': 'launch --baa'}))
+    self.ae(am.resolve_aliases('la XXX')[0].args, ('--baa', 'XXX'))
 
     opts = p('kitty_mod alt')
     self.ae(opts.kitty_mod, to_modifiers('alt'))
@@ -361,15 +557,7 @@ def conf_parsing(self):
     self.ae(len(self.error_messages), 1)
 
     # line breaks
-    opts = p("    font",
-                " \t  \t    \\_size",
-                "    \\ 12",
-                "\\.35",
-                "col",
-                "\\o",
-                "\t \t\\r",
-                "\\25",
-                " \\ blue")
+    opts = p('    font', ' \t  \t    \\_size', '    \\ 12', '\\.35', 'col', '\\o', '\t \t\\r', '\\25', ' \\ blue')
     self.ae(opts.font_size, 12.35)
     self.ae(opts.color25, Color(0, 0, 255))
 
@@ -377,13 +565,16 @@ def conf_parsing(self):
     def cb(src, interval=-1, first=EasingFunction(), second=EasingFunction()):
         opts = p('cursor_blink_interval ' + src)
         self.ae((float(interval), first, second), (float(opts.cursor_blink_interval[0]), opts.cursor_blink_interval[1], opts.cursor_blink_interval[2]))
+
     cb('3', 3)
     cb('-2.3', -2.3)
     cb('linear', first=EasingFunction('cubic-bezier', cubic_bezier_points=(0, 0.0, 1.0, 1.0)))
     cb('linear 19', 19, EasingFunction('cubic-bezier', cubic_bezier_points=(0, 0.0, 1.0, 1.0)))
-    cb('ease-in-out cubic-bezier(0.1, 0.2, 0.3, 0.4) 11', 11,
+    cb(
+        'ease-in-out cubic-bezier(0.1, 0.2, 0.3, 0.4) 11',
+        11,
         EasingFunction('cubic-bezier', cubic_bezier_points=(0.42, 0, 0.58, 1)),
-        EasingFunction('cubic-bezier', cubic_bezier_points=(0.1, 0.2, 0.3, 0.4))
+        EasingFunction('cubic-bezier', cubic_bezier_points=(0.1, 0.2, 0.3, 0.4)),
     )
     cb('step-start', first=EasingFunction('steps', num_steps=1, jump_type='start'))
     cb('steps(7, jump-none)', first=EasingFunction('steps', num_steps=7, jump_type='none'))
@@ -400,9 +591,9 @@ def conf_parsing(self):
             if abs(actual - expected) > accuracy:
                 self.ae(expected, actual, f'Failed for {spec=} with {t=}: {expected} != {actual}')
 
-    ef('linear', {0:1, 0.25: 0.5, 0.5: 0, 0.75: 0.5, 1: 1}, only_single=False)
+    ef('linear', {0: 1, 0.25: 0.5, 0.5: 0, 0.75: 0.5, 1: 1}, only_single=False)
 
-    ef('linear(0, 0.25 25% 75%, 1)', {0: 0, 0.25: 0.25, 0.3: 0.25, 0.75: 0.25, 1:1})
+    ef('linear(0, 0.25 25% 75%, 1)', {0: 0, 0.25: 0.25, 0.3: 0.25, 0.75: 0.25, 1: 1})
     linear_vals = {0: 0, 1: 1, 0.1234: 0.1234, 0.6453: 0.6453}
     for spec in ('linear', 'linear(0, 1)', 'cubic-bezier(0, 0, 1, 1)', 'cubic-bezier(0.2, 0.2, 0.7, 0.7)'):
         ef(spec, linear_vals)
@@ -410,10 +601,10 @@ def conf_parsing(self):
     ef('cubic-bezier(0.2, 0.2, 0.7, 0.71)', linear_vals, accuracy=0.01)
     ef('cubic-bezier(0.23, 0.2, 0.7, 0.71)', linear_vals, accuracy=0.01)
 
-    ef('steps(5)', {0: 0, 0.1: 0, 0.3: 0.2, 0.9:0.8})
-    ef('steps(5, start)', {0: 0.2, 0.1: 0.2, 0.3: 0.4, 0.9:1})
-    ef('steps(4, jump-both)', {0: 0.2, 0.1: 0.2, 0.3: 0.4, 0.9:1})
-    ef('steps(6, jump-none)', {0: 0, 0.1: 0.0, 0.3: 0.2, 0.9:1})
+    ef('steps(5)', {0: 0, 0.1: 0, 0.3: 0.2, 0.9: 0.8})
+    ef('steps(5, start)', {0: 0.2, 0.1: 0.2, 0.3: 0.4, 0.9: 1})
+    ef('steps(4, jump-both)', {0: 0.2, 0.1: 0.2, 0.3: 0.4, 0.9: 1})
+    ef('steps(6, jump-none)', {0: 0, 0.1: 0.0, 0.3: 0.2, 0.9: 1})
 
     # test various include modes
     base = os.path.join(self.tdir, 'glob')
@@ -443,7 +634,7 @@ def conf_parsing(self):
     self.ae(opts.foreground, to_color('red'))
     self.ae(opts.background, to_color('white'))
     self.ae(opts.cursor, to_color('yellow'))
-    self.ae(opts.background_opacity, .77)
+    self.ae(opts.background_opacity, 0.77)
     self.ae(opts.background_blur, 77)
     if not is_windows:  # set by the shell script geninclude, skipped above
         self.ae(opts.background_image_linear, True)
@@ -457,3 +648,37 @@ def conf_parsing(self):
     opts = p(f'include {a.name}', num_err=0, bad_line_num=1)
     self.ae(opts.foreground, to_color('red'))
     self.ae(opts.background, to_color('red'))
+
+    # remap_modifier. NOTE: parsing only. Whether the permutation is applied
+    # simultaneously rather than sequentially is a property of
+    # apply_modifier_remap() in C and is NOT observable from this dict - a
+    # sequential implementation would produce an identical one. That property is
+    # covered end to end by tests/test-remap-e2e.sh, which asserts that the
+    # encoded bytes actually exchange.
+    self.ae(p().remap_modifiers, {})
+    ctrl, hyper, sup = to_modifiers('ctrl'), to_modifiers('hyper'), to_modifiers('super')
+    self.ae(p('remap_modifiers ctrl:hyper').remap_modifiers, {ctrl: hyper})
+    # both directions of a swap are recorded
+    self.ae(p('remap_modifiers ctrl:hyper hyper:ctrl').remap_modifiers, {ctrl: hyper, hyper: ctrl})
+    # the last declaration for a given source wins, wherever it appears
+    self.ae(p('remap_modifiers ctrl:hyper', 'kitty_mod ctrl', 'remap_modifiers ctrl:super').remap_modifiers, {ctrl: sup})
+    # the destination may name more than one modifier
+    self.ae(p('remap_modifiers ctrl:ctrl+shift').remap_modifiers, {ctrl: to_modifiers('ctrl+shift')})
+    # every rejection must be REPORTED, never silently ignored: wrong arity, unknown
+    # or non-remappable modifier names, a source naming more than one modifier, and
+    # a mapping that does nothing
+    for bad in (
+        'remap_modifiers ctrl',
+        'remap_modifiers ctrl:hyper super',
+        'remap_modifiers ctrl:nosuchmod',
+        'remap_modifiers nosuchmod:ctrl',
+        'remap_modifiers ctrl+shift:hyper',
+        'remap_modifiers ctrl:none',
+        'remap_modifiers none:ctrl',
+        'remap_modifiers ctrl:kitty_mod',
+        'remap_modifiers kitty_mod:ctrl',
+        'remap_modifiers caps_lock:ctrl',
+        'remap_modifiers ctrl:num_lock',
+        'remap_modifiers ctrl:ctrl',
+    ):
+        self.ae(p(bad, num_err=1).remap_modifiers, {}, f'not rejected: {bad}')

@@ -7,10 +7,16 @@ tdir=""
 shell_integration_dir=""
 echo_on="ECHO_ON"
 
+remove_tdir() {
+    # copied directories can be read-only, make them deletable
+    command chmod -R u+rwx "$tdir" 2> /dev/null
+    command rm -rf "$tdir"
+}
+
 cleanup_on_bootstrap_exit() {
     [ "$echo_on" = "1" ] && command stty "echo" 2> /dev/null < /dev/tty
     echo_on="0"
-    [ -n "$tdir" ] && command rm -rf "$tdir"
+    [ -n "$tdir" ] && remove_tdir
     tdir=""
 }
 
@@ -108,10 +114,9 @@ untar_and_read_env() {
     tdir=$(command mktemp -d "$HOME/.kitty-ssh-kitten-untar-XXXXXXXXXXXX")
     [ $? = 0 ] || die "Creating temp directory failed"
     # suppress STDERR for tar as tar prints various warnings if for instance, timestamps are in the future
-    old_umask=$(umask)
-    umask 000
+    # -p makes tar restore the exact permissions of the entries in the tarball,
+    # directories not in the tarball are created respecting the user's umask
     read_base64_from_tty | base64_decode | command tar "xpzf" "-" "-C" "$tdir" 2> /dev/null
-    umask "$old_umask"
     . "$tdir/bootstrap-utils.sh"
     . "$tdir/data.sh"
     [ -z "$KITTY_SSH_KITTEN_DATA_DIR" ] && die "Failed to read SSH data from tty"
@@ -130,7 +135,7 @@ untar_and_read_env() {
     compile_terminfo "$tdir/home"
     mv_files_and_dirs "$tdir/home" "$HOME"
     [ -e "$tdir/root" ] && mv_files_and_dirs "$tdir/root" ""
-    command rm -rf "$tdir"
+    remove_tdir
     tdir=""
 }
 

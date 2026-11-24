@@ -15,9 +15,9 @@ from functools import lru_cache, partial
 from kitty.bash import decode_ansi_c_quoted_string
 from kitty.constants import is_macos, kitten_exe, kitty_base_dir, shell_integration_dir, terminfo_dir
 from kitty.fast_data_types import CURSOR_BEAM, CURSOR_BLOCK, CURSOR_UNDERLINE
-from kitty.shell_integration import setup_bash_env, setup_fish_env, setup_zsh_env
+from kitty.shell_integration import bash_sys_startup_files_from_binary_data, setup_bash_env, setup_fish_env, setup_zsh_env
 
-from . import BaseTest, skip_on_windows
+from .base import BaseTest, skip_on_windows
 
 
 @lru_cache
@@ -32,11 +32,22 @@ def bash_ok():
     return int(major_ver) >= 5 and relstatus == 'release'
 
 
-def extract_sudo_function(
-    content: str, opening='sudo() {', closing='}',
-    witht='command sudo TERMINFO="$TERMINFO" "$@";', without='command sudo "$@";'
-) -> str:
-    """Extract the sudo() function from bash/zsh shell integration content using indentation."""
+def run_interactive_bash(command: str, env: dict[str, str], cwd: str | None = None) -> 'subprocess.CompletedProcess[bytes]':
+    """Run an interactive bash without letting it touch our controlling terminal.
+
+    An interactive bash whose stderr is not a terminal falls back to opening
+    /dev/tty to do job control on. That is the terminal the test suite is
+    itself running in, and bash makes its own process group the foreground one
+    on it for as long as it runs. When tests run in parallel, a second bash
+    started in that window sees that it is not in the foreground process group
+    and does kill(0, SIGTTIN), which stops the entire test run. Giving bash its
+    own session leaves it with no controlling terminal, so it cannot interfere.
+    """
+    return subprocess.run(['bash', '--noprofile', '--norc', '-ic', command], cwd=cwd, env=env, capture_output=True, start_new_session=True)
+
+
+def extract_block(content: str, opening: str, closing: str) -> str | None:
+    """Extract the block starting at the line opening and ending at closing with the same indentation."""
     lines = content.split('\n')
     start_idx = None
     indent_len = None
@@ -52,11 +63,19 @@ def extract_sudo_function(
         line = lines[i]
         stripped = line.strip()
         if stripped == closing and (len(line) - len(line.lstrip())) == indent_len:
-            func = '\n'.join(lines[start_idx:i + 1])
-            func = func.replace(witht, 'echo "with_terminfo";')
-            func = func.replace(without, 'echo "no_terminfo";')
-            return func
+            return '\n'.join(lines[start_idx : i + 1])
     return None
+
+
+def extract_sudo_function(
+    content: str, opening='sudo() {', closing='}', witht='command sudo TERMINFO="$TERMINFO" "$@";', without='command sudo "$@";'
+) -> str | None:
+    """Extract the sudo() function from bash/zsh shell integration content using indentation."""
+    func = extract_block(content, opening, closing)
+    if func is None:
+        return None
+    func = func.replace(witht, 'echo "with_terminfo";')
+    return func.replace(without, 'echo "no_terminfo";')
 
 
 def basic_shell_env(home_dir):
@@ -110,7 +129,6 @@ def safe_env_for_running_shell(argv, home_dir, rc='', shell='zsh', with_kitten=F
 
 @skip_on_windows('drives a POSIX shell over a pty, and MSYS2 supplying bash is not the same as the platform supporting it')
 class ShellIntegration(BaseTest):
-
     with_kitten = False
 
     @contextmanager
@@ -154,6 +172,16 @@ class ShellIntegration(BaseTest):
         self.sudo_parser_tests(['zsh', '--no-rcs', '-c'], func)
 
     @unittest.skipUnless(bash_ok(), 'bash not installed, too old, or debug build')
+    def test_bash_sys_startup_files_scan(self):
+        def t(data, expected):
+            self.ae(bash_sys_startup_files_from_binary_data(data), expected, repr(data))
+
+        t(b'\x00/etc/bash.bash_logout\x00/etc/bash.bashrc\x00~/.bashrc\x00/etc/profile\x00~/.bash_profile\x00', ('/etc/profile', '/etc/bash.bashrc'))
+        t(b'xx\x01/usr/share/defaults/etc/profile\x00/usr/share/defaults/etc/bashrc\x00', ('/usr/share/defaults/etc/profile', '/usr/share/defaults/etc/bashrc'))
+        t(b'\x00/etc/profile\x00/etc/skel/.bashrc\x00', ('/etc/profile', ''))
+        t(b'\x00/etc/bash/bashrc\x00use /etc/profile\x00/etc/profile.d\x00', None)
+        t(b'', None)
+
     def test_bash_sudo_parser(self):
         if self.with_kitten:
             return
@@ -163,39 +191,114 @@ class ShellIntegration(BaseTest):
         self.assertIsNotNone(func)
         self.sudo_parser_tests(['bash', '--noprofile', '--norc', '-c'], func)
 
+    @unittest.skipUnless(bash_ok(), 'bash not installed, too old, or debug build')
+    def test_bash_disabled_command_hook(self):
+        if self.with_kitten:
+            return
+        integration_script = os.path.join(shell_integration_dir, 'bash', 'kitty.bash')
+        command = 'PS0=original; source "$KITTY_BASH_INTEGRATION"; _ksi_prompt_command; printf %s "$PS0"'
+        common_options = 'enabled no-cursor no-cwd no-complete no-sudo'
+        for options, has_command_hook in (
+            ('no-title no-prompt-mark', False),
+            ('no-prompt-mark', True),
+            ('no-title', True),
+        ):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as home_dir:
+                env = basic_shell_env(home_dir)
+                env['KITTY_BASH_INTEGRATION'] = integration_script
+                env['KITTY_SHELL_INTEGRATION'] = f'{common_options} {options}'
+                cp = run_interactive_bash(command, env)
+                self.assertEqual(cp.returncode, 0, cp.stderr.decode())
+                self.assertEqual(cp.stdout.decode() != 'original', has_command_hook)
+
+    @unittest.skipUnless(bash_ok(), 'bash not installed, too old, or debug build')
+    def test_bash_ssh_hostname_fallback(self):
+        if self.with_kitten:
+            return
+        integration_script = os.path.join(shell_integration_dir, 'bash', 'kitty.bash')
+        command = 'PS1="prompt> "; source "$KITTY_BASH_INTEGRATION"; _ksi_prompt_command; printf %s "${PS1@P}"'
+        with tempfile.TemporaryDirectory() as home_dir:
+            home_dir = os.path.realpath(home_dir)
+            who = os.path.join(home_dir, 'who')
+            with open(who, 'w') as f:
+                f.write("#!/bin/sh\nprintf '%s\\n' 'user pts/0 (192.0.2.1)'\n")
+            os.chmod(who, 0o755)
+            env = basic_shell_env(home_dir)
+            env['KITTY_BASH_INTEGRATION'] = integration_script
+            env['PATH'] = os.pathsep.join((home_dir, env['PATH']))
+            cp = run_interactive_bash(command, env, cwd=home_dir)
+            self.assertEqual(cp.returncode, 0, cp.stderr.decode())
+            self.assertIn(': ~\x07', cp.stdout.decode())
+
     @unittest.skipUnless(shutil.which('fish'), 'fish not installed')
     def test_fish_sudo_parser(self):
         if self.with_kitten:
             return
         src = os.path.join(shell_integration_dir, 'fish', 'vendor_conf.d', 'kitty-shell-integration.fish')
         with open(src) as f:
-            func = extract_sudo_function(
-                f.read(), opening='function sudo', closing='end', witht='sudo TERMINFO="$TERMINFO" $argv',
-                without='sudo $argv')
+            func = extract_sudo_function(f.read(), opening='function sudo', closing='end', witht='sudo TERMINFO="$TERMINFO" $argv', without='sudo $argv')
         self.assertIsNotNone(func)
         self.sudo_parser_tests(['fish', '--no-config', '-c'], func)
 
+    def test_run0_wrapper(self):
+        if self.with_kitten:
+            return
+        shells = (
+            # shell, integration file, wrapper guard, set PATH, define a user run0 function
+            ('bash', ('bash', 'kitty.bash'), 'if builtin type -P run0 >/dev/null 2>&1; then', 'fi', 'PATH="{}"', ''),
+            ('zsh', ('zsh', 'kitty-integration'), 'if (( $+commands[run0] && ! $+functions[run0] )); then', 'fi', 'PATH="{}"', 'run0() { echo user; }'),
+            (
+                'fish',
+                ('fish', 'vendor_conf.d', 'kitty-shell-integration.fish'),
+                'if test "file" = (type -t run0 2> /dev/null || echo "x")',
+                'end',
+                'set -gx PATH "{}"',
+                'function run0; echo user; end',
+            ),
+        )
+        with tempfile.TemporaryDirectory() as bin_dir:
+            with open(os.path.join(bin_dir, 'run0'), 'w') as f:
+                f.write('#!/bin/sh\necho "$*"\n')
+            os.chmod(os.path.join(bin_dir, 'run0'), 0o755)
+            for shell, path, opening, closing, set_path, user_func in shells:
+                exe = shutil.which(shell)
+                if not exe:
+                    continue
+                with self.subTest(shell=shell), open(os.path.join(shell_integration_dir, *path)) as f:
+                    block = extract_block(f.read(), opening, closing)
+                    self.assertIsNotNone(block)
+                    # The wrapper must not be defined when run0 is not installed
+                    script = [set_path.format('/nonexistent'), block, set_path.format(bin_dir), 'run0 -u root ls', block, 'run0 -u root ls', 'run0']
+                    expected = ['-u root ls', '--setenv=TERMINFO -u root ls', '--setenv=TERMINFO']
+                    if user_func:
+                        # The wrapper must not clobber a user defined run0 function
+                        script += [user_func, block, 'run0 -u root ls']
+                        expected.append('user')
+                    cp = subprocess.run([exe, '-c', '\n'.join(script)], capture_output=True, env={'HOME': bin_dir, 'TERMINFO': 'x'})
+                    self.assertEqual(cp.returncode, 0, f'{shell} failed with stderr: {cp.stderr.decode()}')
+                    self.assertEqual(expected, cp.stdout.decode().splitlines())
+
     def sudo_parser_tests(self, shell: list[str], func: str) -> None:
         test_cases = [
-            (['ls'],                               'with_terminfo', 'simple command'),
-            (['-e', 'file.txt'],                   'no_terminfo',   '-e flag'),
-            (['--edit', 'file.txt'],               'no_terminfo',   '--edit flag'),
-            (['-v'],                               'no_terminfo',   '-v validate flag'),
-            (['--validate'],                       'no_terminfo',   '--validate flag'),
-            (['-nv'],                              'no_terminfo',   '-nv grouped flags'),
-            (['-ne', 'file.txt'],                  'no_terminfo',   '-ne grouped flags'),
-            (['-u', 'root', 'ls'],                 'with_terminfo', '-u takes argument'),
-            (['-u', 'root', '-v'],                 'no_terminfo',   '-u arg then -v'),
-            (['--', '-v'],                         'with_terminfo', '-- ends option processing'),
-            (['TERM=xterm-kitty', 'ls'],           'with_terminfo', 'env var before command'),
-            (['TERM=xterm-kitty', '-v', 'ls'],     'no_terminfo',   'env var before -v'),
-            (['-g', 'wheel', '-v'],                'no_terminfo', '-g takes argument'),
-            (['-D', '/tmp', '-e'],                 'no_terminfo', '-D takes argument'),
-            (['-R', '/chroot', '-e'],              'no_terminfo', '-R takes argument'),
-            (['-h', 'localhost', '-v'],            'no_terminfo', '-h takes argument'),
-            (['-uroot', '-v', 'ls'],               'with_terminfo', '-u with embedded argument'),
-            (['--user', '-v', 'ls'],               'with_terminfo', '--user takes argument'),
-            (['--user=root', '-v', 'ls'],          'no_terminfo', '--user=root self-contained'),
+            (['ls'], 'with_terminfo', 'simple command'),
+            (['-e', 'file.txt'], 'no_terminfo', '-e flag'),
+            (['--edit', 'file.txt'], 'no_terminfo', '--edit flag'),
+            (['-v'], 'no_terminfo', '-v validate flag'),
+            (['--validate'], 'no_terminfo', '--validate flag'),
+            (['-nv'], 'no_terminfo', '-nv grouped flags'),
+            (['-ne', 'file.txt'], 'no_terminfo', '-ne grouped flags'),
+            (['-u', 'root', 'ls'], 'with_terminfo', '-u takes argument'),
+            (['-u', 'root', '-v'], 'no_terminfo', '-u arg then -v'),
+            (['--', '-v'], 'with_terminfo', '-- ends option processing'),
+            (['TERM=xterm-kitty', 'ls'], 'with_terminfo', 'env var before command'),
+            (['TERM=xterm-kitty', '-v', 'ls'], 'no_terminfo', 'env var before -v'),
+            (['-g', 'wheel', '-v'], 'no_terminfo', '-g takes argument'),
+            (['-D', '/tmp', '-e'], 'no_terminfo', '-D takes argument'),
+            (['-R', '/chroot', '-e'], 'no_terminfo', '-R takes argument'),
+            (['-h', 'localhost', '-v'], 'no_terminfo', '-h takes argument'),
+            (['-uroot', '-v', 'ls'], 'with_terminfo', '-u with embedded argument'),
+            (['--user', '-v', 'ls'], 'with_terminfo', '--user takes argument'),
+            (['--user=root', '-v', 'ls'], 'no_terminfo', '--user=root self-contained'),
         ]
         for cmd, expected, _ in test_cases:
             func += f'\n\nsudo {" ".join(cmd)}'
@@ -213,7 +316,8 @@ class ShellIntegration(BaseTest):
             rc=f'''
 PS1="{ps1}"
 RPS1="{rps1}"
-''') as pty:
+'''
+        ) as pty:
             q = ps1 + ' ' * (pty.screen.columns - len(ps1) - len(rps1)) + rps1
             try:
                 pty.wait_till(lambda: pty.screen.cursor.shape == CURSOR_BEAM)
@@ -256,7 +360,7 @@ RPS1="{rps1}"
             pty.wait_till(lambda: pty.screen.cursor.shape == CURSOR_BEAM)
             self.assert_command(pty)
             # Check escaping of inputs
-            pty.send_cmd_to_child("-f-this-command-must-not-exist")
+            pty.send_cmd_to_child('-f-this-command-must-not-exist')
             self.assert_command(pty, exit_status=127)
         with self.run_shell(rc=f'''PS1="{ps1}"''') as pty:
             pty.callbacks.clear()
@@ -281,6 +385,18 @@ RPS1="{rps1}"
             pty.wait_till(lambda: 'XXX' in pty.screen_contents())
             self.assertIn('pre-start', pty.screen_contents())
             self.assertTrue(pty.screen_contents().startswith('pre-start'))
+        # Interrupting the startup command must not leave integration half
+        # initialized. The marker is printed by the child itself so that we
+        # know it is the foreground job when we send SIGINT.
+        with self.run_shell(rc='PS1=XXX', extra_env={'KITTY_SI_RUN_COMMAND_AT_STARTUP': "sh -c 'echo pre-start; exec sleep 100'"}) as pty:
+            pty.wait_till(lambda: 'pre-start' in pty.screen_contents())
+            pty.write_to_child('\x03')
+            pty.wait_till(lambda: 'XXX' in pty.screen_contents())
+            pty.send_cmd_to_child('echo ok1')
+            pty.wait_till(lambda: '\nok1\n' in pty.screen_contents())
+            pty.send_cmd_to_child('echo ok2')
+            pty.wait_till(lambda: '\nok2\n' in pty.screen_contents())
+            self.assertNotIn('FUNCNEST', pty.screen_contents())
 
     @unittest.skipUnless(shutil.which('fish'), 'fish not installed')
     def test_fish_integration(self):
@@ -296,7 +412,8 @@ function fish_right_prompt; echo -n "{right_prompt}"; end
 function _test_comp_path; contains "{completions_dir}" $fish_complete_path; and echo ok; end
 function _set_key; set -g fish_key_bindings fish_$argv[1]_key_bindings; end
 function _set_status_prompt; function fish_prompt; echo -n "$pipestatus $status {fish_prompt}"; end; end
-''') as pty:
+''',
+        ) as pty:
             q = 'XXX\n' + fish_prompt + ' ' * (pty.screen.columns - len(fish_prompt) - len(right_prompt)) + right_prompt
             pty.wait_till(lambda: pty.screen_contents().count(right_prompt) == 1)
             self.ae(pty.screen_contents(), q)
@@ -382,9 +499,11 @@ function _set_status_prompt; function fish_prompt; echo -n "$pipestatus $status 
     def test_bash_integration(self):
         ps1 = 'prompt> '
         with self.run_shell(
-            shell='bash', rc=f'''
+            shell='bash',
+            rc=f'''
 PS1="{ps1}"
-''') as pty:
+''',
+        ) as pty:
             try:
                 pty.wait_till(lambda: pty.screen.cursor.shape == CURSOR_BEAM)
             except TimeoutError as e:
@@ -444,11 +563,20 @@ PS1="{ps1}"
             pty.send_cmd_to_child(f'cd {q}')
             pty.wait_till(lambda: pty.screen.last_reported_cwd.decode().endswith(q))
 
-        for ps1 in ('line1\\nline\\2\\prompt> ', 'line1\nprompt> ', 'line1\\nprompt> ',):
-            with self.subTest(ps1=ps1), self.run_shell(
-                shell='bash', rc=f'''
+        for ps1 in (
+            'line1\\nline\\2\\prompt> ',
+            'line1\nprompt> ',
+            'line1\\nprompt> ',
+        ):
+            with (
+                self.subTest(ps1=ps1),
+                self.run_shell(
+                    shell='bash',
+                    rc=f'''
     PS1="{ps1}"
-    ''') as pty:
+    ''',
+                ) as pty,
+            ):
                 ps1 = ps1.replace('\\n', '\n')
                 pty.wait_till(lambda: pty.screen_contents().count(ps1) == 1)
                 pty.send_cmd_to_child('echo test')
@@ -471,22 +599,29 @@ PS1="{ps1}"
             self.assertTrue(pty.screen_contents().startswith('pre-start'))
         # test startup file sourcing
 
-        def setup_env(excluded, argv, home_dir, rc='', shell='bash', with_kitten=self.with_kitten):
+        def setup_env(excluded, sys_files, argv, home_dir, rc='', shell='bash', with_kitten=self.with_kitten):
             ans = basic_shell_env(home_dir)
+            # Prevent probing the bash binary for its system startup files
+            if sys_files is None:
+                ans['KITTY_BASH_ETC_LOCATION'] = home_dir
+            else:
+                ans['KITTY_BASH_SYS_PROFILE'], ans['KITTY_BASH_SYS_BASHRC'] = (os.path.join(home_dir, x) if x else '' for x in sys_files)
             if not with_kitten:
                 setup_bash_env(ans, argv)
-            for x in {'profile', 'bash.bashrc', '.bash_profile', '.bash_login', '.profile', '.bashrc', 'rcfile'} - excluded:
+            for x in {'profile', 'bash.bashrc', 'sysprofile', 'sysbashrc', '.bash_profile', '.bash_login', '.profile', '.bashrc', 'rcfile'} - excluded:
                 with open(os.path.join(home_dir, x), 'w') as f:
                     if x == '.bashrc' and rc:
                         print(rc, file=f)
                     else:
                         print(f'echo [{x}]', file=f)
-            ans['KITTY_BASH_ETC_LOCATION'] = home_dir
             ans['PS1'] = 'PROMPT $ '
             return ans
 
-        def run_test(argv, *expected, excluded=(), rc='', wait_string='PROMPT $', assert_not_in=False):
-            with self.subTest(argv=argv), self.run_shell(shell='bash', setup_env=partial(setup_env, set(excluded)), cmd=argv, rc=rc) as pty:
+        def run_test(argv, *expected, excluded=(), rc='', wait_string='PROMPT $', assert_not_in=False, sys_files=None):
+            with (
+                self.subTest(argv=argv, sys_files=sys_files),
+                self.run_shell(shell='bash', setup_env=partial(setup_env, set(excluded), sys_files), cmd=argv, rc=rc) as pty,
+            ):
                 pty.wait_till(lambda: wait_string in pty.screen_contents())
                 q = pty.screen_contents()
                 for x in expected:
@@ -504,14 +639,24 @@ PS1="{ps1}"
         run_test('bash -l', 'profile', '.bash_login', excluded=('.bash_profile',))
         run_test('bash -l', 'profile', '.profile', excluded=('.bash_profile', '.bash_login'))
 
+        # test system startup files found by scanning the bash binary
+        sf = 'sysprofile', 'sysbashrc'
+        run_test('bash', 'sysbashrc', '.bashrc', sys_files=sf)
+        run_test('bash', 'bash.bashrc', 'profile', 'sysprofile', sys_files=sf, assert_not_in=True)
+        run_test('bash -l', 'sysprofile', '.bash_profile', sys_files=sf)
+        run_test('bash -l', 'profile', 'sysbashrc', sys_files=sf, assert_not_in=True)
+        run_test('bash', '.bashrc', sys_files=('sysprofile', ''))
+        run_test('bash', 'bash.bashrc', 'sysbashrc', sys_files=('sysprofile', ''), assert_not_in=True)
+
         # test argument parsing and non-interactive shell
         run_test('bash -s arg1 --rcfile rcfile', 'rcfile', rc='echo ok;read', wait_string='ok', assert_not_in=True)
         run_test('bash +O login_shell -ic "echo ok;read"', 'bash.bashrc', excluded=('.bash_profile'), wait_string='ok', assert_not_in=True)
         run_test('bash -l .bashrc', 'profile', rc='echo ok;read', wait_string='ok', assert_not_in=True)
         run_test('bash -il -- .bashrc', 'profile', rc='echo ok;read', wait_string='ok')
 
-        with self.run_shell(shell='bash', setup_env=partial(setup_env, set()), cmd='bash',
-                            rc=f'''PS1="{ps1}"\nexport ES=$'a\n `b` c\n$d'\nexport ES2="XXX" ''') as pty:
+        with self.run_shell(
+            shell='bash', setup_env=partial(setup_env, set(), None), cmd='bash', rc=f'''PS1="{ps1}"\nexport ES=$'a\n `b` c\n$d'\nexport ES2="XXX" '''
+        ) as pty:
             pty.callbacks.clear()
             pty.send_cmd_to_child('clone-in-kitty')
             pty.wait_till(lambda: len(pty.callbacks.clone_cmds) == 1)

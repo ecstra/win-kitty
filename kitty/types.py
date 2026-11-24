@@ -46,6 +46,70 @@ class FloatEdges(NamedTuple):
     bottom: float = 0
 
 
+DockEdge = Literal['left', 'top', 'right', 'bottom']
+# What a dock is docked to: a window, a tab or an OS window
+DockScope = Literal['window', 'tab', 'os-window']
+CloseReason = Literal['window', 'os_window', 'quit']
+
+
+class CloseEvent(TypedDict):
+    # The data passed to on_close watchers, see the watchers documentation for the possible values of cause
+    reason: CloseReason
+    cause: str
+    confirmed: bool
+
+
+dock_edges: tuple[DockEdge, ...] = ('left', 'top', 'right', 'bottom')
+opposite_dock_edge: dict[DockEdge, DockEdge] = {'left': 'right', 'right': 'left', 'top': 'bottom', 'bottom': 'top'}
+
+
+class DockSpec(NamedTuple):
+    edge: DockEdge = 'bottom'
+    # Either a number of cells or a percentage of the area being docked into
+    size: float = 1
+    size_is_percent: bool = False
+    focusable: bool = True
+
+    @property
+    def is_horizontal(self) -> bool:
+        "True if the dock is at the top or bottom edge, i.e. it spans the width of its area"
+        return self.edge in ('top', 'bottom')
+
+    @property
+    def size_as_string(self) -> str:
+        return f'{self.size:g}%' if self.size_is_percent else str(int(self.size))
+
+    def as_launch_args(self, scope: DockScope) -> list[str]:
+        ans = [f'--type={scope}-dock', f'--dock-edge={self.edge}', f'--dock-size={self.size_as_string}']
+        if not self.focusable:
+            ans.append('--dock-skip-focus')
+        return ans
+
+    def as_dict(self) -> dict[str, Any]:
+        return {'edge': self.edge, 'size': self.size_as_string, 'focusable': self.focusable}
+
+
+def parse_dock_spec(edge: str, size: str, focusable: bool = True) -> DockSpec:
+    if edge not in dock_edges:
+        raise ValueError(f'{edge!r} is not a valid dock edge, must be one of: {", ".join(dock_edges)}')
+    raw = size.strip()
+    if raw.endswith('%'):
+        try:
+            percent = float(raw[:-1])
+        except ValueError:
+            raise ValueError(f'{size!r} is not a valid dock size') from None
+        if not 0 < percent <= 100:
+            raise ValueError(f'The dock size {size!r} must be a percentage greater than zero and no more than 100')
+        return DockSpec(edge, percent, True, focusable)
+    try:
+        cells = int(raw)
+    except ValueError:
+        raise ValueError(f'{size!r} is not a valid dock size, must be a number of cells or a percentage') from None
+    if cells < 1:
+        raise ValueError(f'The dock size {size!r} must be at least one cell')
+    return DockSpec(edge, cells, False, focusable)
+
+
 class WindowGeometry(NamedTuple):
     left: int
     top: int
@@ -54,6 +118,11 @@ class WindowGeometry(NamedTuple):
     xnum: int
     ynum: int
     spaces: Edges = Edges()
+    # The part of spaces that comes from the window size not being an exact
+    # multiple of the cell size (as opposed to intentional margin/border/padding
+    # decoration). This is the innermost slice of the padding, adjacent to the
+    # cells, see layout_dimension().
+    compensatory: Edges = Edges()
 
 
 class SignalInfo(NamedTuple):
@@ -96,6 +165,7 @@ def mod_to_names(mods: int, has_kitty_mod: bool = False, kitty_mod: int = 0) -> 
 
 def human_repr_of_single_key(self: 'SingleKey', kitty_mod: int) -> str:
     from .fast_data_types import glfw_get_key_name
+
     names = []
     names = list(mod_to_names(self.mods, self.defined_with_kitty_mod, kitty_mod))
     if self.key > 0:
@@ -119,11 +189,14 @@ class MouseEvent(NamedTuple):
     grabbed: bool = False
 
     def human_repr(self, kitty_mod: int = 0) -> str:
-        from .options.utils import mouse_button_map, mouse_trigger_count_map
+        from .options.utils import mouse_button_map, mouse_trigger_count_map, mouse_wheel_map
 
         def mouse_button_num_to_name(num: int) -> str:
+            for k, v in mouse_wheel_map.items():
+                if v == num:
+                    return k
             button_map = {v: k for k, v in mouse_button_map.items()}
-            name = f'b{num+1}'
+            name = f'b{num + 1}'
             return button_map.get(name, name)
 
         def mouse_trigger_count_to_name(count: int) -> str:
@@ -149,8 +222,12 @@ class WindowSystemMouseEvent(NamedTuple):
 
 
 ConvertibleToNumbers = Union[str, bytes, int, float]
+
+
 class sentinel_type:
     pass
+
+
 sentinel = sentinel_type()
 
 
@@ -159,16 +236,17 @@ class AsyncResponse:
 
 
 class RunOnce[T]:
-
     def __init__(self, f: Callable[[], T]) -> None:
         self._override: T | sentinel_type = sentinel
         self._cached_result: T | sentinel_type = sentinel
         update_wrapper(self, f)
 
     if TYPE_CHECKING:
+
         def __call__(self) -> T:
             return cast(T, 1)
     else:
+
         def __call__(self) -> T:
             if self._override is not sentinel:
                 return self._override
@@ -204,9 +282,16 @@ def modmap() -> dict[str, int]:
         GLFW_MOD_SUPER,
     )
 
-    return {'ctrl': GLFW_MOD_CONTROL, 'shift': GLFW_MOD_SHIFT, ('opt' if is_macos else 'alt'): GLFW_MOD_ALT,
-            ('cmd' if is_macos else 'super'): GLFW_MOD_SUPER, 'hyper': GLFW_MOD_HYPER, 'meta': GLFW_MOD_META,
-            'caps_lock': GLFW_MOD_CAPS_LOCK, 'num_lock': GLFW_MOD_NUM_LOCK}
+    return {
+        'ctrl': GLFW_MOD_CONTROL,
+        'shift': GLFW_MOD_SHIFT,
+        ('opt' if is_macos else 'alt'): GLFW_MOD_ALT,
+        ('cmd' if is_macos else 'super'): GLFW_MOD_SUPER,
+        'hyper': GLFW_MOD_HYPER,
+        'meta': GLFW_MOD_META,
+        'caps_lock': GLFW_MOD_CAPS_LOCK,
+        'num_lock': GLFW_MOD_NUM_LOCK,
+    }
 
 
 ActionGroup = Literal['cp', 'sc', 'win', 'tab', 'fs', 'mouse', 'mk', 'lay', 'misc', 'debug', 'session']
@@ -221,6 +306,7 @@ def ac[_T](group: ActionGroup, doc: str) -> Callable[[_T], _T]:
     def w(f: _T) -> _T:
         setattr(f, 'action_spec', ActionSpec(group, doc))
         return f
+
     return w
 
 
@@ -240,6 +326,8 @@ class WindowResizeDragData(NamedTuple):
     width_increases_rightwards: bool = True
     vertical_id: int | None = None
     height_increases_downwards: bool = True
+    # The ids are window ids of a docked window, rather than layout specific ids
+    is_dock: bool = False
 
 
 class WindowResizeDrag(NamedTuple):

@@ -29,7 +29,7 @@ func ShowError(err error) {
 }
 
 func (self *Command) version_string(formatter *markup.Context) string {
-	ans := fmt.Sprintln(formatter.Italic(self.CommandStringForUsage()), formatter.Opt(kitty.VersionString), "created by", formatter.Title("Kovid Goyal"))
+	ans := fmt.Sprintln(formatter.Italic(self.CommandStringForUsage()), formatter.Opt(kitty.VersionString+kitty.VersionSuffix), "created by", formatter.Title("Kovid Goyal"))
 	if runtime.GOOS == "windows" {
 		// Orange (#fd971f) name to match the cursor. Emit truecolor in the
 		// SEMICOLON form (38;2;...) not the colon form (38:2:...) the style

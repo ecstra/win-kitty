@@ -25,7 +25,7 @@ That's it, kitty will be built from source, magically. You can run it as
 This works, because the :code:`./dev.sh build` command downloads all the major
 dependencies of kitty as pre-built binaries for your platform and builds kitty
 to use these rather than system libraries. The few required system libraries
-are X11 and DBUS on Linux.
+are X11 (if you use X server) and DBUS on Linux.
 
 If you make changes to kitty code, simply re-run :code:`./dev.sh build`
 to build kitty with your changes.
@@ -82,13 +82,14 @@ These dependencies are needed when building against system libraries only.
 
 Run-time dependencies:
 
-* ``python``
+* ``python`` >= 3.12
 * ``harfbuzz`` >= 2.2.0
 * ``zlib``
 * ``libpng``
 * ``liblcms2``
 * ``libxxhash``
 * ``openssl``
+* ``shader-slang`` (needed only if you use custom shaders)
 * ``pixman`` (not needed on macOS)
 * ``cairo`` (not needed on macOS)
 * ``freetype`` (not needed on macOS)
@@ -96,12 +97,15 @@ Run-time dependencies:
 * ``libcanberra`` (not needed on macOS)
 * ``libsystemd`` (optional, not needed on non systemd systems)
 * ``ImageMagick`` (optional, needed to display uncommon image formats in the terminal)
+* ``X11 libraries`` (optional, needed if you use X11 on Linux)
+* ``Wayland libraries`` (optional, needed if you use Wayland on Linux)
 
 
 Build-time dependencies:
 
 * ``gcc`` or ``clang``
 * ``simde``
+* ``shader-slang``
 * ``go`` >= _build_go_version (see :file:`go.mod` for go packages used during building)
 * ``pkg-config``
 * Symbols NERD Font Mono either installed system-wide or placed in :file:`fonts/SymbolsNerdFontMono-Regular.ttf`
@@ -194,7 +198,7 @@ the kitty program expects to find them there.
    :file:`ncurses`. Also, if you are building from a git checkout instead of the
    released source code tarball, you will need to install the dependencies from
    :file:`docs/requirements.txt` to build the kitty documentation. They can be
-   installed most easily with ``python -m pip -r docs/requirements.txt``.
+   installed most easily with ``python -m pip install -r docs/requirements.txt``.
 
 This applies to creating packages for |kitty| for macOS package managers such as
 Homebrew or MacPorts as well.

@@ -45,6 +45,12 @@ if [[ -n "$KITTY_BASH_INJECT" ]]; then
                     builtin command sudo TERMINFO="$TERMINFO" "$@";
                 fi
             }
+            if builtin type -P run0 >/dev/null 2>&1; then
+                run0() {
+                    # Ensure terminfo is available in run0, --setenv=NAME copies NAME from the current env
+                    builtin command run0 --setenv=TERMINFO "$@";
+                }
+            fi
     fi
 
     if [[ "$kitty_bash_inject" == *"posix"* ]]; then
@@ -63,27 +69,38 @@ if [[ -n "$KITTY_BASH_INJECT" ]]; then
         # See run_startup_files() in shell.c in the Bash source code
         if builtin shopt -q login_shell; then
             if [[ "$kitty_bash_inject" != *"no-profile"* ]]; then
-                _ksi_sourceable "$KITTY_BASH_ETC_LOCATION/profile" && builtin source "$KITTY_BASH_ETC_LOCATION/profile"
+                if [[ -n "$KITTY_BASH_SYS_PROFILE" ]]; then
+                    # The SYS_PROFILE path bash was compiled with, found by kitty
+                    _ksi_sourceable "$KITTY_BASH_SYS_PROFILE" && builtin source "$KITTY_BASH_SYS_PROFILE"
+                else
+                    _ksi_sourceable "$KITTY_BASH_ETC_LOCATION/profile" && builtin source "$KITTY_BASH_ETC_LOCATION/profile"
+                fi
                 for _ksi_i in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
                     _ksi_sourceable "$_ksi_i" && { builtin source "$_ksi_i"; break; }
                 done
             fi
         else
             if [[ "$kitty_bash_inject" != *"no-rc"* ]]; then
-                # Linux distros build bash with -DSYS_BASHRC. Unfortunately, there is
-                # no way to probe bash for it and different distros use different files
-                # Arch, Debian, Ubuntu use /etc/bash.bashrc
-                # Fedora uses /etc/bashrc sourced from ~/.bashrc instead of SYS_BASHRC
-                # Void Linux uses /etc/bash/bashrc
-                for _ksi_i in "$KITTY_BASH_ETC_LOCATION/bash.bashrc" "$KITTY_BASH_ETC_LOCATION/bash/bashrc" ; do
-                    _ksi_sourceable "$_ksi_i" && { builtin source "$_ksi_i"; break; }
-                done
+                if [[ -n "$KITTY_BASH_SYS_PROFILE" ]]; then
+                    # kitty found the SYS_BASHRC path bash was compiled with by
+                    # scanning the bash binary, it is empty if bash has no SYS_BASHRC
+                    [[ -n "$KITTY_BASH_SYS_BASHRC" ]] && _ksi_sourceable "$KITTY_BASH_SYS_BASHRC" && builtin source "$KITTY_BASH_SYS_BASHRC"
+                else
+                    # Linux distros build bash with -DSYS_BASHRC. When kitty could not
+                    # find it in the bash binary, fall back to well known locations.
+                    # Arch, Debian, Ubuntu use /etc/bash.bashrc
+                    # Fedora uses /etc/bashrc sourced from ~/.bashrc instead of SYS_BASHRC
+                    # Void Linux uses /etc/bash/bashrc
+                    for _ksi_i in "$KITTY_BASH_ETC_LOCATION/bash.bashrc" "$KITTY_BASH_ETC_LOCATION/bash/bashrc" ; do
+                        _ksi_sourceable "$_ksi_i" && { builtin source "$_ksi_i"; break; }
+                    done
+                fi
                 if [[ -z "$KITTY_BASH_RCFILE" ]]; then KITTY_BASH_RCFILE="$HOME/.bashrc"; fi
                 _ksi_sourceable "$KITTY_BASH_RCFILE" && builtin source "$KITTY_BASH_RCFILE"
             fi
         fi
     fi
-    builtin unset KITTY_BASH_RCFILE KITTY_BASH_POSIX_ENV KITTY_BASH_ETC_LOCATION
+    builtin unset KITTY_BASH_RCFILE KITTY_BASH_POSIX_ENV KITTY_BASH_ETC_LOCATION KITTY_BASH_SYS_PROFILE KITTY_BASH_SYS_BASHRC
     builtin unset -f _ksi_sourceable
     builtin export KITTY_SHELL_INTEGRATION="$ksi_val"
     builtin unset _ksi_i ksi_val kitty_bash_inject
@@ -214,7 +231,7 @@ _ksi_main() {
         _ksi_prompt[ps0_suffix]+="\[\e[0 q\]"  # blinking default cursor
     fi
 
-    if [[ "${_ksi_prompt[title]}" == "y" ||  "${_ksi_prompt[mark]}" ]]; then
+    if [[ "${_ksi_prompt[title]}" == "y" || "${_ksi_prompt[mark]}" == "y" ]]; then
         _ksi_get_current_command() {
             builtin local last_cmd
             last_cmd=$(HISTTIMEFORMAT= builtin history 1)
@@ -236,7 +253,7 @@ _ksi_main() {
                 # connected to most SSH servers
                 # or use ssh kitten to connected to some SSH servers that do not set SSH_TTY
                 _ksi_prompt[hostname_prefix]="\h: "
-            elif [[ -n "$(builtin command -v who)" && "$(builtin command who -m 2> /dev/null)" =~ "\([a-fA-F.:0-9]+\)$" ]]; then
+            elif [[ -n "$(builtin command -v who)" && "$(builtin command who -m 2> /dev/null)" =~ \([a-fA-F.:0-9]+\)$ ]]; then
                 # the shell integration script is installed manually on the remote system
                 # the environment variables are cleared after sudo
                 # OpenSSH's sshd creates entries in utmp for every login so use those

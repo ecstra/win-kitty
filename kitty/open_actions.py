@@ -11,9 +11,9 @@ from typing import Any, NamedTuple
 from urllib.parse import ParseResult, unquote, urlparse
 
 from .conf.utils import KeyAction, to_cmdline_implementation
-from .constants import config_dir
+from .constants import config_dir, config_dir_files_ignored
 from .fast_data_types import get_options
-from .guess_mime_type import guess_type
+from .guess_mime_type import guess_type, mime_types_for_matching
 from .options.utils import ActionAlias, MapType, resolve_aliases_and_parse_actions
 from .types import run_once
 from .typing_compat import MatchType
@@ -70,11 +70,9 @@ def parse(lines: Iterable[str]) -> Iterator[OpenAction]:
         entries.append((tuple(match_criteria), tuple(raw_actions)))
 
     with to_cmdline_implementation.filter_env_vars(
-        'URL', 'FILE_PATH', 'FILE', 'FRAGMENT', 'URL_PATH', 'NETLOC',
-        EDITOR=shlex.join(get_editor()),
-        SHELL=resolved_shell(get_options())[0]
+        'URL', 'FILE_PATH', 'FILE', 'FRAGMENT', 'URL_PATH', 'NETLOC', EDITOR=shlex.join(get_editor()), SHELL=resolved_shell(get_options())[0]
     ):
-        for (mc, action_defns) in entries:
+        for mc, action_defns in entries:
             actions: list[KeyAction] = []
             for defn in action_defns:
                 actions.extend(resolve_aliases_and_parse_actions(defn, alias_map, MapType.OPEN_ACTION))
@@ -84,6 +82,7 @@ def parse(lines: Iterable[str]) -> Iterator[OpenAction]:
 def url_matches_criterion(purl: 'ParseResult', url: str, unquoted_path: str, mc: MatchCriteria) -> bool:
     if mc.type == 'url':
         import re
+
         try:
             pat = re.compile(mc.value)
         except re.error:
@@ -92,14 +91,15 @@ def url_matches_criterion(purl: 'ParseResult', url: str, unquoted_path: str, mc:
 
     if mc.type == 'mime':
         import fnmatch
+
         mt = guess_type(unquoted_path, allow_filesystem_access=purl.scheme in ('', 'file'))
         if not mt:
             return False
-        mt = mt.lower()
+        mts = {x.lower() for x in mime_types_for_matching(unquoted_path, mt)}
         for mpat in mc.value.split(','):
             mpat = mpat.strip()
             with suppress(Exception):
-                if fnmatch.fnmatchcase(mt, mpat):
+                if any(fnmatch.fnmatchcase(x, mpat) for x in mts):
                     return True
         return False
 
@@ -122,6 +122,7 @@ def url_matches_criterion(purl: 'ParseResult', url: str, unquoted_path: str, mc:
 
     if mc.type == 'fragment_matches':
         import re
+
         try:
             pat = re.compile(mc.value)
         except re.error:
@@ -131,6 +132,7 @@ def url_matches_criterion(purl: 'ParseResult', url: str, unquoted_path: str, mc:
 
     if mc.type == 'path':
         import fnmatch
+
         try:
             return fnmatch.fnmatchcase(unquoted_path.lower(), mc.value)
         except Exception:
@@ -138,6 +140,7 @@ def url_matches_criterion(purl: 'ParseResult', url: str, unquoted_path: str, mc:
 
     if mc.type == 'file':
         import fnmatch
+
         try:
             fname = posixpath.basename(unquoted_path)
         except Exception:
@@ -217,10 +220,14 @@ def load_actions_from_path(path: str) -> tuple[OpenAction, ...]:
 
 
 def load_open_actions() -> tuple[OpenAction, ...]:
+    if config_dir_files_ignored():
+        return ()
     return load_actions_from_path(os.path.join(config_dir, 'open-actions.conf'))
 
 
 def load_launch_actions() -> tuple[OpenAction, ...]:
+    if config_dir_files_ignored():
+        return ()
     return load_actions_from_path(os.path.join(config_dir, 'launch-actions.conf'))
 
 
@@ -230,16 +237,22 @@ def clear_caches() -> None:
 
 @run_once
 def default_open_actions() -> tuple[OpenAction, ...]:
-    return tuple(parse('''\
+    return tuple(
+        parse(
+            """\
 # Open kitty HTML docs links
 protocol kitty+doc
 action show_kitty_doc $URL_PATH
-'''.splitlines()))
+""".splitlines()
+        )
+    )
 
 
 @run_once
 def default_launch_actions() -> tuple[OpenAction, ...]:
-    return tuple(parse('''\
+    return tuple(
+        parse(
+            """\
 # Open script files. Change confirm-always to confirm-never or confirm-if-needed to
 # disable confirmation for all or executable files respectively.
 protocol file
@@ -275,7 +288,9 @@ action launch --type=os-window kitten icat --hold -- $FILE_PATH
 # Open ssh URLs with ssh command
 protocol ssh
 action launch --type=os-window ssh -- $URL
-'''.splitlines()))
+""".splitlines()
+        )
+    )
 
 
 def actions_for_url(url: str, actions_spec: str | None = None) -> Iterator[KeyAction]:

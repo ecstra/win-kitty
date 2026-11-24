@@ -12,7 +12,7 @@ from kitty.fonts import FontSpec
 import kitty.fonts
 from kitty.options.utils import (
     AliasMap, KeyDefinition, KeyFallbackType, KeyMapOptions, KeyboardModeMap, MouseHideWait, MouseMap,
-    MouseMapping, NotifyOnCmdFinish, TabBarMarginHeight
+    MouseMapping, NotifyOnCmdFinish, TabBarMarginHeight, URLMappings
 )
 import kitty.options.utils
 from kitty.types import FloatEdges
@@ -23,14 +23,16 @@ choices_for_allow_remote_control = typing.Literal['password', 'socket-only', 'so
 choices_for_background_image_layout = typing.Literal['mirror-tiled', 'scaled', 'tiled', 'clamped', 'centered', 'cscaled']
 choices_for_default_pointer_shape = typing.Literal['arrow', 'beam', 'text', 'pointer', 'hand', 'help', 'wait', 'progress', 'crosshair', 'cell', 'vertical-text', 'move', 'e-resize', 'ne-resize', 'nw-resize', 'n-resize', 'se-resize', 'sw-resize', 's-resize', 'w-resize', 'ew-resize', 'ns-resize', 'nesw-resize', 'nwse-resize', 'zoom-in', 'zoom-out', 'alias', 'copy', 'not-allowed', 'no-drop', 'grab', 'grabbing']
 choices_for_focus_follows_mouse = typing.Literal['no', 'n', 'false', 'y', 'yes', 'true', 'drop']
+choices_for_hyperlink_target_position = typing.Literal['top', 'bottom', 'below', 'tooltip']
 choices_for_linux_display_server = typing.Literal['auto', 'wayland', 'x11']
 choices_for_macos_colorspace = typing.Literal['srgb', 'default', 'displayp3']
 choices_for_macos_show_window_title_in = typing.Literal['all', 'menubar', 'none', 'window']
+choices_for_padding_fill_strategy = typing.Literal['background', 'neighboring_cell']
 choices_for_palette_generate = typing.Literal['fixed', 'semantic', 'legacy']
 choices_for_placement_strategy = typing.Literal['top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right']
 choices_for_pointer_shape_when_grabbed = choices_for_default_pointer_shape
 choices_for_progress_bar = typing.Literal['left', 'right', 'top', 'bottom', 'hidden']
-choices_for_scrollbar = typing.Literal['scrolled', 'always', 'never', 'hovered', 'scrolled-and-hovered']
+choices_for_scrollbar = typing.Literal['scrolled', 'always', 'never', 'hovered', 'scrolled-and-hovered', 'scrolled-or-hovered']
 choices_for_strip_trailing_spaces = typing.Literal['always', 'never', 'smart']
 choices_for_tab_bar_align = typing.Literal['start', 'center', 'end', 'left', 'right']
 choices_for_tab_bar_style = typing.Literal['fade', 'hidden', 'powerline', 'separator', 'slant', 'custom']
@@ -77,6 +79,7 @@ option_names = (
     'clipboard_max_size',
     'clone_source_strategies',
     'close_on_child_death',
+    'collapse_window_margins',
     'color0',
     'color1',
     'color2',
@@ -348,7 +351,9 @@ option_names = (
     'cursor_trail_decay',
     'cursor_trail_start_threshold',
     'cursor_underline_thickness',
+    'custom_shaders',
     'default_pointer_shape',
+    'detect_url_regex',
     'detect_urls',
     'dim_opacity',
     'disable_ligatures',
@@ -371,6 +376,7 @@ option_names = (
     'foreground',
     'forward_stdio',
     'hide_window_decorations',
+    'hyperlink_target_position',
     'inactive_border_color',
     'inactive_tab_background',
     'inactive_tab_font_style',
@@ -416,6 +422,7 @@ option_names = (
     'narrow_symbols',
     'notify_on_cmd_finish',
     'open_url_with',
+    'padding_fill_strategy',
     'palette_generate',
     'paste_actions',
     'pixel_scroll',
@@ -423,12 +430,14 @@ option_names = (
     'pointer_shape_when_dragging',
     'pointer_shape_when_grabbed',
     'progress_bar',
+    'remap_modifiers',
     'remember_window_position',
     'remember_window_size',
     'remote_control_password',
     'repaint_delay',
     'resize_debounce_time',
     'resize_in_steps',
+    'restore_session_after_logout',
     'scrollback_fill_enlarged_window',
     'scrollback_lines',
     'scrollback_pager',
@@ -476,7 +485,9 @@ option_names = (
     'tab_separator',
     'tab_switch_strategy',
     'tab_title_max_length',
+    'tab_title_max_lines',
     'tab_title_template',
+    'tab_title_wrap',
     'term',
     'terminfo_type',
     'text_composition_strategy',
@@ -500,6 +511,7 @@ option_names = (
     'wheel_scroll_min_lines',
     'wheel_scroll_multiplier',
     'window_alert_on_bell',
+    'window_border_radius',
     'window_border_width',
     'window_drag_tolerance',
     'window_logo_alpha',
@@ -554,6 +566,7 @@ class Options:
     clipboard_max_size: float = 512.0
     clone_source_strategies: frozenset[str] = frozenset({'conda', 'env_var', 'path', 'venv'})
     close_on_child_death: bool = False
+    collapse_window_margins: bool = False
     command_on_bell: list[str] = ['none']
     confirm_os_window_close: tuple[int, bool] = (-1, False)
     copy_on_select: str = ''
@@ -569,6 +582,7 @@ class Options:
     cursor_trail_decay: tuple[float, float] = (0.1, 0.4)
     cursor_trail_start_threshold: tuple[int, int] = (2, 2)
     cursor_underline_thickness: float = 2.0
+    custom_shaders: tuple[str, ...] = ()
     default_pointer_shape: choices_for_default_pointer_shape = 'beam'
     detect_urls: bool = True
     dim_opacity: float = 0.4
@@ -588,6 +602,7 @@ class Options:
     foreground: Color = Color(221, 221, 221)
     forward_stdio: bool = False
     hide_window_decorations: int = 0
+    hyperlink_target_position: choices_for_hyperlink_target_position = 'top'
     inactive_border_color: Color = Color(204, 204, 204)
     inactive_tab_background: Color = Color(153, 153, 153)
     inactive_tab_font_style: tuple[bool, bool] = (False, False)
@@ -627,6 +642,7 @@ class Options:
     mouse_hide_wait: MouseHideWait = MouseHideWait(hide_wait=0.0, show_wait=0.0, show_threshold=40, scroll_show=True) if is_macos else MouseHideWait(hide_wait=3.0, show_wait=0.0, show_threshold=40, scroll_show=True)
     notify_on_cmd_finish: NotifyOnCmdFinish = NotifyOnCmdFinish(when='never', duration=5.0, action='notify', cmdline=(), clear_on=('focus', 'next'))
     open_url_with: list[str] = ['default']
+    padding_fill_strategy: choices_for_padding_fill_strategy = 'background'
     palette_generate: choices_for_palette_generate = 'fixed'
     paste_actions: frozenset[str] = frozenset({'confirm', 'quote-urls-at-prompt'})
     pixel_scroll: bool = True
@@ -634,11 +650,13 @@ class Options:
     pointer_shape_when_dragging: tuple[str, str] = ('beam', 'crosshair')
     pointer_shape_when_grabbed: choices_for_pointer_shape_when_grabbed = 'arrow'
     progress_bar: choices_for_progress_bar = 'top'
+    remap_modifiers: dict[int, int] = {}
     remember_window_position: bool = False
     remember_window_size: bool = True
     repaint_delay: int = 10
     resize_debounce_time: tuple[float, float] = (0.1, 0.5)
     resize_in_steps: bool = False
+    restore_session_after_logout: bool = False
     scrollback_fill_enlarged_window: bool = False
     scrollback_lines: int = 2000
     scrollback_pager: list[str] = ['less', '--chop-long-lines', '--RAW-CONTROL-CHARS', '+INPUT_LINE_NUMBER']
@@ -685,7 +703,9 @@ class Options:
     tab_separator: str = ' ┇'
     tab_switch_strategy: choices_for_tab_switch_strategy = 'previous'
     tab_title_max_length: int = 0
+    tab_title_max_lines: int = 1
     tab_title_template: str = '{fmt.fg.red}{bell_symbol}{activity_symbol}{secure_input_symbol}{fmt.fg.tab}{tab.last_focused_progress_percent}{title}'
+    tab_title_wrap: int = 0
     term: str = 'xterm-kitty'
     terminfo_type: choices_for_terminfo_type = 'path'
     text_composition_strategy: str = 'platform'
@@ -708,6 +728,7 @@ class Options:
     wheel_scroll_min_lines: int = 1
     wheel_scroll_multiplier: float = 5.0
     window_alert_on_bell: bool = True
+    window_border_radius: tuple[float, str] = (0, 'pt')
     window_border_width: tuple[float, str] = (0.5, 'pt')
     window_drag_tolerance: float = 2.0
     window_logo_alpha: float = 0.5
@@ -727,6 +748,7 @@ class Options:
     window_title_bar_min_windows: int = 0
     window_title_template: str = '{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.window}{progress_percent}{title}'
     action_alias: dict[str, str] = {}
+    detect_url_regex: dict[str, str] = {}
     env: dict[str, str] = {}
     exe_search_path: dict[str, str] = {}
     filter_notification: dict[str, str] = {}
@@ -743,6 +765,7 @@ class Options:
     alias_map: AliasMap = AliasMap()
     mouse_map: list[kitty.options.utils.MouseMapping] = []
     mousemap: MouseMap = {}
+    url_mappings: URLMappings = {}
     color_table: "array[int]" = array("L", (
         0x000000, 0xcc0403, 0x19cb00, 0xcecb00, 0x0d73cc, 0xcb1ed1, 0x0dcdcd, 0xdddddd,
         0x767676, 0xf2201f, 0x23fd00, 0xfffd00, 0x1a8fff, 0xfd28ff, 0x14ffff, 0xffffff,
@@ -856,6 +879,7 @@ class Options:
 defaults = Options()
 
 defaults.action_alias = {}
+defaults.detect_url_regex = {}
 defaults.env = {}
 defaults.exe_search_path = {}
 defaults.filter_notification = {}

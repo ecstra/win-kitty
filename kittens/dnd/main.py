@@ -3,12 +3,13 @@
 
 import sys
 
-OPTIONS = r'''
+OPTIONS = r"""
 --drag
 type=list
 When starting a drag, use the specified file as the data source for the specified
 MIME type. Syntax is: mime-type:path/to/file. For example image/jpeg:mypic.jpg
 Can be specified multiple times to drag multiple MIME types.
+Use :code:`-` or :file:`/dev/stdin` to read from STDIN. The same input can be used for multiple MIME types.
 
 
 --drop
@@ -22,6 +23,16 @@ text/uri-list.
 
 --drop-dest
 Path to the directory in which dropped data is saved. Defaults to the current working directory.
+
+
+--copy-mode
+type=choices
+choices=auto,independent
+default=auto
+Control how local files are handled for Copy drops. The default, :code:`auto`, uses hard links
+when possible for performance and falls back to copying file data. :code:`independent` always
+copies file data, so modifying a dropped file cannot modify its source. Move drops always use
+hard links when possible.
 
 
 --confirm-drop-overwrite
@@ -58,10 +69,10 @@ A comma separated list of events to exit on. Possible events are :code:`drag-fin
 :code:`drop-finish` and :code:`esc-key`. The first two events refer to a successful
 completion of a drag or a drop respectively. :code:`esc-key` means press the :kbd:`Esc`
 key.
-'''.format
+""".format
 
 
-help_text = '''\
+help_text = """\
 Perform drag and drop operations, even over SSH.
 
 Any arguments on the command line are assumed to be files and directories to drag.
@@ -72,18 +83,19 @@ If the text/uri-list MIME type is dropped onto this window, the files and direct
 copied into the current working directory. When dragging from this window, if a move operation is
 performed when dropping and the drop is to a remote machine, the files and directories to drag and deleted.
 
-If data is present on STDIN it is set as text/plain when dragging, unless text/plain is specified via --drag.
+If data is present on STDIN it is set as text/plain when dragging, unless STDIN is used explicitly via --drag or text/plain is specified via --drag.
 Any text/plain data that is dropped onto this window is output to STDOUT, if STDOUT is connected to a file, otherwise it
 is discarded.
 
 Press the Esc or Ctrl+C keys to quit the kitten at any time, cancelling any in progress drag.
-'''
+"""
 
 usage = '[files to drag]'
 if __name__ == '__main__':
     raise SystemExit('This should be run as kitten dnd')
 elif __name__ == '__doc__':
     from kitty.simple_cli_definitions import CompletionSpec
+
     cd = sys.cli_docs  # type: ignore
     cd['usage'] = usage
     cd['options'] = OPTIONS

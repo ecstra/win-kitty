@@ -21,24 +21,27 @@ To see a quick demo, inside a |kitty| terminal run::
 You can also see a screenshot with more sophisticated features such as
 alpha-blending and text over graphics.
 
-.. image:: https://user-images.githubusercontent.com/1308621/31647475-1188ab66-b326-11e7-8d26-24b937f1c3e8.png
+.. image:: https://github.com/user-attachments/assets/78caad22-1798-4ec5-a6ee-2722c51ce875
     :alt: Demo of graphics rendering in kitty
     :align: center
 
 Some applications that use the kitty graphics protocol:
 
-* `awrit <https://github.com/chase/awrit>`_ - Chromium-based web browser rendered in Kitty with mouse and keyboard support
 * `blackcat <https://github.com/j-c-m/blackcat>`_ - a modern compatible cat with image support
 * `bicat <https://github.com/stevenxxiu/bicat>`_ - a terminal image viewer that also works in the Vifm file manager, with nested Tmux support
 * `broot <https://dystroy.org/broot/>`_ - a terminal file explorer and manager, with preview of images, SVG, PDF, etc.
 * `chafa <https://github.com/hpjansson/chafa>`_  - a terminal image viewer
+* `chawan <https://chawan.net>`_ - TUI web browser
+* `desktui <https://github.com/mishushakov/desktui>`_ - a VNC client that draws a remote desktop in the terminal, one remote pixel per terminal pixel
 * :doc:`kitty-diff <kittens/diff>` - a side-by-side terminal diff program with support for images
+* `elio <https://github.com/elio-fm/elio>`_ - Batteries-included terminal file manager with rich previews
 * `fzf <https://github.com/junegunn/fzf/commit/d8188fce7b7bea982e7f9050c35e488e49fb8fd0>`_ - A command line fuzzy finder
 * `mpv <https://github.com/mpv-player/mpv/commit/874e28f4a41a916bb567a882063dd2589e9234e1>`_ - A video player that can play videos in the terminal
 * `neofetch <https://github.com/dylanaraps/neofetch>`_ - A command line system information tool
 * `nvim <https://github.com/neovim/neovim/issues/30889>`__ - A TUI editor that can display images in the terminal
 * `pixcat <https://github.com/mirukana/pixcat>`_ - a third party CLI and python library that wraps the graphics protocol
 * `ranger <https://github.com/ranger/ranger>`_ - a terminal file manager, with image previews
+* `terminal-browser <https://terminal-browser.com/>`_ - Chromium-based web browser rendered in Kitty with mouse and keyboard support
 * `termpdf.py <https://github.com/dsanson/termpdf.py>`_ - a terminal PDF/DJVU/CBR viewer
 * `timg <https://github.com/hzeller/timg>`_ - a terminal image and video viewer
 * `tpix <https://github.com/jesvedberg/tpix>`_ - a statically compiled binary that can be used to display images and easily installed on remote servers without root access
@@ -59,12 +62,17 @@ Libraries:
 * `kitty-graphics.el <https://github.com/cashmeredev/kitty-graphics.el>`_ - Images in emacs
 * `term-image <https://github.com/AnonymouX47/term-image>`_  - A Python library, CLI and TUI to display and browse images in the terminal
 * `glkitty <https://github.com/michaeljclark/glkitty>`_ - C library to draw OpenGL shaders in the terminal with a glgears demo
+* `malevich <https://github.com/shergin/malevich>`_ - Rust library for terminal plotting that can draw charts with the graphics protocol
+* `kmp-terminal <https://github.com/JohNan/kmp-terminal-emulator>`_ - Kotlin Multiplatform terminal emulator library and Compose Multiplatform renderer supporting the graphics protocol and Unicode placeholders
 
 Other terminals that have implemented the graphics protocol:
 
+* `AbsoluteTelnet/SSH <https://www.celestialsoftware.net/kitty-graphics-protocol>`_
 * `Ghostty <https://ghostty.org>`_
 * `Konsole <https://invent.kde.org/utilities/konsole/-/merge_requests/594>`_
+* `Mobile SSH <https://mobile-ssh.github.io/docs/terminal/>`_
 * `st (with a patch) <https://st.suckless.org/patches/kitty-graphics-protocol>`_
+* `SSH Client for Android <https://ssh-client.nanzen.se/features>`_
 * `Warp <https://docs.warp.dev/getting-started/changelog#id-2025.03.26-v0.2025.03.26.08.10>`_
 * `wayst <https://github.com/91861/wayst>`_
 * `WezTerm <https://github.com/wez/wezterm/issues/986>`_
@@ -81,86 +89,86 @@ per row and column. The cell width is then simply the window size divided by the
 number of rows. This can be done by using the ``TIOCGWINSZ`` ioctl. Some
 code to demonstrate its use
 
-.. tab:: C
+.. tab-set::
 
-    .. code-block:: c
+   .. tab-item:: C
 
-        #include <stdio.h>
-        #include <sys/ioctl.h>
+      .. code-block:: c
 
-        int main(int argc, char **argv) {
-            struct winsize sz;
-            ioctl(0, TIOCGWINSZ, &sz);
-            printf(
-                "number of rows: %i, number of columns: %i, screen width: %i, screen height: %i\n",
-                sz.ws_row, sz.ws_col, sz.ws_xpixel, sz.ws_ypixel);
-            return 0;
-        }
+         #include <stdio.h>
+         #include <sys/ioctl.h>
 
+         int main(int argc, char **argv) {
+             struct winsize sz;
+             ioctl(0, TIOCGWINSZ, &sz);
+             printf(
+                 "number of rows: %i, number of columns: %i, screen width: %i, screen height: %i\n",
+                 sz.ws_row, sz.ws_col, sz.ws_xpixel, sz.ws_ypixel);
+             return 0;
+         }
 
-.. tab:: Python
+   .. tab-item:: Python
 
-    .. code-block:: python
+      .. code-block:: python
 
-        import array, fcntl, sys, termios
-        buf = array.array('H', [0, 0, 0, 0])
-        fcntl.ioctl(sys.stdout, termios.TIOCGWINSZ, buf)
-        print((
-            'number of rows: {} number of columns: {} '
-            'screen width: {} screen height: {}').format(*buf))
+         import array, fcntl, sys, termios
+         buf = array.array('H', [0, 0, 0, 0])
+         fcntl.ioctl(sys.stdout, termios.TIOCGWINSZ, buf)
+         print((
+             'number of rows: {} number of columns: {} '
+             'screen width: {} screen height: {}').format(*buf))
 
-.. tab:: Go
+   .. tab-item:: Go
 
-    .. code-block:: go
+      .. code-block:: go
 
-        package main
+         package main
 
-        import (
-            "fmt"
-            "os"
+         import (
+             "fmt"
+             "os"
 
-            "golang.org/x/sys/unix"
-        )
+             "golang.org/x/sys/unix"
+         )
 
-        func main() {
-            var err error
-            var f *os.File
-            if f, err = os.OpenFile("/dev/tty", unix.O_NOCTTY|unix.O_CLOEXEC|unix.O_NDELAY|unix.O_RDWR, 0666); err == nil {
-                var sz *unix.Winsize
-                if sz, err = unix.IoctlGetWinsize(int(f.Fd()), unix.TIOCGWINSZ); err == nil {
-                    fmt.Printf("rows: %v columns: %v width: %v height %v\n", sz.Row, sz.Col, sz.Xpixel, sz.Ypixel)
-                    return
-                }
-            }
-            fmt.Fprintln(os.Stderr, err)
-            os.Exit(1)
-        }
+         func main() {
+             var err error
+             var f *os.File
+             if f, err = os.OpenFile("/dev/tty", unix.O_NOCTTY|unix.O_CLOEXEC|unix.O_NDELAY|unix.O_RDWR, 0666); err == nil {
+                 var sz *unix.Winsize
+                 if sz, err = unix.IoctlGetWinsize(int(f.Fd()), unix.TIOCGWINSZ); err == nil {
+                     fmt.Printf("rows: %v columns: %v width: %v height %v\n", sz.Row, sz.Col, sz.Xpixel, sz.Ypixel)
+                     return
+                 }
+             }
+             fmt.Fprintln(os.Stderr, err)
+             os.Exit(1)
+         }
 
+   .. tab-item:: POSIX sh
 
-.. tab:: POSIX sh
+      .. code-block:: sh
 
-    .. code-block:: sh
+         #!/bin/sh
 
-        #!/bin/sh
+         read rows cols <<EOF
+         $(command stty size)
+         EOF
 
-        read rows cols <<EOF
-        $(command stty size)
-        EOF
-
-        oldstty=$(command stty -g)
-        command stty raw -echo
-        printf "\033[14t"
-        response=""
-        while : ; do
-            char=$(command dd bs=1 count=1 2>/dev/null)
-            [ "$char" = "t" ] && break
-            response="${response}${char}"
-        done
-        command stty "$oldstty"
-        h=$(echo "$response" | cut -d';' -f2)
-        w=$(echo "$response" | cut -d';' -f3)
-        printf "number of rows: %d number of columns: %d" "$rows" "$cols"
-        printf " screen width: %d screen height: %d\n" "$w" "$h"
+         oldstty=$(command stty -g)
+         command stty raw -echo
+         printf "\033[14t"
+         response=""
+         while : ; do
+             char=$(command dd bs=1 count=1 2>/dev/null)
+             [ "$char" = "t" ] && break
+             response="${response}${char}"
+         done
+         command stty "$oldstty"
+         h=$(echo "$response" | cut -d';' -f2)
+         w=$(echo "$response" | cut -d';' -f3)
+         printf "number of rows: %d number of columns: %d" "$rows" "$cols"
+         printf " screen width: %d screen height: %d\n" "$w" "$h"
 
 
 Note that some terminals return ``0`` for the width and height values. Such
@@ -181,55 +189,56 @@ A minimal example
 Some minimal code to display PNG images in kitty, using the most basic
 features of the graphics protocol:
 
-.. tab:: POSIX sh
+.. tab-set::
 
-    .. code-block:: sh
+   .. tab-item:: POSIX sh
 
-        #!/bin/sh
+      .. code-block:: sh
 
-        send_chunked() {
-            first="y"
-            while IFS= read -r chunk; do
-                metadata=""; [ "$first" = "y" ] && { metadata="a=T,f=100,"; first="n"; }
-                printf "\033_G%sm=1;%s\033\\" "${metadata}" "${chunk}"
-            done
-            [ "$first" = "n" ] && { printf "\033_Gm=0;\033\\"; return 0; }
-            return 1
-        }
+         #!/bin/sh
 
-        transmit_png() {
-            # Different systems have different or missing base64 executables.
-            # The sed command below adds a trailing newline which openssl
-            # base64 does not produce and is needed for reading via read -r
-            { command base64 -w 4096 "$1" 2>/dev/null | send_chunked; } || \
-            { command base64 -b 4096 "$1" 2>/dev/null | send_chunked; } || \
-            { command openssl base64 -e -A -in "$1" | command sed '$a\' | command fold -b -w 4096 | send_chunked; }
-        }
+         send_chunked() {
+             first="y"
+             while IFS= read -r chunk; do
+                 metadata=""; [ "$first" = "y" ] && { metadata="a=T,f=100,"; first="n"; }
+                 printf "\033_G%sm=1;%s\033\\" "${metadata}" "${chunk}"
+             done
+             [ "$first" = "n" ] && { printf "\033_Gm=0;\033\\"; return 0; }
+             return 1
+         }
 
-        transmit_png "$1"
+         transmit_png() {
+             # Different systems have different or missing base64 executables.
+             # The sed command below adds a trailing newline which openssl
+             # base64 does not produce and is needed for reading via read -r
+             { command base64 -w 4096 "$1" 2>/dev/null | send_chunked; } || \
+             { command base64 -b 4096 "$1" 2>/dev/null | send_chunked; } || \
+             { command openssl base64 -e -A -in "$1" | command sed '$a\' | command fold -b -w 4096 | send_chunked; }
+         }
 
+         transmit_png "$1"
 
-.. tab:: Python
+   .. tab-item:: Python
 
-    .. code-block:: python
+      .. code-block:: python
 
-        #!/usr/bin/env python
-        import sys
-        from base64 import standard_b64encode
+         #!/usr/bin/env python
+         import sys
+         from base64 import standard_b64encode
 
-        first, eof, buf = True, False, memoryview(bytearray(3 * 4096 // 4))
-        w = sys.stdout.buffer.write
-        with open(sys.argv[-1], 'rb') as f:
-            while not eof:
-                p = buf[:]
-                while p and not eof:
-                    n = f.readinto1(p)
-                    p, eof = p[n:], n == 0
-                encoded = standard_b64encode(buf[:len(buf)-len(p)])
-                metadata, first = "a=T,f=100," if first else "", False
-                w(f'\x1b_G{metadata}m={0 if eof else 1};'.encode('ascii'))
-                w(encoded)
-                w(b'\x1b\\')
+         first, eof, buf = True, False, memoryview(bytearray(3 * 4096 // 4))
+         w = sys.stdout.buffer.write
+         with open(sys.argv[-1], 'rb') as f:
+             while not eof:
+                 p = buf[:]
+                 while p and not eof:
+                     n = f.readinto1(p)
+                     p, eof = p[n:], n == 0
+                 encoded = standard_b64encode(buf[:len(buf)-len(p)])
+                 metadata, first = "a=T,f=100," if first else "", False
+                 w(f'\x1b_G{metadata}m={0 if eof else 1};'.encode('ascii'))
+                 w(encoded)
+                 w(b'\x1b\\')
 
 
 Save this script as :file:`send-png`, then you can use it to display any PNG
@@ -249,10 +258,12 @@ All graphics escape codes are of the form::
 This is a so-called *Application Programming Command (APC)*. Most terminal
 emulators ignore APC codes, making it safe to use.
 
-The control data is a comma-separated list of ``key=value`` pairs.  The payload
-is arbitrary binary data, :rfc:`base64 <4648>` encoded to prevent interoperation problems
-with legacy terminals that get confused by control codes within an APC code.
-The meaning of the payload is interpreted based on the control data.
+The control data is a comma-separated list of ``key=value`` pairs, trailing or
+leading commas are undefined implementations may ignore them or reject the
+escape code entirely. The payload is arbitrary binary data, :rfc:`base64
+<4648>` encoded to prevent interoperation problems with legacy terminals that
+get confused by control codes within an APC code. The meaning of the payload is
+interpreted based on the control data.
 
 The first step is to transmit the actual image data.
 
@@ -272,7 +283,9 @@ emulator must understand pixel data in three formats, 24-bit RGB, 32-bit RGBA an
 PNG. This is specified using the ``f`` key in the control data. ``f=32`` (which is the
 default) indicates 32-bit RGBA data and ``f=24`` indicates 24-bit RGB data and ``f=100``
 indicates PNG data. The PNG format is supported both for convenience, and as a compact way
-of transmitting paletted images.
+of transmitting paletted images. Additionally, ``f=8`` and ``f=16`` indicate
+:ref:`indexed color data <indexed_color_data>`, whose colors come from the
+terminal color scheme.
 
 RGB and RGBA data
 ~~~~~~~~~~~~~~~~~~~
@@ -287,6 +300,60 @@ control data. For example::
 Here the width and height are specified using the ``s`` and ``v`` keys respectively. Since
 ``f=24`` there are three bytes per pixel and therefore the pixel data must be ``3 * 10 * 20 = 600``
 bytes.
+
+.. _indexed_color_data:
+
+Indexed color data
+~~~~~~~~~~~~~~~~~~~~~
+
+.. versionadded:: 0.50.0
+
+In these formats every pixel is an index into the terminal's color palette,
+rather than an actual color. The image is drawn using the current colors of
+the terminal and is automatically redrawn when they change, for example, when
+the user switches from a dark to a light color theme. This is useful for
+graphics such as charts and diagrams that should match the colors of the text
+around them. As with RGB data, the image dimensions **must** be sent in the
+control data. For example::
+
+    <ESC>_Gf=16,s=10,v=20;<payload><ESC>\
+
+With ``f=8`` every pixel is a single byte, the palette index, and the image is
+fully opaque, so the data must be ``10 * 20 = 200`` bytes. With ``f=16`` every
+pixel is two bytes, the palette index followed by the alpha (opacity) of the
+pixel, from ``0`` (fully transparent) to ``255`` (fully opaque), so the data
+must be ``2 * 10 * 20 = 400`` bytes. Use a transparent pixel when you want
+whatever is below the image, such as the terminal background, to show through,
+and partially transparent pixels to anti-alias edges.
+
+The palette index maps to colors as follows:
+
+=========== ====================================================================
+Index        Color
+=========== ====================================================================
+0 - 247      The same colors as in the SGR 256 color table, that is the 16
+             ANSI colors, the 6x6x6 color cube and the first sixteen shades
+             of the grayscale ramp
+248          The default background color
+249          The default foreground color
+250          The selection background color
+251          The selection foreground color
+252          The cursor color
+253          The cursor text color
+254          The color used to highlight URLs on mouse hover
+255          Reserved for future use, currently the default foreground color
+=========== ====================================================================
+
+When a terminal setting means one of the special colors at ``250 - 253`` is
+taken from the cell it is drawn over, the default foreground color is used
+for ``250`` and ``252`` and the default background color for ``251`` and
+``253``. Note that ``248`` is always drawn as an opaque color, ignoring any
+background opacity of the terminal window, use transparent pixels instead to
+let the actual window background show through.
+
+Animation and frame composition are not supported for images in these formats.
+Clients can check for support by sending a :ref:`query <querying>` with
+``f=8`` and checking for an ``OK`` response.
 
 PNG data
 ~~~~~~~~~~~~~~~
@@ -339,6 +406,17 @@ Value of `t`          Meaning
                       `POSIX shared memory object <https://pubs.opengroup.org/onlinepubs/9699919799/functions/shm_open.html>`_
                       and on Windows is a
                       `Named shared memory object <https://docs.microsoft.com/en-us/windows/win32/memory/creating-named-shared-memory>`_.
+                      On POSIX, clients *should* use SHM names that start with
+                      a :file:`/` and have no other :file:`/` characters,
+                      whenever possible. However, some platforms require
+                      other forms, for example, sandboxed applications on
+                      macOS can only use names of the form
+                      :file:`app-group-id/name`, with no leading slash. So
+                      terminal emulators **must** accept names without a
+                      leading slash and pass the name unmodified to
+                      :code:`shm_open()` and :code:`shm_unlink()`. Names must
+                      be no longer than the maximum SHM name size supported
+                      by the OS.
                       The terminal emulator must read the data from the memory
                       object and then unlink and close it on POSIX and just
                       close it on Windows.
@@ -351,6 +429,18 @@ from potentially untrusted sources, terminal emulators **must** refuse to read
 any device/socket/etc. special files. Only regular files are allowed.
 Additionally, terminal emulators may refuse to read files in *sensitive*
 parts of the filesystem, such as :file:`/proc`, :file:`/sys`, :file:`/dev`, etc.
+These checks should be made on the path *before* the file is opened, since
+merely opening a file can have side-effects.
+
+Because the escape codes can be emitted by a program running on a remote
+machine over SSH or by a sandboxed process, the terminal emulator **must not**
+allow such a program to use the responses to these commands to learn anything
+about files it cannot read itself. In particular, all failures to read an
+image file, be it because the file does not exist, is not readable, is not a
+regular file, lies in a sensitive location or is smaller than the client
+claimed, must be reported with a single, identical, error response. kitty
+answers with ``EBADF:Failed to read image file`` for all of these and writes
+the actual reason to its log, which only the local user can see.
 
 Local client
 ^^^^^^^^^^^^^^
@@ -405,6 +495,8 @@ position when the final chunk is received. Finally, terminals must not display
 anything, until the entire sequence is received and validated.
 
 
+.. _querying:
+
 Querying support and available transmission mediums
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -450,6 +542,71 @@ So for example, you could send::
 If you get back a response to the graphics query, the terminal emulator supports
 the protocol, if you get back a response to the device attributes query without
 a response to the graphics query, it does not.
+
+.. _graphics_query_features:
+
+Querying support for protocol features
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. versionadded:: 0.50.0
+   Support for querying protocol features with the ``e`` key
+
+Some terminal emulators implement only part of this protocol, while still
+replying ``OK`` to the *query action*. To find out which features a terminal
+supports, send a *feature query*: a *query action* with the ``e`` key set to
+the action you are interested in. For example, ``e=T`` to ask about
+transmitting and displaying images or ``e=f`` to ask about loading animation
+frames. Since the meaning of many keys differs between actions, the other keys
+in the feature query are interpreted as they would be for that action. The
+terminal emulator will include in its reply every key from the feature query
+that has a non-default value which it supports for that action, with that
+value, as well as ``e`` itself, to indicate that it supports the action. For
+example, to check for support for :ref:`Unicode placeholders
+<graphics_unicode_placeholders>` and the cursor movement policy::
+
+    <ESC>_Ga=q,i=31,e=T,U=1,C=1<ESC>\
+
+to which a terminal that supports both will reply::
+
+    <ESC>_Gi=31,e=T,C=1,U=1;OK<ESC>\
+
+And to check for support for :ref:`animation <animation_protocol>`, including
+editing existing frames and the overwrite composition mode::
+
+    <ESC>_Ga=q,i=31,e=f,r=1,X=1<ESC>\
+
+to which a terminal that supports animation frames but not the overwrite
+composition mode will reply::
+
+    <ESC>_Gi=31,e=f,r=1;OK<ESC>\
+
+Keys can appear in the reply in any order. A key that is missing from the reply
+is not supported, at least not with the value specified in the query. If ``e``
+is missing from the reply, the action is not supported, and no other keys are
+reported. Keys with default values, as well as the ``a``, ``i``, ``I``, ``m``
+and ``q`` keys, are not included in the reply. A feature query transmits no
+image data, any payload is ignored, and it has no effect on images or on any
+chunked transmission in progress. The ``e`` key is only allowed in
+*query actions*, and the feature query must have the ``i`` key set, as for any
+other *query action*.
+
+Note that a feature query never performs any action, it only checks whether
+the specified keys and values are understood. For example, a terminal emulator
+replying with ``t=f`` might still fail to read a particular file. Use a normal
+*query action* to check that.
+
+Terminal emulators that do not support feature queries will either ignore the
+``e`` key and reply to a normal *query action*, without ``e`` in the reply, or
+consider the command malformed and not reply at all. A client can handle all
+cases by sending feature queries after the query used to detect support for the
+protocol, followed by the request for the primary device attributes::
+
+    <ESC>_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA<ESC>\<ESC>_Ga=q,i=32,e=T,U=1<ESC>\<ESC>_Ga=q,i=33,e=f<ESC>\<ESC>[c
+
+If no reply to a feature query is received before the reply to the device
+attributes query, or the reply does not contain ``e``, the terminal emulator
+does not support the queried action, or does not support feature queries at
+all, and the client has to fall back to other means of detecting features.
 
 
 Display images on screen
@@ -527,7 +684,8 @@ and `r` the number of rows. The image will be scaled (enlarged/shrunk) as needed
 the specified area. Note that if you specify a start cell offset via the ``X,Y`` keys, it is not
 added to the number of rows/columns. If only one of either ``r`` or ``c`` is
 specified, the other one is computed based on the source image aspect ratio, so
-that the image is displayed without distortion.
+that the image is displayed without distortion. When both are specified the
+image is letterboxed/pillarboxed to prevent distortion.
 
 Finally, you can specify the image *z-index*, i.e. the vertical stacking order. Images
 placed in the same location with different z-index values will be blended if
@@ -564,6 +722,10 @@ You can also use a special Unicode character ``U+10EEEE`` as a placeholder for
 an image. This approach is less flexible, but it allows using images inside
 any host application that supports Unicode, foreground colors (tmux, vim, weechat, etc.),
 and a way to pass escape codes through to the underlying terminal.
+
+Clients can detect support for Unicode placeholders by sending a :ref:`feature
+query <graphics_query_features>` with ``e=T`` and ``U=1`` and checking that
+``U=1`` is present in the reply.
 
 The central idea is that we use a single *Private Use* Unicode character as a
 *placeholder* to indicate to the terminal that an image is supposed to be
@@ -863,6 +1025,10 @@ Animation
 .. versionadded:: 0.20.0
    Animation support (see :doc:`kittens/query_terminal` to query kitty version)
 
+Clients can detect support for animation by sending :ref:`feature queries
+<graphics_query_features>` with ``e=f``, ``e=a`` and ``e=c`` for loading
+frames, controlling animations and composing frames, respectively.
+
 When designing support for animation, the two main considerations were:
 
 #. There should be a way for both client and terminal driven animations.
@@ -999,8 +1165,8 @@ To achieve this use the ``a=c`` key. The source frame is specified with
 ``r=frame number`` and the destination frame as ``c=frame number``. The size of
 the rectangle is specified as ``w=width,h=height`` pixels. If unspecified, the
 full image width and height are used. The offset of the rectangle from the
-top-left corner for the source frame is specified by the ``x,y`` keys and the
-destination frame by the ``X,Y`` keys. The composition operation is specified
+top-left corner for the source frame is specified by the ``X,Y`` keys and the
+destination frame by the ``x,y`` keys. The composition operation is specified
 by the ``C`` key with the default being to alpha blend the source rectangle
 onto the destination rectangle. With ``C=1`` it will be a simple replacement
 of pixels. For example::
@@ -1053,10 +1219,13 @@ Key      Value                 Default    Description
 
 ``q``    ``0, 1, 2``           ``0``      Suppress responses from the terminal to this graphics command.
 
+``e``    Single character.     ``null``   When set in a query, report the supported keys from the query, interpreted
+         ``(a, c, d, f,                   as for the specified action, in the response, see
+         p, q, t, T)``                    :ref:`graphics_query_features`.
+
 **Keys for image transmission**
 -----------------------------------------------------------
-``f``    Positive integer.     ``32``     The format in which the image data is sent.
-         ``(24, 32, 100)``.
+``f``    Positive integer.     ``32``     The format in which the image data is sent ``(8, 16, 24, 32, 100)``.
 ``t``    Single character.     ``d``      The transmission medium used.
          ``(d, f, t, s)``.
 ``s``    Positive integer.     ``0``      The width of the image being sent.
@@ -1112,8 +1281,8 @@ Key      Value                 Default    Description
 **Keys for animation frame composition**
 -----------------------------------------------------------
 
-``c``    Positive integer      ``0``      The 1-based frame number of the frame whose image data serves as the overlaid data
-``r``    Positive integer      ``0``      The 1-based frame number of the frame that is being edited.
+``c``    Positive integer      ``0``      The 1-based frame number of the frame that is being edited
+``r``    Positive integer      ``0``      The 1-based frame number of the frame whose image data serves as the overlaid data
 ``x``    Positive integer      ``0``      The left edge (in pixels) of the destination rectangle
 ``y``    Positive integer      ``0``      The top edge (in pixels) of the destination rectangle
 ``w``    Positive integer      ``0``      The width (in pixels) of the source and destination rectangles. By default, the entire width is used
@@ -1140,9 +1309,10 @@ Key      Value                 Default    Description
 -----------------------------------------------------------
 ``d``    Single character.     ``a``      What to delete.
          ``(
-         a, A, c, C, n, N,
-         i, I, p, P, q, Q, r,
-         R, x, X, y, Y, z, Z
+         a, A, c, C, f, F,
+         n, N, i, I, p, P,
+         q, Q, r, R, x, X,
+         y, Y, z, Z
          )``.
 =======  ====================  =========  =================
 

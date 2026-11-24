@@ -12,7 +12,7 @@ from .conf.utils import BadLine, parse_config_base
 from .conf.utils import load_config as _load_config
 from .constants import cache_dir, defconf, is_windows
 from .options.types import Options, defaults, option_names
-from .options.utils import KeyboardMode, KeyboardModeMap, KeyDefinition, MouseMap, MouseMapping, build_action_aliases, parse_mouse_map
+from .options.utils import KeyboardMode, KeyboardModeMap, KeyDefinition, MapType, MouseMap, MouseMapping, build_action_aliases, parse_mouse_map
 from .types import FloatEdges
 from .typing_compat import TypedDict
 from .utils import log_error
@@ -34,10 +34,12 @@ if is_windows:
     # mode for the same reason upstream discards it there: the release is what
     # opens the URL, so the program holding the mouse must not also see the press.
     defaults.mouse_map = defaults.mouse_map + [
-        m for line in (
+        m
+        for line in (
             'ctrl+left release grabbed,ungrabbed mouse_handle_click link',
             'ctrl+left press grabbed discard_event',
-        ) for m in parse_mouse_map(line)
+        )
+        for m in parse_mouse_map(line)
     ]
 
 
@@ -48,6 +50,7 @@ def option_names_for_completion() -> tuple[str, ...]:
 def atomic_save(data: bytes, path: str) -> None:
     import shutil
     import tempfile
+
     path = os.path.realpath(path)
     fd, p = tempfile.mkstemp(dir=os.path.dirname(path), suffix='.tmp')
     try:
@@ -89,6 +92,7 @@ def cached_values_for(name: str) -> Generator[dict[str, Any], None, None]:
 
 def commented_out_default_config() -> str:
     from .options.definition import definition
+
     return '\n'.join(definition.as_conf(commented=True))
 
 
@@ -143,6 +147,9 @@ def finalize_keys(opts: Options, accumulate_bad_lines: list[BadLine] | None = No
 
 
 def finalize_mouse_mappings(opts: Options, accumulate_bad_lines: list[BadLine] | None = None) -> None:
+    from .fast_data_types import GLFW_MOUSE_BUTTON_LAST
+    from .keys import mod_mask
+
     defns: list[MouseMapping] = []
     for d in opts.mouse_map:
         if d is None:  # clear_all_mouse_actions
@@ -163,6 +170,17 @@ def finalize_mouse_mappings(opts: Options, accumulate_bad_lines: list[BadLine] |
         else:
             mousemap.pop(defn.trigger, None)
     opts.mousemap = mousemap
+    opts.url_mappings = {False: 0, True: 0}
+    for event, definition in mousemap.items():
+        if not 0 <= event.button <= GLFW_MOUSE_BUTTON_LAST or event.mods & ~mod_mask or event.repeat_count not in (-2, -1, 1):
+            continue
+        try:
+            actions = opts.alias_map.resolve_aliases(definition, MapType.MOUSE_MAP)
+        except Exception as err:
+            log_error(f'Ignoring mouse_map with invalid action: {definition}. Error: {err}')
+            continue
+        if any(a.func in ('mouse_click_url', 'mouse_click_url_or_select') or (a.func == 'mouse_handle_click' and 'link' in a.args) for a in actions):
+            opts.url_mappings[event.grabbed] |= 1 << event.mods
 
 
 def parse_config(
@@ -172,6 +190,7 @@ def parse_config(
     allow_geninclude: bool = True,
 ) -> dict[str, Any]:
     from .options.parse import create_result_dict, parse_conf_item
+
     ans: dict[str, Any] = create_result_dict()
     parse_config_base(
         lines,
@@ -190,6 +209,7 @@ effective_config_lines: list[str] = []
 def load_config(*paths: str, overrides: Iterable[str] | None = None, accumulate_bad_lines: list[BadLine] | None = None) -> Options:
     from .options.parse import merge_result_dicts
     from .options.types import secret_options
+
     del effective_config_lines[:]
 
     def add_effective_config_line(key: str, line: str) -> None:
@@ -199,8 +219,12 @@ def load_config(*paths: str, overrides: Iterable[str] | None = None, accumulate_
     overrides = tuple(overrides) if overrides is not None else ()
 
     opts_dict, found_paths = _load_config(
-        defaults, partial(parse_config, accumulate_bad_lines=accumulate_bad_lines, effective_config_lines=add_effective_config_line),
-        merge_result_dicts, *paths, overrides=overrides)
+        defaults,
+        partial(parse_config, accumulate_bad_lines=accumulate_bad_lines, effective_config_lines=add_effective_config_line),
+        merge_result_dicts,
+        *paths,
+        overrides=overrides,
+    )
     opts = Options(opts_dict)
 
     opts.alias_map = build_action_aliases(opts.kitten_alias, 'kitten')
@@ -218,19 +242,30 @@ def load_config(*paths: str, overrides: Iterable[str] | None = None, accumulate_
     return opts
 
 
-def store_effective_config() -> str:
+def store_effective_config() -> tuple[str, str]:
     import os
     import stat
     import tempfile
-    dest = os.path.join(cache_dir(), 'effective-config')
-    os.makedirs(dest, exist_ok=True)
-    raw = '\n'.join(effective_config_lines)
-    with suppress(FileNotFoundError), tempfile.NamedTemporaryFile('w', dir=dest) as tf:
-        os.chmod(tf.name, stat.S_IRUSR | stat.S_IWUSR)
-        print(raw, file=tf)
-        path = os.path.join(dest, f'{os.getpid()}')
-        os.replace(tf.name, path)
-    return path
+
+    path = ''
+    try:
+        dest = os.path.join(cache_dir(), 'effective-config')
+        os.makedirs(dest, exist_ok=True)
+        raw = '\n'.join(effective_config_lines)
+        with suppress(FileNotFoundError), tempfile.NamedTemporaryFile('w', dir=dest) as tf:
+            os.chmod(tf.name, stat.S_IRUSR | stat.S_IWUSR)
+            print(raw, file=tf)
+            path = os.path.join(dest, f'{os.getpid()}')
+            os.replace(tf.name, path)
+    except OSError as err:
+        # effective config is used by some kittens to read the config of the
+        # current kitty instance. If missing they fallback to parsing
+        # kitty.conf so ignore the error which would prevent kitty from
+        # starting.
+        msg = f'Failed to store effective config with error: {err}'
+        log_error(msg)
+        return '', msg
+    return path, ''
 
 
 class KittyCommonOpts(TypedDict):

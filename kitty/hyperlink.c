@@ -7,18 +7,19 @@
 
 #include "hyperlink.h"
 #include "lineops.h"
+#include "charsets.h"
 #include <string.h>
 
 #define MAX_KEY_LEN 2048
 #define MAX_ID_LEN 256
 
 #define NAME hyperlink_map
-#define KEY_TY const char*
+#define KEY_TY const char *
 #define VAL_TY hyperlink_id_type
 #include "kitty-verstable.h"
 #define hyperlink_for_loop vt_create_for_loop(hyperlink_map_itr, itr, &pool->map)
 
-typedef const char* hyperlink;
+typedef const char *hyperlink;
 typedef struct HyperLinks {
     hyperlink *items;
     size_t count, capacity;
@@ -31,7 +32,9 @@ typedef struct {
 } HyperLinkPool;
 
 static void
-free_hyperlink_items(HyperLinks array) { for (size_t i = 1; i < array.count; i++) free((void*)array.items[i]); }
+free_hyperlink_items(HyperLinks array) {
+    for (size_t i = 1; i < array.count; i++) free((void *)array.items[i]);
+}
 
 static void
 clear_pool(HyperLinkPool *pool) {
@@ -54,36 +57,41 @@ alloc_hyperlink_pool(void) {
 
 void
 clear_hyperlink_pool(HYPERLINK_POOL_HANDLE h) {
-    if (h) clear_pool((HyperLinkPool*)h);
+    if (h) clear_pool((HyperLinkPool *)h);
 }
 
 
 void
 free_hyperlink_pool(HYPERLINK_POOL_HANDLE h) {
     if (h) {
-        HyperLinkPool *pool = (HyperLinkPool*)h;
+        HyperLinkPool *pool = (HyperLinkPool *)h;
         clear_pool(pool);
         free(pool);
     }
 }
 
-static const char*
+static const char *
 dupstr(const char *src, size_t len) {
-    char *ans = malloc(len+1);
+    char *ans = malloc(len + 1);
     if (!ans) fatal("Out of memory");
-    memcpy(ans, src, len); ans[len] = 0;
+    memcpy(ans, src, len);
+    ans[len] = 0;
     return ans;
 }
 
 static void
 process_cell(HyperLinkPool *pool, hyperlink_id_type *map, HyperLinks clone, CPUCell *c) {
     if (!c->hyperlink_id) return;
-    if (c->hyperlink_id >= clone.count) { c->hyperlink_id = 0; return; }
+    if (c->hyperlink_id >= clone.count) {
+        c->hyperlink_id = 0;
+        return;
+    }
     hyperlink_id_type new_id = map[c->hyperlink_id];
     if (!new_id) {
         new_id = pool->array.count++;
         map[c->hyperlink_id] = new_id;
-        pool->array.items[new_id] = clone.items[c->hyperlink_id]; clone.items[c->hyperlink_id] = NULL;
+        pool->array.items[new_id] = clone.items[c->hyperlink_id];
+        clone.items[c->hyperlink_id] = NULL;
         if (vt_is_end(vt_insert(&pool->map, pool->array.items[new_id], new_id))) fatal("Out of memory");
     }
     c->hyperlink_id = new_id;
@@ -91,7 +99,7 @@ process_cell(HyperLinkPool *pool, hyperlink_id_type *map, HyperLinks clone, CPUC
 
 static void
 remap_hyperlink_ids(Screen *self, bool preserve_hyperlinks_in_history, hyperlink_id_type *map, HyperLinks clone) {
-    HyperLinkPool *pool = (HyperLinkPool*)self->hyperlink_pool;
+    HyperLinkPool *pool = (HyperLinkPool *)self->hyperlink_pool;
     if (self->historybuf->count && preserve_hyperlinks_in_history) {
         for (index_type y = self->historybuf->count; y-- > 0;) {
             CPUCell *cells = historybuf_cpu_cells(self->historybuf, y);
@@ -105,36 +113,87 @@ remap_hyperlink_ids(Screen *self, bool preserve_hyperlinks_in_history, hyperlink
 
 static void
 _screen_garbage_collect_hyperlink_pool(Screen *screen, bool preserve_hyperlinks_in_history) {
-    HyperLinkPool *pool = (HyperLinkPool*)screen->hyperlink_pool;
+    HyperLinkPool *pool = (HyperLinkPool *)screen->hyperlink_pool;
     if (!pool->array.count) return;
     pool->adds_since_last_gc = 0;
     RAII_ALLOC(hyperlink_id_type, map, calloc(pool->array.count, sizeof(hyperlink_id_type)));
     RAII_ALLOC(void, buf, malloc(pool->array.count * sizeof(pool->array.items[0])));
     if (!map || !buf) fatal("Out of memory");
-    HyperLinks clone = {.capacity=pool->array.count, .count=pool->array.count, .items=buf};
+    HyperLinks clone = {.capacity = pool->array.count, .count = pool->array.count, .items = buf};
     memcpy(buf, pool->array.items, pool->array.count * sizeof(pool->array.items[0]));
     vt_cleanup(&pool->map);
-    pool->array.count = 1;  // First id must be 1
+    pool->array.count = 1; // First id must be 1
     remap_hyperlink_ids(screen, preserve_hyperlinks_in_history, map, clone);
     free_hyperlink_items(clone);
 }
 
 void
-screen_garbage_collect_hyperlink_pool(Screen *screen) { _screen_garbage_collect_hyperlink_pool(screen, true); }
+screen_garbage_collect_hyperlink_pool(Screen *screen) {
+    _screen_garbage_collect_hyperlink_pool(screen, true);
+}
 
+
+START_ALLOW_CASE_RANGE
+static uint32_t
+graphical_char(uint32_t ch) {
+    switch (ch) {
+        case 0 ... 0x1f: return 0x2400 + ch;
+        case 0x7f: return 0x2421;
+        case 0x80 ... 0x9f: return 0xfffd; // C1 controls have no control pictures
+        default: return ch;
+    }
+}
+END_ALLOW_CASE_RANGE
+
+static size_t
+copy_as_valid_utf8(char *dest, size_t dest_sz, const char *src) {
+    // Copy src into dest replacing invalid UTF-8 with U+FFFD and control
+    // characters with their graphical alternatives, stopping before the first
+    // character that would not fit, so that dest is always valid UTF-8 without
+    // control characters. Returns the number of bytes written, does not null
+    // terminate.
+    uint32_t state = UTF8_ACCEPT, prev = UTF8_ACCEPT, codep = 0, ch;
+    size_t d = 0;
+    char encoded[4];
+    for (const char *p = src; *p; p++) {
+        switch (decode_utf8(&state, &codep, (uint8_t)*p)) {
+            case UTF8_ACCEPT: ch = graphical_char(codep); break;
+            case UTF8_REJECT:
+                ch = 0xfffd;
+                state = UTF8_ACCEPT;
+                // re-process the byte that terminated an incomplete sequence
+                if (prev != UTF8_ACCEPT) p--;
+                break;
+            default: prev = state; continue;
+        }
+        prev = state;
+        const unsigned n = encode_utf8(ch, encoded);
+        if (d + n > dest_sz) return d;
+        memcpy(dest + d, encoded, n);
+        d += n;
+    }
+    if (state != UTF8_ACCEPT && d + 3 <= dest_sz) d += encode_utf8(0xfffd, dest + d);
+    return d;
+}
 
 hyperlink_id_type
 get_id_for_hyperlink(Screen *screen, const char *id, const char *url) {
     if (!url) return 0;
-    HyperLinkPool *pool = (HyperLinkPool*)screen->hyperlink_pool;
+    HyperLinkPool *pool = (HyperLinkPool *)screen->hyperlink_pool;
     static char key[MAX_KEY_LEN] = {0};
-    int keylen = snprintf(key, MAX_KEY_LEN-1, "%.*s:%s", MAX_ID_LEN, id ? id : "", url);
-    if (keylen < 0) keylen = strlen(key);
-    else keylen = MIN(keylen, MAX_KEY_LEN - 2);  // snprintf returns how many chars it would have written in case of truncation
+    // Keys are stored as valid UTF-8 without control characters as they are
+    // passed to Python and written into ANSI escape codes. The key, without
+    // its trailing null, is at most MAX_KEY_LEN - 2 bytes.
+    const size_t id_len = id ? copy_as_valid_utf8(key, MAX_ID_LEN, id) : 0;
+    key[id_len] = ':';
+    const size_t url_len = copy_as_valid_utf8(key + id_len + 1, MAX_KEY_LEN - 3 - id_len, url);
+    const size_t keylen = id_len + 1 + url_len;
     key[keylen] = 0;
     hyperlink_map_itr itr = vt_get(&pool->map, key);
     if (!vt_is_end(itr)) return itr.data->val;
-    if (pool->array.count >= HYPERLINK_MAX_NUMBER-1) {
+    // Collect before inserting the new hyperlink, which has no cell references yet.
+    if (++pool->adds_since_last_gc > 8192) screen_garbage_collect_hyperlink_pool(screen);
+    if (pool->array.count >= HYPERLINK_MAX_NUMBER - 1) {
         screen_garbage_collect_hyperlink_pool(screen);
         if (pool->array.count >= HYPERLINK_MAX_NUMBER - 128) {
             log_error("Too many hyperlinks, discarding hyperlinks in scrollback");
@@ -145,27 +204,24 @@ get_id_for_hyperlink(Screen *screen, const char *id, const char *url) {
             }
         }
     }
-    if (!pool->array.count) pool->array.count = 1;  // First id must be 1
+    if (!pool->array.count) pool->array.count = 1; // First id must be 1
     ensure_space_for(&(pool->array), items, hyperlink, pool->array.count + 1, capacity, 256, false);
     hyperlink_id_type new_id = pool->array.count++;
     pool->array.items[new_id] = dupstr(key, keylen);
     if (vt_is_end(vt_insert(&pool->map, pool->array.items[new_id], new_id))) fatal("Out of memory");
-    // If there have been a lot of hyperlink adds do a garbage collect so as
-    // not to leak too much memory over unused hyperlinks
-    if (++pool->adds_since_last_gc > 8192) screen_garbage_collect_hyperlink_pool(screen);
     return new_id;
 }
 
-const char*
+const char *
 get_hyperlink_for_id(const HYPERLINK_POOL_HANDLE handle, hyperlink_id_type id, bool only_url) {
-    HyperLinkPool *pool = (HyperLinkPool*)handle;
+    HyperLinkPool *pool = (HyperLinkPool *)handle;
     if (id >= pool->array.count) return NULL;
     return only_url ? strstr(pool->array.items[id], ":") + 1 : pool->array.items[id];
 }
 
-PyObject*
+PyObject *
 screen_hyperlinks_as_set(Screen *screen) {
-    HyperLinkPool *pool = (HyperLinkPool*)screen->hyperlink_pool;
+    HyperLinkPool *pool = (HyperLinkPool *)screen->hyperlink_pool;
     RAII_PyObject(ans, PySet_New(0));
     if (ans) {
         hyperlink_for_loop {
@@ -173,5 +229,6 @@ screen_hyperlinks_as_set(Screen *screen) {
             if (!e || PySet_Add(ans, e) != 0) return NULL;
         }
     }
-    Py_XINCREF(ans); return ans;
+    Py_XINCREF(ans);
+    return ans;
 }

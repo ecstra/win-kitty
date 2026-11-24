@@ -12,19 +12,20 @@ from kitty.options.utils import (
     box_drawing_scale, clear_all_mouse_actions, clear_all_shortcuts, clipboard_control,
     clone_source_strategies, config_or_absolute_path, confirm_close, copy_on_select,
     cursor_blink_interval, cursor_text_color, cursor_trail_decay, cursor_trail_start_threshold,
-    deprecated_adjust_line_height, deprecated_hide_window_decorations_aliases,
+    custom_shaders, deprecated_adjust_line_height, deprecated_hide_window_decorations_aliases,
     deprecated_macos_show_window_title_in_menubar_alias, deprecated_scrollback_indicator_opacity,
     deprecated_send_text, disable_ligatures, edge_width, env, filter_notification, font_features,
     hide_window_decorations, macos_option_as_alt, macos_titlebar_color, menu_map, modify_font,
     mouse_hide_wait, narrow_symbols, notify_on_cmd_finish, optional_edge_width, parse_font_spec,
-    parse_map, parse_mouse_map, paste_actions, pointer_shape_when_dragging, remote_control_password,
-    resize_debounce_time, scrollback_lines, scrollback_pager_history_size, scrollbar_color,
-    shell_integration, show_hyperlink_targets, store_multiple, symbol_map, tab_activity_symbol,
-    tab_bar_edge, tab_bar_margin_height, tab_bar_min_tabs, tab_fade, tab_font_style, tab_separator,
-    tab_title_template, text_fg_override_threshold, titlebar_color, to_cursor_shape,
-    to_cursor_unfocused_shape, to_font_size, to_layout_names, to_modifiers,
-    transparent_background_colors, underline_exclusion, url_prefixes, url_style, visual_bell_duration,
-    visual_window_select_characters, window_border_width, window_logo_scale, window_size
+    parse_map, parse_mouse_map, paste_actions, pointer_shape_when_dragging, remap_modifiers,
+    remote_control_password, resize_debounce_time, scrollback_lines, scrollback_pager_history_size,
+    scrollbar_color, shell_integration, show_hyperlink_targets, store_multiple, symbol_map,
+    tab_activity_symbol, tab_bar_edge, tab_bar_margin_height, tab_bar_min_tabs, tab_fade,
+    tab_font_style, tab_separator, tab_title_template, tab_title_wrap, text_fg_override_threshold,
+    titlebar_color, to_cursor_shape, to_cursor_unfocused_shape, to_font_size, to_layout_names,
+    to_modifiers, transparent_background_colors, underline_exclusion, url_prefixes, url_style,
+    visual_bell_duration, visual_window_select_characters, window_border_width, window_logo_scale,
+    window_size
 )
 
 
@@ -144,6 +145,9 @@ class Parser:
 
     def close_on_child_death(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['close_on_child_death'] = to_bool(val)
+
+    def collapse_window_margins(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['collapse_window_margins'] = to_bool(val)
 
     def color0(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['color0'] = to_color(val)
@@ -958,6 +962,9 @@ class Parser:
     def cursor_underline_thickness(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['cursor_underline_thickness'] = positive_float(val)
 
+    def custom_shaders(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['custom_shaders'] = custom_shaders(val)
+
     def default_pointer_shape(self, val: str, ans: dict[str, typing.Any]) -> None:
         val = val.lower()
         if val not in self.choices_for_default_pointer_shape:
@@ -965,6 +972,10 @@ class Parser:
         ans["default_pointer_shape"] = val
 
     choices_for_default_pointer_shape = frozenset(('arrow', 'beam', 'text', 'pointer', 'hand', 'help', 'wait', 'progress', 'crosshair', 'cell', 'vertical-text', 'move', 'e-resize', 'ne-resize', 'nw-resize', 'n-resize', 'se-resize', 'sw-resize', 's-resize', 'w-resize', 'ew-resize', 'ns-resize', 'nesw-resize', 'nwse-resize', 'zoom-in', 'zoom-out', 'alias', 'copy', 'not-allowed', 'no-drop', 'grab', 'grabbing'))
+
+    def detect_url_regex(self, val: str, ans: dict[str, typing.Any]) -> None:
+        for k, v in store_multiple(val, ans["detect_url_regex"]):
+            ans["detect_url_regex"][k] = v
 
     def detect_urls(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['detect_urls'] = to_bool(val)
@@ -1040,6 +1051,14 @@ class Parser:
 
     def hide_window_decorations(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['hide_window_decorations'] = hide_window_decorations(val)
+
+    def hyperlink_target_position(self, val: str, ans: dict[str, typing.Any]) -> None:
+        val = val.lower()
+        if val not in self.choices_for_hyperlink_target_position:
+            raise ValueError(f"The value {val} is not a valid choice for hyperlink_target_position")
+        ans["hyperlink_target_position"] = val
+
+    choices_for_hyperlink_target_position = frozenset(('top', 'bottom', 'below', 'tooltip'))
 
     def inactive_border_color(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['inactive_border_color'] = to_color(val)
@@ -1189,6 +1208,14 @@ class Parser:
     def open_url_with(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['open_url_with'] = to_cmdline(val)
 
+    def padding_fill_strategy(self, val: str, ans: dict[str, typing.Any]) -> None:
+        val = val.lower()
+        if val not in self.choices_for_padding_fill_strategy:
+            raise ValueError(f"The value {val} is not a valid choice for padding_fill_strategy")
+        ans["padding_fill_strategy"] = val
+
+    choices_for_padding_fill_strategy = frozenset(('background', 'neighboring_cell'))
+
     def palette_generate(self, val: str, ans: dict[str, typing.Any]) -> None:
         val = val.lower()
         if val not in self.choices_for_palette_generate:
@@ -1230,6 +1257,9 @@ class Parser:
 
     choices_for_progress_bar = frozenset(('left', 'right', 'top', 'bottom', 'hidden'))
 
+    def remap_modifiers(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['remap_modifiers'] = remap_modifiers(val)
+
     def remember_window_position(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['remember_window_position'] = to_bool(val)
 
@@ -1249,6 +1279,9 @@ class Parser:
     def resize_in_steps(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['resize_in_steps'] = to_bool(val)
 
+    def restore_session_after_logout(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['restore_session_after_logout'] = to_bool(val)
+
     def scrollback_fill_enlarged_window(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['scrollback_fill_enlarged_window'] = to_bool(val)
 
@@ -1267,7 +1300,7 @@ class Parser:
             raise ValueError(f"The value {val} is not a valid choice for scrollbar")
         ans["scrollbar"] = val
 
-    choices_for_scrollbar = frozenset(('scrolled', 'always', 'never', 'hovered', 'scrolled-and-hovered'))
+    choices_for_scrollbar = frozenset(('scrolled', 'always', 'never', 'hovered', 'scrolled-and-hovered', 'scrolled-or-hovered'))
 
     def scrollbar_gap(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['scrollbar_gap'] = positive_float(val)
@@ -1421,8 +1454,14 @@ class Parser:
     def tab_title_max_length(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['tab_title_max_length'] = positive_int(val)
 
+    def tab_title_max_lines(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['tab_title_max_lines'] = positive_int(val)
+
     def tab_title_template(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['tab_title_template'] = tab_title_template(val)
+
+    def tab_title_wrap(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['tab_title_wrap'] = tab_title_wrap(val)
 
     def term(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['term'] = str(val)
@@ -1508,6 +1547,9 @@ class Parser:
 
     def window_alert_on_bell(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['window_alert_on_bell'] = to_bool(val)
+
+    def window_border_radius(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_border_radius'] = window_border_width(val)
 
     def window_border_width(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['window_border_width'] = window_border_width(val)
@@ -1614,6 +1656,7 @@ class Parser:
 def create_result_dict() -> dict[str, typing.Any]:
     return {
         'action_alias': {},
+        'detect_url_regex': {},
         'env': {},
         'exe_search_path': {},
         'filter_notification': {},

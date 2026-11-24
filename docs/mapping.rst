@@ -58,7 +58,7 @@ executable. In the script file you run remote control commands by running the
    #!/bin/sh
 
    kitten @ set-spacing margin=30
-   kitten @ new_window
+   kitten @ launch
    ...
 
 The script can perform arbitrarily complex logic and actions, limited only by
@@ -110,9 +110,10 @@ for a list of key names. The name to use is the part after the :code:`XKB_KEY_`
 prefix. Note that you can only use an XKB key name for keys that are not known
 as kitty keys.
 
-Finally, you can use raw system key codes to map keys, again only for keys that
-are not known as kitty keys. To see the system key code for a key, start kitty
-with the :option:`kitty --debug-input` option, kitty will output some debug text
+Finally, you can use raw system key codes to map keys. These mappings are tried
+only when no ordinary key mapping or its allowed fallbacks match the event.
+System key codes depend on the platform. To see the system key code for a key,
+start kitty with the :option:`kitty --debug-input` option, kitty will output some debug text
 for every key event. In that text look for :code:`native_code`, the value
 of that becomes the key name in the shortcut. For example:
 
@@ -223,41 +224,44 @@ running an editor::
 
 In order to make this work, you need to configure your editor as shown below:
 
-.. tab:: vim
+.. tab-set::
 
-   In :file:`~/.vimrc` add:
-    .. code-block:: vim
+   .. tab-item:: vim
 
-        let &t_ti = &t_ti . "\033]1337;SetUserVar=in_editor=MQ==\007"
-        let &t_te = &t_te . "\033]1337;SetUserVar=in_editor\007"
+      In :file:`~/.vimrc` add:
 
-.. tab:: neovim
+      .. code-block:: vim
 
-   In :file:`~/.config/nvim/init.lua` add:
+         let &t_ti = &t_ti . "\033]1337;SetUserVar=in_editor=MQ==\007"
+         let &t_te = &t_te . "\033]1337;SetUserVar=in_editor\007"
 
-    .. code-block:: lua
+   .. tab-item:: neovim
 
-        vim.api.nvim_create_autocmd({ "VimEnter", "VimResume", "UIEnter" }, {
-            group = vim.api.nvim_create_augroup("KittySetVarVimEnter", { clear = true }),
-            callback = function()
-                if vim.api.nvim_ui_send then
-                    vim.api.nvim_ui_send("\x1b]1337;SetUserVar=in_editor=MQ==\007")
-                else
-                    io.stdout:write("\x1b]1337;SetUserVar=in_editor=MQ==\007")
-                end
-            end,
-        })
+      In :file:`~/.config/nvim/init.lua` add:
 
-        vim.api.nvim_create_autocmd({ "VimLeave", "VimSuspend" }, {
-            group = vim.api.nvim_create_augroup("KittyUnsetVarVimLeave", { clear = true }),
-            callback = function()
-                if vim.api.nvim_ui_send then
-                    vim.api.nvim_ui_send("\x1b]1337;SetUserVar=in_editor\007")
-                else
-                    io.stdout:write("\x1b]1337;SetUserVar=in_editor\007")
-                end
-            end,
-        })
+      .. code-block:: lua
+
+         vim.api.nvim_create_autocmd({ "VimEnter", "VimResume", "UIEnter" }, {
+             group = vim.api.nvim_create_augroup("KittySetVarVimEnter", { clear = true }),
+             callback = function()
+                 if vim.api.nvim_ui_send then
+                     vim.api.nvim_ui_send("\x1b]1337;SetUserVar=in_editor=MQ==\007")
+                 else
+                     io.stdout:write("\x1b]1337;SetUserVar=in_editor=MQ==\007")
+                 end
+             end,
+         })
+
+         vim.api.nvim_create_autocmd({ "VimLeave", "VimSuspend" }, {
+             group = vim.api.nvim_create_augroup("KittyUnsetVarVimLeave", { clear = true }),
+             callback = function()
+                 if vim.api.nvim_ui_send then
+                     vim.api.nvim_ui_send("\x1b]1337;SetUserVar=in_editor\007")
+                 else
+                     io.stdout:write("\x1b]1337;SetUserVar=in_editor\007")
+                 end
+             end,
+         })
 
 These cause the editor to set the :code:`in_editor` variable in kitty and unset it when exiting.
 As a result, the :kbd:`ctrl+shift+c` key will be passed to the editor instead of
@@ -392,7 +396,7 @@ Now, if you run kitty as:
 
 .. code-block:: sh
 
-    kitty -o enabled_layouts=vertical --session <(echo "launch\nlaunch\nlaunch")
+    kitty -o enabled_layouts=vertical --session <(printf '%s\n' launch launch launch)
 
 Press :kbd:`Ctrl+Shift+F7` to enter the mode and then press the up and
 down arrow keys to focus the next/previous window. Press :kbd:`Shift+Up` or
@@ -412,6 +416,8 @@ below::
     map --new-mode XXX --on-unknown end ...
     # Pass unknown keys to the program running in the active window
     map --new-mode XXX --on-unknown passthrough ...
+    # Pass unknown keys to the program and exit the keyboard mode
+    map --new-mode XXX --on-unknown passthrough_and_end ...
 
 When a key matches an action in a custom keyboard mode, the action is performed
 and the custom keyboard mode remains in effect. If you would rather have the

@@ -5,6 +5,7 @@ package diff
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -94,8 +95,20 @@ func get_ssh_file(hostname, rpath string) (string, error) {
 		return "", fmt.Errorf("Failed to untar data from remote host %s to get file %s with error: %w", hostname, rpath, err)
 	}
 	ans := filepath.Join(tdir, rpath)
+	if _, err = os.Lstat(ans); err == nil {
+		// The archive contains rpath itself, which is either the requested
+		// file or directory
+		return ans, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	// rpath was expanded by the remote shell, for example, ~/file, so
+	// look for the single file in the archive
 	if count == 1 {
 		if err = filepath.WalkDir(tdir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
 			if !d.IsDir() {
 				ans = path
 				return fs.SkipAll
@@ -141,6 +154,14 @@ func main(_ *cli.Command, opts_ *Options, args []string) (rc int, err error) {
 	init_caches()
 	defer func() {
 		for tdir := range remote_dirs {
+			// Directories extracted from the remote host can be read-only.
+			// This is best effort cleanup of a temp dir, so errors are ignored.
+			_ = filepath.WalkDir(tdir, func(path string, d fs.DirEntry, err error) error {
+				if err == nil && d.IsDir() {
+					_ = os.Chmod(path, 0o700)
+				}
+				return nil
+			})
 			os.RemoveAll(tdir)
 		}
 	}()

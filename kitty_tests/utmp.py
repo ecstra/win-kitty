@@ -2,12 +2,11 @@ import subprocess
 
 from kitty.fast_data_types import num_users
 
-from . import BaseTest, skip_on_windows
+from .base import BaseTest, skip_on_windows
 
 
 @skip_on_windows('no utmp, so num_users raises rather than counting anything')
 class UTMPTest(BaseTest):
-
     def test_num_users(self):
         # who is the control
         try:

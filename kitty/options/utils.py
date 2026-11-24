@@ -9,7 +9,7 @@ from collections import defaultdict
 from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, fields
-from functools import lru_cache
+from math import isfinite
 from typing import (
     Any,
     Generic,
@@ -47,16 +47,47 @@ from kitty.utils import expandvars, log_error, resolve_abs_or_config_path, shlex
 
 KeyMap = dict[SingleKey, list['KeyDefinition']]
 MouseMap = dict[MouseEvent, str]
+URLMappings = dict[bool, int]
 KeySequence = tuple[SingleKey, ...]
 MINIMUM_FONT_SIZE = 4
+# Zooming is limited to a multiple of the configured font size, or to this
+# absolute size, whichever is larger. Without the absolute bound the largest
+# reachable size scales with the configured one, so a small configured font
+# also means a small maximum zoom.
+MAXIMUM_FONT_SIZE = 256.0
+FONT_SIZE_MULTIPLE = 10
+
+
+def clamp_font_size(new_size: float, configured_size: float) -> float:
+    upper = max(configured_size * FONT_SIZE_MULTIPLE, MAXIMUM_FONT_SIZE)
+    return max(MINIMUM_FONT_SIZE, min(new_size, upper))
+
+
 default_tab_separator = ' ┇'
-mod_map = {'⌃': 'CONTROL', 'CTRL': 'CONTROL', '⇧': 'SHIFT', '⌥': 'ALT', 'OPTION': 'ALT', 'OPT': 'ALT',
-           '⌘': 'SUPER', 'COMMAND': 'SUPER', 'CMD': 'SUPER', 'KITTY_MOD': 'KITTY'}
+mod_map = {
+    '⌃': 'CONTROL',
+    'CTRL': 'CONTROL',
+    '⇧': 'SHIFT',
+    '⌥': 'ALT',
+    'OPTION': 'ALT',
+    'OPT': 'ALT',
+    '⌘': 'SUPER',
+    'COMMAND': 'SUPER',
+    'CMD': 'SUPER',
+    'KITTY_MOD': 'KITTY',
+}
 character_key_name_aliases_with_ascii_lowercase: dict[str, str] = character_key_name_aliases.copy()
 for x in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
     character_key_name_aliases_with_ascii_lowercase[x] = x.lower()
 sequence_sep = '>'
 mouse_button_map = {'left': 'b1', 'middle': 'b3', 'right': 'b2'}
+mouse_wheel_map = {
+    'wheel_up': defines.MOUSE_WHEEL_UP,
+    'wheel_down': defines.MOUSE_WHEEL_DOWN,
+    'wheel_left': defines.MOUSE_WHEEL_LEFT,
+    'wheel_right': defines.MOUSE_WHEEL_RIGHT,
+}
+mouse_wheel_buttons = frozenset(mouse_wheel_map.values())
 mouse_trigger_count_map = {'doubleclick': -3, 'click': -2, 'release': -1, 'press': 1, 'doublepress': 2, 'triplepress': 3}
 FuncArgsType = tuple[str, Sequence[Any]]
 func_with_args = KeyFuncWrapper[FuncArgsType]()
@@ -75,11 +106,20 @@ class InvalidMods(ValueError):
 
 # Actions {{{
 @func_with_args(
-    'pass_selection_to_program', 'new_window', 'new_tab', 'new_os_window',
-    'new_window_with_cwd', 'new_tab_with_cwd', 'new_os_window_with_cwd',
-    'launch', 'mouse_handle_click', 'show_error', 'goto_session', 'save_as_session',
+    'pass_selection_to_program',
+    'new_window',
+    'new_tab',
+    'new_os_window',
+    'new_window_with_cwd',
+    'new_tab_with_cwd',
+    'new_os_window_with_cwd',
+    'launch',
+    'mouse_handle_click',
+    'show_error',
+    'goto_session',
+    'save_as_session',
     'close_session',
-    )
+)
 def shlex_parse(func: str, rest: str) -> FuncArgsType:
     return func, to_cmdline(rest)
 
@@ -128,11 +168,17 @@ def kitten_parse(func: str, rest: str) -> FuncArgsType:
 @func_with_args('open_url')
 def open_url_parse(func: str, rest: str) -> FuncArgsType:
     from urllib.parse import urlparse
+
     url = ''
     try:
         url = python_string(rest)
         tokens = urlparse(url)
-        if not all((tokens.scheme, tokens.netloc,)):
+        if not all(
+            (
+                tokens.scheme,
+                tokens.netloc,
+            )
+        ):
             raise ValueError('Invalid URL')
     except Exception:
         log_error('Ignoring invalid URL string: ' + rest)
@@ -149,6 +195,8 @@ def goto_tab_parse(func: str, rest: str) -> FuncArgsType:
 
 @func_with_args('detach_window')
 def detach_window_parse(func: str, rest: str) -> FuncArgsType:
+    if rest.startswith('-'):
+        return shlex_parse(func, rest)
     if rest not in ('new', 'new-tab', 'new-tab-left', 'new-tab-right', 'ask', 'tab-prev', 'tab-left', 'tab-right'):
         log_error(f'Ignoring invalid detach_window argument: {rest}')
         rest = 'new'
@@ -170,8 +218,18 @@ def detach_tab_parse(func: str, rest: str) -> FuncArgsType:
 
 
 @func_with_args(
-    'set_background_opacity', 'goto_layout', 'toggle_layout', 'toggle_tab', 'kitty_shell', 'show_kitty_doc',
-    'set_tab_title', 'push_keyboard_mode', 'dump_lines_with_attrs', 'set_window_title', 'simulate_color_scheme_preference_change',
+    'set_background_opacity',
+    'goto_layout',
+    'toggle_layout',
+    'toggle_tab',
+    'clear_bell_indicators',
+    'kitty_shell',
+    'show_kitty_doc',
+    'set_tab_title',
+    'push_keyboard_mode',
+    'dump_lines_with_attrs',
+    'set_window_title',
+    'simulate_color_scheme_preference_change',
 )
 def simple_parse(func: str, rest: str) -> FuncArgsType:
     return func, (rest,)
@@ -185,6 +243,7 @@ def float_parse(func: str, rest: str) -> FuncArgsType:
 @func_with_args('signal_child')
 def signal_child_parse(func: str, rest: str) -> FuncArgsType:
     import signal
+
     signals = []
     for q in rest.split():
         try:
@@ -203,12 +262,18 @@ def parse_change_font_size(func: str, rest: str) -> tuple[str, tuple[bool, str |
         log_error(f'Invalid change_font_size specification: {rest}, treating it as default')
         return func, (True, None, 0)
     c_all = vals[0].lower() == 'all'
+    sign, amt = parse_font_size_change(vals[1])
+    return func, (c_all, sign, amt)
+
+
+def parse_font_size_change(spec: str) -> tuple[str | None, float]:
     sign: str | None = None
-    amt = vals[1]
-    if amt[0] in '+-*/':
-        sign = amt[0]
-        amt = amt[1:]
-    return func, (c_all, sign, float(amt.strip()))
+    if spec and spec[0] in '+-*/':
+        sign, spec = spec[0], spec[1:]
+    amt = float(spec.strip())
+    if not isfinite(amt):
+        raise ValueError(f'{spec} is not a finite number')
+    return sign, amt
 
 
 @func_with_args('clear_terminal')
@@ -224,6 +289,29 @@ def clear_terminal(func: str, rest: str) -> FuncArgsType:
             action = 'reset'
         args = [action, vals[1].lower() == 'active']
     return func, args
+
+
+USER_ANIMATION_EVENT_PREFIX = 'user:'
+user_animation_event_name_pat = re.compile(r'[a-zA-Z0-9_.-]+')
+
+
+def is_valid_user_animation_event_name(name: str) -> bool:
+    "Whether name, without the user: prefix, is valid as the name of a custom shader user event"
+    return len(name) <= defines.MAX_SHADER_ANIM_USER_EVENT_NAME_LEN and user_animation_event_name_pat.fullmatch(name) is not None
+
+
+@func_with_args('shader_event')
+def shader_event(func: str, rest: str) -> FuncArgsType:
+    vals = rest.split()
+    if not vals or len(vals) > 2:
+        raise ValueError(f'shader_event needs an event name and optionally one of active or all, not: {rest}')
+    name = vals[0].removeprefix(USER_ANIMATION_EVENT_PREFIX)
+    if not is_valid_user_animation_event_name(name):
+        raise ValueError(f'{name!r} is not a valid custom shader user event name')
+    scope = vals[1].lower() if len(vals) > 1 else 'active'
+    if scope not in ('active', 'all'):
+        raise ValueError(f'{scope} is not valid for shader_event, must be one of active or all')
+    return func, [name, scope]
 
 
 @func_with_args('copy_to_buffer')
@@ -454,7 +542,7 @@ def mouse_selection(func: str, rest: str) -> FuncArgsType:
             'line_from_point': defines.MOUSE_SELECTION_LINE_FROM_POINT,
             'word_and_line_from_point': defines.MOUSE_SELECTION_WORD_AND_LINE_FROM_POINT,
             'upto_surrounding_whitespace': defines.MOUSE_SELECTION_UPTO_SURROUNDING_WHITESPACE,
-            'drag_or_normal_select': defines.MOUSE_SELECTION_NORMAL - 1,
+            'drag_or_normal_select': defines.MOUSE_SELECTION_DRAG_OR_NORMAL_SELECT,
         }
         setattr(mouse_selection, 'code_map', cmap)
     return func, [cmap[rest]]
@@ -463,6 +551,8 @@ def mouse_selection(func: str, rest: str) -> FuncArgsType:
 @func_with_args('load_config_file')
 def load_config_file(func: str, rest: str) -> FuncArgsType:
     return func, list(shlex_split(rest))
+
+
 # }}}
 
 
@@ -485,6 +575,51 @@ def parse_mods(parts: Iterable[str], sc: str) -> int | None:
 
 def to_modifiers(val: str) -> int:
     return parse_mods(val.split('+'), val) or 0
+
+
+def remap_modifiers(val: str) -> dict[int, int]:
+    # Only the real modifiers may be remapped. parse_mods() also accepts
+    # kitty_mod (a parse-time placeholder resolved out of keymaps before any key
+    # event exists) and the lock modifiers, neither of which can be meaningfully
+    # carried on an event, so they are rejected here rather than silently
+    # mangling events later.
+    ans = {}
+    if not val:
+        return ans
+    remappable = (
+        defines.GLFW_MOD_SHIFT | defines.GLFW_MOD_ALT | defines.GLFW_MOD_CONTROL | defines.GLFW_MOD_SUPER | defines.GLFW_MOD_HYPER | defines.GLFW_MOD_META
+    )
+
+    def bad(msg: str) -> None:
+        log_error(f'Ignoring invalid remap_modifiers "{val}": {msg}')
+
+    for token in val.split():
+        parts = token.split(':', 1)
+        if len(parts) != 2:
+            bad('must be two modifier names separated by a colon')
+            return {}
+        # parse_mods() returns None both for an unknown name (already logged) and for
+        # "none" (deliberately not logged), so check the names before trusting it
+        for part in parts:
+            for name in part.split('+'):
+                if name.upper() in ('NONE', ''):
+                    bad('none is not a modifier')
+                    return {}
+        src = parse_mods(parts[0].split('+'), val)
+        dest = parse_mods(parts[1].split('+'), val)
+        if src is None or dest is None:
+            return {}  # parse_mods() has already logged the unknown modifier name
+        if src & ~remappable or dest & ~remappable:
+            bad('only shift, alt, ctrl, super, hyper and meta can be remapped')
+            return {}
+        if src & (src - 1):
+            bad('the source must name exactly one modifier')
+            return {}
+        if src == dest:
+            bad('the source and destination are the same')
+            return {}
+        ans[src] = dest
+    return ans
 
 
 def parse_shortcut(sc: str) -> SingleKey:
@@ -545,11 +680,7 @@ def cursor_text_color(x: str) -> Color | None:
     return to_color(x)
 
 
-cshapes = {
-    'block': CURSOR_BLOCK,
-    'beam': CURSOR_BEAM,
-    'underline': CURSOR_UNDERLINE
-}
+cshapes = {'block': CURSOR_BLOCK, 'beam': CURSOR_BEAM, 'underline': CURSOR_UNDERLINE}
 cshapes_unfocused = {
     'block': CURSOR_BLOCK,
     'beam': CURSOR_BEAM,
@@ -563,22 +694,15 @@ def to_cursor_shape(x: str) -> int:
     try:
         return cshapes[x.lower()]
     except KeyError:
-        raise ValueError(
-            'Invalid cursor shape: {} allowed values are {}'.format(
-                x, ', '.join(cshapes)
-            )
-        )
+        raise ValueError('Invalid cursor shape: {} allowed values are {}'.format(x, ', '.join(cshapes)))
 
 
 def to_cursor_unfocused_shape(x: str) -> int:
     try:
         return cshapes_unfocused[x.lower()]
     except KeyError:
-        raise ValueError(
-            'Invalid unfocused cursor shape: {} allowed values are {}'.format(
-                x, ', '.join(cshapes_unfocused)
-            )
-        )
+        raise ValueError('Invalid unfocused cursor shape: {} allowed values are {}'.format(x, ', '.join(cshapes_unfocused)))
+
 
 def cursor_trail_decay(x: str) -> tuple[float, float]:
     fast, slow = map(positive_float, x.split())
@@ -595,10 +719,11 @@ def cursor_trail_start_threshold(x: str) -> tuple[int, int]:
         return positive_int(parts[0]), positive_int(parts[1])
     raise ValueError(f'cursor_trail_start_threshold must have 1 or 2 values, got: {x!r}')
 
+
 def scrollback_lines(x: str) -> int:
     ans = int(x)
     if ans < 0:
-        ans = 2 ** 32 - 1
+        ans = 2**32 - 1
     return ans
 
 
@@ -617,7 +742,6 @@ def url_style(x: str) -> int:
 
 def url_prefixes(x: str) -> tuple[str, ...]:
     return tuple(a.lower() for a in x.replace(',', ' ').split())
-
 
 
 def show_hyperlink_targets(x: str) -> Literal['never', 'always', 'Ctrl', 'Shift', 'Super', 'Alt']:
@@ -655,6 +779,7 @@ def window_size(val: str) -> tuple[int, str]:
 
 def parse_layout_names(parts: Iterable[str]) -> list[str]:
     from kitty.layout.interface import all_layouts
+
     ans = []
     for p in parts:
         p = p.lower()
@@ -738,6 +863,7 @@ def resize_debounce_time(x: str) -> tuple[float, float]:
 
 def visual_window_select_characters(x: str) -> str:
     import string
+
     valid_characters = string.digits + string.ascii_uppercase + "-=[]\\;',./`"
     ans = x.upper()
     ans_chars = set(ans)
@@ -773,11 +899,7 @@ def tab_bar_edge(x: str) -> int:
 
 
 def tab_font_style(x: str) -> tuple[bool, bool]:
-    return {
-        'bold-italic': (True, True),
-        'bold': (True, False),
-        'italic': (False, True)
-    }.get(x.lower().replace('_', '-'), (False, False))
+    return {'bold-italic': (True, True), 'bold': (True, False), 'italic': (False, True)}.get(x.lower().replace('_', '-'), (False, False))
 
 
 def tab_bar_min_tabs(x: str) -> int:
@@ -815,6 +937,16 @@ def tab_title_template(x: str) -> str:
 def active_tab_title_template(x: str) -> str | None:
     x = tab_title_template(x)
     return None if x == 'none' else x
+
+
+def tab_title_wrap(x: str) -> int:
+    """no/0 -> 0 (disabled), yes -> -1 (wrap at the tab bar width), N -> wrap at N cells"""
+    x = x.lower()
+    if x in ('n', 'no', 'false', 'none'):
+        return 0
+    if to_bool(x):
+        return -1
+    return positive_int(x)
 
 
 def text_fg_override_threshold(x: str) -> tuple[float, Literal['%', 'ratio']]:
@@ -855,8 +987,7 @@ def notify_on_cmd_finish(x: str) -> NotifyOnCmdFinish:
                 con: list[ClearOn] = []
                 for x in parts[3].split():
                     if x not in all_clear_on:
-                        raise ValueError(
-                            f'notify_on_cmd_finish: notify clear_on value "{x}" is invalid. Valid values are: {", ".join(all_clear_on)}')
+                        raise ValueError(f'notify_on_cmd_finish: notify clear_on value "{x}" is invalid. Valid values are: {", ".join(all_clear_on)}')
                     con.append(cast(ClearOn, x))
                 clear_on = tuple(con)
         elif action == 'command':
@@ -877,16 +1008,16 @@ def background_images(x: str) -> tuple[str, ...]:
     if x.lower() in ('none', ''):
         return ()
     from glob import glob
+
     x = resolve_abs_or_config_path(x, None)
-    return tuple(x for x in sorted(glob(x)) if x.rpartition('.')[-1].lower() in (
-        'jpeg', 'jpg', 'png', 'webp', 'tif', 'tiff', 'bmp', 'gif')) or (x,)
+    return tuple(x for x in sorted(glob(x)) if x.rpartition('.')[-1].lower() in ('jpeg', 'jpg', 'png', 'webp', 'tif', 'tiff', 'bmp', 'gif')) or (x,)
 
 
-def filter_notification(val: str, current_val: dict[str, str]) -> Iterable[tuple[str, str]]:
+def filter_notification(val: str, current_val: dict[str, str]) -> Iterator[tuple[str, str]]:
     yield val, ''
 
 
-def remote_control_password(val: str, current_val: dict[str, str]) -> Iterable[tuple[str, Sequence[str]]]:
+def remote_control_password(val: str, current_val: dict[str, str]) -> Iterator[tuple[str, Sequence[str]]]:
     val = val.strip()
     if val:
         parts = to_cmdline(val, expand=False)
@@ -904,6 +1035,10 @@ def clipboard_control(x: str) -> tuple[str, ...]:
     return tuple(x.lower().split())
 
 
+def custom_shaders(x: str) -> tuple[str, ...]:
+    return tuple(shlex_split(x)) if x else ()
+
+
 def allow_hyperlinks(x: str) -> int:
     if x == 'ask':
         return 0b11
@@ -913,7 +1048,7 @@ def allow_hyperlinks(x: str) -> int:
 def color_with_special_values(x: str, special_values: dict[str, int], error_msg: str) -> int:
     x = x.strip('"')
     if (ans := special_values.get(x)) is not None:
-        return ans & 0xff
+        return ans & 0xFF
     try:
         return (color_as_int(to_color(x)) << 8) | len(special_values)
     except Exception:
@@ -922,19 +1057,11 @@ def color_with_special_values(x: str, special_values: dict[str, int], error_msg:
 
 
 def titlebar_color(x: str) -> int:
-    return color_with_special_values(
-        x,
-        {'system': 0, 'background': 1},
-        'Ignoring invalid title bar color: {x}'
-    )
+    return color_with_special_values(x, {'system': 0, 'background': 1}, 'Ignoring invalid title bar color: {x}')
 
 
 def scrollbar_color(x: str) -> int:
-    return color_with_special_values(
-        x,
-        {'foreground': 0, 'selection_background': 1},
-        'Ignoring invalid scroll bar color: {x}'
-    )
+    return color_with_special_values(x, {'foreground': 0, 'selection_background': 1}, 'Ignoring invalid scroll bar color: {x}')
 
 
 def macos_titlebar_color(x: str) -> int:
@@ -999,7 +1126,7 @@ def font_features(val: str) -> Iterable[tuple[str, tuple[defines.ParsedFontFeatu
         return
     parts = val.split()
     if len(parts) < 2:
-        log_error(f"Ignoring invalid font_features {val}")
+        log_error(f'Ignoring invalid font_features {val}')
         return
     if parts[0]:
         features = []
@@ -1015,11 +1142,11 @@ def modify_font(val: str) -> Iterable[tuple[str, FontModification]]:
     parts = val.split()
     pos, plen = 0, len(parts)
     if plen < 2:
-        log_error(f"Ignoring invalid modify_font: {val}")
+        log_error(f'Ignoring invalid modify_font: {val}')
         return
     mtype: ModificationType | None = getattr(ModificationType, parts[pos], None)
     if mtype is None:
-        log_error(f"Ignoring invalid modify_font with unknown modification type: {parts[pos]}")
+        log_error(f'Ignoring invalid modify_font with unknown modification type: {parts[pos]}')
         return
     pos += 1
     font_name = ''
@@ -1027,7 +1154,7 @@ def modify_font(val: str) -> Iterable[tuple[str, FontModification]]:
         font_name = parts[pos]
         pos += 1
     if plen - pos < 1:
-        log_error(f"Ignoring invalid modify_font: {val}")
+        log_error(f'Ignoring invalid modify_font: {val}')
         return
     sz = parts[pos]
     pos += 1
@@ -1086,7 +1213,7 @@ def menu_map(val: str, current_val: Container[str]) -> Iterable[tuple[tuple[str,
         if idx == -1:
             raise ValueError(f'The menu entry {val} must have an action')
     location = ('global',) + tuple(parts[1][start:idx].split('::'))
-    yield location, parts[1][idx+1:].lstrip()
+    yield location, parts[1][idx + 1 :].lstrip()
 
 
 allowed_shell_integration_values = frozenset({'enabled', 'disabled', 'no-rc', 'no-cursor', 'no-title', 'no-prompt-mark', 'no-complete', 'no-cwd', 'no-sudo'})
@@ -1189,19 +1316,25 @@ class ActionAlias(NamedTuple):
 
 
 class AliasMap:
-
     def __init__(self) -> None:
         self.aliases: dict[str, list[ActionAlias]] = {}
+        self.resolved: dict[tuple[str, MapType], tuple[KeyAction, ...]] = {}
 
     def append(self, name: str, aa: ActionAlias) -> None:
         self.aliases.setdefault(name, []).append(aa)
+        self.resolved.clear()
 
     def update(self, aa: 'AliasMap') -> None:
         self.aliases.update(aa.aliases)
+        self.resolved.clear()
 
-    @lru_cache(maxsize=256)
     def resolve_aliases(self, definition: str, map_type: MapType = MapType.MAP) -> tuple[KeyAction, ...]:
-        return tuple(resolve_aliases_and_parse_actions(definition, self.aliases, map_type))
+        key = definition, map_type
+        if (ans := self.resolved.get(key)) is None:
+            if len(self.resolved) >= 256:
+                self.resolved.clear()
+            ans = self.resolved[key] = tuple(resolve_aliases_and_parse_actions(definition, self.aliases, map_type))
+        return ans
 
 
 def build_action_aliases(raw: dict[str, str], first_arg_replacement: str = '') -> AliasMap:
@@ -1215,9 +1348,7 @@ def build_action_aliases(raw: dict[str, str], first_arg_replacement: str = '') -
     return ans
 
 
-def resolve_aliases_and_parse_actions(
-    defn: str, aliases: dict[str, list[ActionAlias]], map_type: MapType
-) -> Iterator[KeyAction]:
+def resolve_aliases_and_parse_actions(defn: str, aliases: dict[str, list[ActionAlias]], map_type: MapType) -> Iterator[KeyAction]:
     if not defn:
         return
     parts = defn.split(maxsplit=1)
@@ -1248,7 +1379,7 @@ def resolve_aliases_and_parse_actions(
 
     if possible_alias == 'combine':
         sep, rest = rest.split(maxsplit=1)
-        parts = re.split(fr'\s*{re.escape(sep)}\s*', rest)
+        parts = re.split(rf'\s*{re.escape(sep)}\s*', rest)
         for x in parts:
             if x:
                 yield from resolve_aliases_and_parse_actions(x, aliases, map_type)
@@ -1286,10 +1417,7 @@ def resolve_key_mods(kitty_mod: int, mods: int) -> int:
 class MouseMapping(BaseDefinition):
     map_type: MapType = MapType.MOUSE_MAP
 
-    def __init__(
-        self, button: int = 0, mods: int = 0, repeat_count: int = 1, grabbed: bool = False,
-        definition: str = ''
-    ):
+    def __init__(self, button: int = 0, mods: int = 0, repeat_count: int = 1, grabbed: bool = False, definition: str = ''):
         super().__init__(definition)
         self.button = button
         self.mods = mods
@@ -1300,9 +1428,7 @@ class MouseMapping(BaseDefinition):
         return self.pretty_repr('button', 'mods', 'repeat_count', 'grabbed')
 
     def resolve_and_copy(self, kitty_mod: int) -> 'MouseMapping':
-        ans = MouseMapping(
-            self.button, resolve_key_mods(kitty_mod, self.mods), self.repeat_count, self.grabbed,
-            self.definition)
+        ans = MouseMapping(self.button, resolve_key_mods(kitty_mod, self.mods), self.repeat_count, self.grabbed, self.definition)
         ans.definition_location = self.definition_location
         return ans
 
@@ -1335,7 +1461,7 @@ class LiteralField(Generic[T]):
         obj.__dict__[self._name] = value
 
 
-OnUnknown = Literal['beep', 'end', 'ignore', 'passthrough']
+OnUnknown = Literal['beep', 'end', 'ignore', 'passthrough', 'passthrough_and_end']
 OnAction = Literal['keep', 'end']
 
 
@@ -1363,11 +1489,13 @@ allowed_key_map_options = frozenset(f.name for f in fields(KeyMapOptions))
 
 
 class KeyDefinition(BaseDefinition):
-
     def __init__(
-        self, is_sequence: bool = False, trigger: SingleKey = SingleKey(),
-        rest: tuple[SingleKey, ...] = (), definition: str = '',
-        options: KeyMapOptions = default_key_map_options
+        self,
+        is_sequence: bool = False,
+        trigger: SingleKey = SingleKey(),
+        rest: tuple[SingleKey, ...] = (),
+        definition: str = '',
+        options: KeyMapOptions = default_key_map_options,
     ):
         super().__init__(definition)
         self.is_sequence = is_sequence
@@ -1402,18 +1530,15 @@ class KeyDefinition(BaseDefinition):
     def resolve_and_copy(self, kitty_mod: int) -> 'KeyDefinition':
         def r(k: SingleKey) -> SingleKey:
             return k.resolve_kitty_mod(kitty_mod)
-        ans = KeyDefinition(
-            self.is_sequence, r(self.trigger), tuple(map(r, self.rest)),
-            self.definition, self.options
-        )
+
+        ans = KeyDefinition(self.is_sequence, r(self.trigger), tuple(map(r, self.rest)), self.definition, self.options)
         ans.definition_location = self.definition_location
         return ans
 
 
 class KeyboardMode:
-
     on_unknown: OnUnknown = get_args(OnUnknown)[0]
-    on_action : OnAction = get_args(OnAction)[0]
+    on_action: OnAction = get_args(OnAction)[0]
     sequence_keys: list[defines.KeyEvent] | None = None
     timeout: float = 0.0
     timeout_timer_id: int | None = None
@@ -1424,7 +1549,7 @@ class KeyboardMode:
 
 
 KeyboardModeMap = dict[str, KeyboardMode]
-key_map_option_converters: defaultdict[str, Callable[[str], Any]] = defaultdict(lambda: (lambda x: x))
+key_map_option_converters: defaultdict[str, Callable[[str], Any]] = defaultdict(lambda: lambda x: x)
 key_map_option_converters['timeout'] = float
 
 
@@ -1466,7 +1591,7 @@ def parse_options_for_map(val: str) -> tuple[KeyMapOptions, str]:
                 object.__setattr__(ans, k, key_map_option_converters[k](v))
                 expecting_arg = ''
         else:
-            return ans, val[tok[0]:]
+            return ans, val[tok[0] :]
     return ans, ''
 
 
@@ -1543,8 +1668,11 @@ def parse_mouse_map(val: str) -> Iterable[MouseMapping]:
         obutton = parts[0].lower()
         mods = 0
     try:
-        b = mouse_button_map.get(obutton, obutton)[1:]
-        button = getattr(defines, f'GLFW_MOUSE_BUTTON_{b}')
+        if obutton in mouse_wheel_map:
+            button = mouse_wheel_map[obutton]
+        else:
+            b = mouse_button_map.get(obutton, obutton)[1:]
+            button = getattr(defines, f'GLFW_MOUSE_BUTTON_{b}')
     except Exception:
         log_error(f'Mouse button: {xbutton} not recognized, ignoring')
         return
@@ -1552,6 +1680,9 @@ def parse_mouse_map(val: str) -> Iterable[MouseMapping]:
         count = mouse_trigger_count_map[event.lower()]
     except KeyError:
         log_error(f'Mouse event type: {event} not recognized, ignoring')
+        return
+    if obutton in mouse_wheel_map and count != 1:
+        log_error(f'Mouse event type for {obutton} must be press, ignoring: {val}')
         return
     specified_modes = frozenset(modes.lower().split(','))
     if specified_modes - {'grabbed', 'ungrabbed'}:
@@ -1591,8 +1722,7 @@ class EasingFunction(NamedTuple):
         parts = params.replace(',', ' ').split()
         if len(parts) != 4:
             raise ValueError('cubic-bezier easing function must have four points')
-        return cls(type='cubic-bezier', cubic_bezier_points=(
-            unit_float(parts[0]), float(parts[1]), unit_float(parts[2]), float(parts[3])))
+        return cls(type='cubic-bezier', cubic_bezier_points=(unit_float(parts[0]), float(parts[1]), unit_float(parts[2]), float(parts[3])))
 
     @classmethod
     def linear(cls, params: str) -> 'EasingFunction':
@@ -1606,13 +1736,13 @@ class EasingFunction(NamedTuple):
             extra = len(yaxis) - len(xaxis)
             if extra <= 0:
                 return
-            start = xaxis[-1] if xaxis else 0.
+            start = xaxis[-1] if xaxis else 0.0
             delta = (end - start) / max(1, extra - 1)
-            if delta <= 0.:
+            if delta <= 0.0:
                 raise ValueError(f'Linear easing curve must have strictly increasing points: {params} does not')
             if xaxis:
                 for i in range(extra):
-                    xaxis.append(start + (i+1) * delta)
+                    xaxis.append(start + (i + 1) * delta)
             else:
                 for i in range(extra):
                     xaxis.append(i * delta)
@@ -1648,9 +1778,7 @@ class EasingFunction(NamedTuple):
         if len(parts) == 2:
             n = int(parts[0])
             jt = parts[1]
-            mapping: dict[str, JumpTypes] = {
-                'jump-start': 'start', 'start': 'start', 'end': 'end', 'jump-end': 'end', 'jump-none': 'none', 'jump-both': 'both'
-            }
+            mapping: dict[str, JumpTypes] = {'jump-start': 'start', 'start': 'start', 'end': 'end', 'jump-end': 'end', 'jump-none': 'none', 'jump-both': 'both'}
             try:
                 jump_type = mapping[jt.lower()]
             except KeyError:
@@ -1664,12 +1792,13 @@ class EasingFunction(NamedTuple):
         return cls(type='steps', jump_type=jump_type, num_steps=n)
 
 
-def parse_animation(spec: str, interval: float = -1.) -> tuple[float, EasingFunction, EasingFunction]:
+def parse_animation(spec: str, interval: float = -1.0) -> tuple[float, EasingFunction, EasingFunction]:
     with suppress(Exception):
         interval = float(spec)
         return interval, EasingFunction(), EasingFunction()
 
     m = [EasingFunction(), EasingFunction()]
+
     def parse_func(func_name: str, params: str) -> None:
         idx = 1 if m[0] else 0
         if m[idx]:
@@ -1733,11 +1862,11 @@ def mouse_hide_wait(x: str) -> MouseHideWait:
 
 
 def visual_bell_duration(spec: str) -> tuple[float, EasingFunction, EasingFunction]:
-    return parse_animation(spec, interval=0.)
+    return parse_animation(spec, interval=0.0)
 
 
 pointer_shape_names = (
-# start pointer shape names (auto generated by gen-key-constants.py do not edit)
+    # start pointer shape names (auto generated by gen-key-constants.py do not edit)
     'arrow',
     'beam',
     'text',
@@ -1770,7 +1899,7 @@ pointer_shape_names = (
     'no-drop',
     'grab',
     'grabbing',
-# end pointer shape names
+    # end pointer shape names
 )
 
 

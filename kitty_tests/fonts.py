@@ -3,6 +3,7 @@
 
 import array
 import os
+import sys
 import tempfile
 import unittest
 from collections.abc import Iterable
@@ -14,13 +15,17 @@ from kitty.constants import is_macos, read_kitty_resource
 from kitty.fast_data_types import (
     DECAWM,
     ParsedFontFeature,
+    Screen,
     get_fallback_font,
+    render_decoration,
     set_allow_use_of_box_fonts,
     sprite_idx_to_pos,
     sprite_map_set_layout,
     sprite_map_set_limits,
     test_render_line,
+    test_shape,
     test_sprite_position_increment,
+    test_sprite_tracker_ynum,
     wcwidth,
 )
 from kitty.fonts import family_name_to_key
@@ -28,7 +33,7 @@ from kitty.fonts.common import FontSpec, all_fonts_map, face_from_descriptor, ge
 from kitty.fonts.render import coalesce_symbol_maps, create_face, render_string, setup_for_testing, shape_string
 from kitty.options.types import Options
 
-from . import BaseTest, draw_multicell, skip_on_windows
+from .base import BaseTest, draw_multicell, parse_bytes, skip_on_windows
 
 
 def parse_font_spec(spec):
@@ -41,7 +46,6 @@ def testing_font_data(name):
 
 
 class Selection(BaseTest):
-
     @skip_on_windows('asserts PostScript names of the font builds shipped on Linux and macOS')
     def test_font_selection(self):
         self.set_options({'font_features': {'LiberationMono': (ParsedFontFeature('-dlig'),)}})
@@ -88,8 +92,14 @@ class Selection(BaseTest):
         t('sourcecodeVf', 'SourceCodeVF', 'Semibold')
 
         # The Arch ttf-fira-code package excludes the variable fonts for some reason
-        t('fira code', 'FiraCodeRoman', 'SemiBold', 'Regular', 'SemiBold', alternate=(
-            'FiraCode-Regular', 'FiraCode-SemiBold', 'FiraCode-Retina', 'FiraCode-SemiBold'))
+        t(
+            'fira code',
+            'FiraCodeRoman',
+            'SemiBold',
+            'Regular',
+            'SemiBold',
+            alternate=('FiraCode-Regular', 'FiraCode-SemiBold', 'FiraCode-Retina', 'FiraCode-SemiBold'),
+        )
         t('hack', 'Hack')
         # some ubuntu systems (such as the build VM) have only the regular and
         # bold faces of DejaVu Sans Mono installed.
@@ -174,6 +184,49 @@ class Selection(BaseTest):
             self.ae(face_from_descriptor(ff['medium']).applied_features(), {'dlig': 'dlig', 'test': 'test=3'})
             self.ae(face_from_descriptor(ff['bold']).applied_features(), {'dlig': 'dlig', 'test': 'test=3'})
 
+    def test_face_loaded_from_descriptor_path(self):
+        # Fonts in different files can share a PostScript name, for example the
+        # default named instance of a variable font and the corresponding static
+        # font. The face must be loaded from the file the descriptor came from.
+        if not is_macos:
+            self.skipTest('Only CoreText looks up fonts by name')
+        from kitty.fast_data_types import CTFace, add_font_file, coretext_all_fonts
+
+        font_data = testing_font_data('ComfyCode-Regular.ttf')
+        with tempfile.TemporaryDirectory() as tdir:
+            names = 'a.ttf', 'b.ttf'
+            for name in names:
+                p = os.path.join(tdir, name)
+                with open(p, 'wb') as d:
+                    d.write(font_data)
+                self.assertTrue(add_font_file(p))
+            # CoreText reports paths without resolving symlinks such as /var -> /private/var
+            descriptors = [d for d in coretext_all_fonts(False) if d['family'] == 'Comfy Code' and os.path.basename(d['path']) in names]
+            self.ae(len(descriptors), len(names))
+            self.ae(len({d['postscript_name'] for d in descriptors}), 1)
+            for d in descriptors:
+                self.ae(CTFace(descriptor=d).path, d['path'])
+            # A descriptor whose file no longer exists falls back to matching by name
+            d = dict(descriptors[0], path=os.path.join(tdir, 'missing.ttf'))
+            self.ae(CTFace(descriptor=d).postscript_name(), descriptors[0]['postscript_name'])
+
+    def test_invalid_font_feature(self):
+        with self.assertRaises(ValueError) as cm:
+            ParsedFontFeature('!!bad!!')
+        self.assertIn('!!bad!!', str(cm.exception))
+
+    def test_render_decoration(self):
+        w, h = 10, 20
+        for which in ('curl', 'dashed', 'dotted', 'double', 'straight', 'strikethrough'):
+            data = render_decoration(which, w, h, 15, 2)
+            self.assertIsInstance(data, bytes)
+            self.ae(len(data), w * h)
+            # Strikethrough metrics default to zero
+            if which != 'strikethrough':
+                self.assertTrue(any(data), f'{which} decoration is empty')
+        with self.assertRaises(KeyError):
+            render_decoration('nonexistent', w, h, 15, 2)
+
     def test_synthetic_italic_matrix(self):
         # A roman-only font that find_best_match finds (e.g. Fira Code, which ships
         # no italic face) must get fontconfig's synthetic-italic FC_MATRIX
@@ -184,6 +237,7 @@ class Selection(BaseTest):
         if is_macos:
             self.skipTest('synthetic-italic FC_MATRIX is a fontconfig feature')
         from kitty.fonts.fontconfig import FC_MONO, fc_match
+
         names = set(all_fonts_map(True)['family_map']) | set(all_fonts_map(True)['variable_map'])
         if family_name_to_key('fira code') not in names:
             self.skipTest('Fira Code not installed')
@@ -194,14 +248,15 @@ class Selection(BaseTest):
         opts = Options()
         opts.font_family = parse_font_spec('Fira Code')
         ff = get_font_files(opts)
-        self.assertIsNone(ff['medium'].get('matrix'))      # upright stays upright
+        self.assertIsNone(ff['medium'].get('matrix'))  # upright stays upright
         mi = ff['italic'].get('matrix')
-        self.assertIsNotNone(mi)                            # roman, no italic -> sheared
-        self.assertNotEqual(mi[1], 0.0)                     # actually slanted, not identity
+        self.assertIsNotNone(mi)  # roman, no italic -> sheared
+        self.assertNotEqual(mi[1], 0.0)  # actually slanted, not identity
         # Faces are built from a size-specialized descriptor at render time; the
         # matrix must survive specialize_font_descriptor or the glyphs render
         # upright despite the descriptor above being correct.
         from kitty.fast_data_types import specialize_font_descriptor
+
         sd = specialize_font_descriptor(dict(ff['italic']), 12.0, 96.0, 96.0)
         self.ae(sd.get('matrix'), mi)
         if family_name_to_key('liberation mono') in names:  # real-italic control
@@ -237,7 +292,7 @@ def block_helpers(s, sprites, cell_width, cell_height):
         for y in range(height):
             pos = cell_width * y
             for x in range(width):
-                ans[pos + x] = 0xffffffff
+                ans[pos + x] = 0xFFFFFFFF
         return ans.tobytes()
 
     def upper_half_block():
@@ -248,9 +303,11 @@ def block_helpers(s, sprites, cell_width, cell_height):
 
     def block_as_str(a):
         pixels = array.array('I', a)
+
         def row(y):
             pos = y * cell_width
             return ' '.join(f'{int(pixels[pos + x] != 0)}' for x in range(cell_width))
+
         return '\n'.join(row(y) for y in range(cell_height))
 
     def assert_blocks(a, b, msg=''):
@@ -259,7 +316,7 @@ def block_helpers(s, sprites, cell_width, cell_height):
             del mr, actual, full_block, half_block, quarter_block, block_test, empty_block
             msg = msg or 'block not equal'
             if len(a) != len(b):
-                assert_blocks.__msg = msg + f' block lengths not equal: {len(a)/4} != {len(b)/4}'
+                assert_blocks.__msg = msg + f' block lengths not equal: {len(a) / 4} != {len(b) / 4}'
             else:
                 assert_blocks.__msg = msg + '\n' + block_as_str(a) + '\n\n' + block_as_str(b)
             del a, b
@@ -286,14 +343,12 @@ def block_helpers(s, sprites, cell_width, cell_height):
         for i, (expected, actual) in enumerate(z):
             assert_blocks(expected(), actual, f'Block {i} expected != actual')
 
-
     return full_block, empty_block, upper_half_block, lower_half_block, quarter_block, block_as_str, block_test
 
 
 class FontBaseTest(BaseTest):
-
     font_size = 16.0
-    dpi = 72.
+    dpi = 72.0
     font_name = 'FiraCode-Medium.otf'
 
     def path_for_font(self, name):
@@ -320,8 +375,23 @@ class FontBaseTest(BaseTest):
         super().tearDown()
 
 
-
 class Rendering(FontBaseTest):
+    def test_decorations_map_growth(self):
+        from kitty.fast_data_types import decorations_map_new_size as size
+
+        m = 4096
+        self.ae(size(0, 0, m), (4096, 1))
+        self.ae(size(5000, 4096, m), (4096, 2))
+        cap, reallocs = 0, 0
+        for count in range(100000):
+            if count >= cap:
+                w, h = size(count, cap, m)
+                cap, reallocs = w * h, reallocs + 1
+        self.assertLess(reallocs, 10)
+        full = m * m
+        self.ae(size(m * (m - 1), m * (m - 1), m), (m, m))
+        self.ae(size(full - 1, full // 2, m), (m, m))
+        self.assertIsNone(size(full, full, m))
 
     def test_sprite_map(self):
         sprite_map_set_limits(10, 3)
@@ -337,6 +407,19 @@ class Rendering(FontBaseTest):
         self.ae(test_sprite_position_increment(), (0, 0, 2))
         self.ae(test_sprite_position_increment(), (1, 0, 2))
 
+    def test_sprite_map_ynum_growth(self):
+        sprite_map_set_limits(10, 3)
+        sprite_map_set_layout(1, 1)
+        self.ae(test_sprite_tracker_ynum(), 1)
+        seen = [1]
+        for i in range(10 * 5 * 2 + 3):
+            self.ae(test_sprite_position_increment(), (i % 10, (i // 10) % 5, i // 50))
+            ynum = test_sprite_tracker_ynum()
+            self.assertLessEqual(ynum, 5)
+            if ynum != seen[-1]:
+                seen.append(ynum)
+        self.ae(seen, [1, 2, 4, 5])
+
     def test_box_drawing(self):
         s = self.create_screen(cols=len(box_chars) + 1, lines=1, scrollback=0)
         prerendered = len(self.sprites)
@@ -344,6 +427,38 @@ class Rendering(FontBaseTest):
         line = s.line(0)
         test_render_line(line)
         self.assertEqual(len(self.sprites) - prerendered, len(box_chars))
+
+    def test_line_thickness_scales_with_font_size(self):
+        from kitty.fast_data_types import create_test_font_group, render_box_char
+        from kitty.fonts.render import set_font_family
+
+        options = {'font_size': self.font_size}
+        opts = self.set_options(options)
+        chars = '─│╭┃'
+
+        def check(factor):
+            set_font_family(opts)  # resets font groups so that the first one is at the specified size
+            cell_width, cell_height, _ = create_test_font_group(factor * self.font_size, self.dpi, self.dpi)
+            s = self.create_screen(cols=len(chars) + 1, lines=1, scrollback=0, options=options)
+            s.draw(chars)
+            line = s.line(0)
+            test_render_line(line)
+
+            def alpha(sprite_idx):
+                pixels = array.array('I', self.sprites[sprite_idx_to_pos(sprite_idx, setup_for_testing.xnum, setup_for_testing.ynum)])
+                return bytes(p & 0xFF for p in pixels)
+
+            for i, ch in enumerate(chars):
+                expected = render_box_char(ord(ch), cell_width, cell_height, factor, self.dpi, self.dpi)
+                self.ae(alpha(line.sprite_at(i)), expected, f'{ch!r} not rendered with line thickness scale: {factor}')
+            beam = alpha(2)
+            mid = (cell_height // 2) * cell_width
+            # dpi is 72 so 1pt == 1px
+            self.ae(sum(1 for x in range(cell_width) if beam[mid + x]), round(factor * opts.cursor_beam_thickness))
+
+        check(1)
+        check(2)
+        check(4)
 
     def test_scaled_box_drawing(self):
         self.scaled_drawing_test()
@@ -358,7 +473,8 @@ class Rendering(FontBaseTest):
     def scaled_drawing_test(self):
         s = self.create_screen(cols=8, lines=8, scrollback=0)
         full_block, empty_block, upper_half_block, lower_half_block, quarter_block, block_as_str, block_test = block_helpers(
-                s, self.sprites, self.cell_width, self.cell_height)
+            s, self.sprites, self.cell_width, self.cell_height
+        )
         block_test(full_block)
         block_test(full_block, full_block, full_block, full_block, scale=2)
         block_test(full_block, empty_block, empty_block, empty_block, scale=2, subscale_n=1, subscale_d=2)
@@ -369,8 +485,23 @@ class Rendering(FontBaseTest):
         block_test(upper_half_block, scale=1, subscale_n=1, subscale_d=2, text='██')
         block_test(lower_half_block, scale=1, subscale_n=1, subscale_d=2, text='██', vertical_align=1)
 
+    def test_subscaled_rendering_into_larger_area(self):
+        # Regression test for overlapping copies from the scratch area when the
+        # subscaled cell height is larger than the unscaled cell height
+        for scale in (2, 3, 4, 7):
+            s = self.create_screen(cols=8, lines=scale, scrollback=0)
+            parse_bytes(s, f'\x1b]66;s={scale}:n=5:d=9;a\x07'.encode())
+            for y in range(s.lines):
+                test_render_line(s.line(y))
+        # Rendering a run with an empty bitmap
+        s = self.create_screen(cols=6, lines=2, scrollback=0)
+        parse_bytes(s, '\x1b]66;s=2;\U0001f467\x07'.encode())
+        s.test_draw_overlay_line('\u3008a', 3, 0)
+        for y in range(s.lines):
+            test_render_line(s.line(y))
+
     def test_font_rendering(self):
-        render_string('ab\u0347\u0305你好|\U0001F601|\U0001F64f|\U0001F63a|')
+        render_string('ab\u0347\u0305你好|\U0001f601|\U0001f64f|\U0001f63a|')
         text = 'He\u0347\u0305llo\u0341, w\u0302or\u0306l\u0354d!'
         # macOS has no fonts capable of rendering combining chars
         if is_macos:
@@ -391,6 +522,28 @@ class Rendering(FontBaseTest):
             self.assertGreater(w, 64)
             self.assertGreater(h, 64)
 
+    @unittest.skipIf(is_macos, 'fontconfig descriptors are not used on macOS')
+    def test_shaping_uses_variation_axes(self):
+        # Annotation Mono switches to cursive glyphs via GSUB FeatureVariations
+        # conditioned on its CRSV axis, so shaping must use the variation
+        # coordinates set on the face, see https://github.com/kovidgoyal/kitty/issues/10897
+        path = self.path_for_font('AnnotationMono-VF-subset.ttf')
+        plain, cursive = [1, 3, 6, 8], [2, 4, 7, 9]  # a f k l and a.ital f.ital k.ital l.ital
+
+        def shaped_glyphs(**extra):
+            descriptor = {'descriptor_type': 'fontconfig', 'path': path, 'index': 0, 'hinting': True, 'hint_style': 3, **extra}
+            with setup_for_testing(size=self.font_size, dpi=self.dpi, main_face_descriptor=descriptor):
+                s = Screen(None, 1, 8)
+                s.draw('afkl')
+                return [g for group in test_shape(s.line(0), None) for g in group[3]]
+
+        # axes are in the order: wght, slnt, CRSV
+        self.ae(shaped_glyphs(axes=(250.0, 0.0, 0.0)), plain)
+        self.ae(shaped_glyphs(axes=(250.0, 0.0, 1.0)), cursive)
+        self.ae(shaped_glyphs(axes=(250.0, -15.0, 0.5)), cursive)
+        self.ae(shaped_glyphs(named_style=5), plain)  # DemiBold
+        self.ae(shaped_glyphs(named_style=35), cursive)  # DemiBold Upright Italic
+
     def test_color_emoji_not_shrunk(self):
         # Regression test for https://github.com/kovidgoyal/kitty/issues/10144.
         # fontconfig gives fixed-size color faces (e.g. Noto Color Emoji) a
@@ -404,6 +557,7 @@ class Rendering(FontBaseTest):
         if is_macos:
             self.skipTest('FC_MATRIX is a fontconfig feature, not used on macOS')
         from kitty.fonts.fontconfig import fc_match
+
         desc = dict(fc_match('emoji', False, False, 0))
         if not (desc.get('color') and desc.get('matrix')):
             self.skipTest('no fixed-size color emoji font with a fontconfig fixup matrix')
@@ -414,6 +568,92 @@ class Rendering(FontBaseTest):
         _, mw, mh = with_matrix.render_codepoint(0x1F40D)
         _, rw, rh = without_matrix.render_codepoint(0x1F40D)
         self.assertGreater(mh, 0.5 * rh, f'color emoji shrunk by FC_MATRIX: {mh}px vs {rh}px (#10144)')
+
+    def test_concat_cells(self):
+        from kitty.fast_data_types import concat_cells
+
+        # sprite pixels are 0xRRGGBBAA and the result is opaque RGBA bytes
+        cell = array.array('I', (0xFF000080, 0xFFFFFF00, 0x00FF00FF)).tobytes()
+        self.ae(concat_cells(3, 1, True, (cell,)), bytes((0x80, 0, 0, 0xFF, 0, 0, 0, 0xFF, 0, 0xFF, 0, 0xFF)))
+        self.ae(concat_cells(1, 1, True, (cell[:4], cell[4:8])), bytes((0x80, 0, 0, 0xFF, 0, 0, 0, 0xFF)))
+        self.ae(concat_cells(2, 1, True, (cell[:8],), 0x0000FF), bytes((0x80, 0, 0x7F, 0xFF, 0, 0, 0xFF, 0xFF)))
+        # alpha mask pixels are white text and the result is RGBA bytes, as above
+        self.ae(concat_cells(2, 1, False, (bytes((0xFF, 0)),), 0x0000FF), bytes((0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0xFF, 0xFF)))
+        self.ae(concat_cells(1, 1, False, (bytes((0x80,)),), 0x102030), bytes((0x87, 0x8F, 0x97, 0xFF)))
+        self.ae(concat_cells(0, 1, True, (b'',)), b'')
+
+    def cell_alpha(self, font_name, text, ppem):
+        "The alpha of the pixels of the first cell of text, and the cell width and height"
+        with setup_for_testing(size=ppem, dpi=72.0, main_face_path=self.path_for_font(font_name)) as (sprites, cell_width, cell_height):
+            s = Screen(None, 1, 4)
+            s.draw(text)
+            line = s.line(0)
+            test_render_line(line)
+            pos = sprite_idx_to_pos(line.sprite_at(0) & 0x7FFFFFFF, setup_for_testing.xnum, setup_for_testing.ynum)
+            # the low byte of each pixel is its alpha, the color bits are set even for empty pixels on macOS
+            return bytes(p & 0xFF for p in array.array('I', sprites[pos])), cell_width, cell_height
+
+    def glyph_ink(self, font_name, char, ppem):
+        "The number of pixel rows and columns char occupies when drawn in a single cell, and the cell width"
+        alpha, cell_width, cell_height = self.cell_alpha(font_name, char, ppem)
+        rows = [y for y in range(cell_height) if any(alpha[y * cell_width : (y + 1) * cell_width])]
+        cols = [x for x in range(cell_width) if any(alpha[x::cell_width])]
+        height = rows[-1] - rows[0] + 1 if rows else 0
+        width = cols[-1] - cols[0] + 1 if cols else 0
+        return height, width, cell_width
+
+    def test_small_glyph_overhang_is_not_rescaled(self):
+        # Fonts have glyphs whose outlines overhang their advance a little, such
+        # as the texture healing alternates of Monaspace and 0xProto. These must
+        # be drawn at full size, not shrunk to fit the cell, and cropped to
+        # it, which they then fill. The expected height is the height of the
+        # glyph's bounding box in font units, times ppem / units per em,
+        # rounded down. Cropping removes ink, so it is only done for glyphs
+        # at most 2/10 wider than the cell.
+        for font_name, char, ppem, full_height in (
+            ('CascadiaCode-Regular.otf', 'ď', 40, 31),  # 1588 * 40 / 2048, outline is 7% wider than the cell
+            ('LiberationMono-Regular.ttf', 'Ƴ', 32, 21),  # 1370 * 32 / 2048, 10% wider
+            ('FiraCode-Medium.otf', 'œ', 64, 36),  # 1111 * 64 / 1950, 3% wider
+            # 935 * 120 / 1000, 15% wider, like the widest texture healing alternates of Monaspace
+            ('iosevka-regular.ttf', 'ꭦ', 120, 112),
+        ):
+            with self.subTest(font=font_name, char=char):
+                height, width, cell_width = self.glyph_ink(font_name, char, ppem)
+                self.assertGreaterEqual(height, full_height)
+                self.assertEqual(width, cell_width)
+
+    def test_large_glyph_overhang_is_rescaled(self):
+        # Ὦ has its breathing mark and accent to the left of the letter, outside
+        # its cell, so cropping would cut them off. Its outline is 1594 units
+        # wide and 1766 tall with an advance of 1229, so scaled to fit the cell
+        # it is at most 1766 * (1229 / 1594) * 32 / 2048 = 21.3 pixels tall,
+        # which, depending on where it falls relative to the pixel grid, covers
+        # at most 23 rows. Drawn at full size it covers at least 27.
+        height, width, cell_width = self.glyph_ink('LiberationMono-Regular.ttf', 'Ὦ', 32)
+        self.assertLessEqual(height, 23)
+        # The rescaled glyph is moved into the cell so that the marks are
+        # not cut off and it spans the whole cell.
+        self.assertGreaterEqual(width, cell_width - 1)
+
+    def test_marks_move_with_rescaled_glyph(self):
+        # When Ὦ is rescaled and moved into its cell, a combining dot below it
+        # must move with it, so that it stays centered under the letter
+        font = 'LiberationMono-Regular.ttf'
+        base, cell_width, cell_height = self.cell_alpha(font, 'Ὦ', 32)
+        combined = self.cell_alpha(font, 'Ὦ\u0323', 32)[0]
+
+        def ink_columns(alpha, rows):
+            return [x for x in range(cell_width) if any(alpha[y * cell_width + x] for y in rows)]
+
+        def center(cols):
+            return (cols[0] + cols[-1]) / 2
+
+        rows_with_ink = [y for y in range(cell_height) if any(base[y * cell_width : (y + 1) * cell_width])]
+        # the bottom row of Ω spans its width
+        letter = ink_columns(base, rows_with_ink[-1:])
+        dot = ink_columns(combined, range(rows_with_ink[-1] + 1, cell_height))
+        self.assertTrue(dot)
+        self.assertLessEqual(abs(center(dot) - center(letter)), cell_width / 8, f'dot: {dot} letter: {letter}')
 
     def test_shaping(self):
 
@@ -476,12 +716,42 @@ class Rendering(FontBaseTest):
         self.ae(groups('<*>>', font='FiraCode-Medium.otf'), [(3, 3), (1, 1)])
         self.ae(groups('a<*>>b', font='FiraCode-Medium.otf'), [(1, 1), (3, 3), (1, 1), (1, 1)])
 
-        self.ae(groups('|\U0001F601|\U0001F64f|\U0001F63a|'), [(1, 1), (2, 1), (1, 1), (2, 1), (1, 1), (2, 1), (1, 1)])
-        self.ae(groups('He\u0347\u0305llo\u0337,', font='LiberationMono-Regular.ttf'),
-                [(1, 1), (1, 3), (1, 1), (1, 1), (1, 2), (1, 1)])
+        self.ae(groups('|\U0001f601|\U0001f64f|\U0001f63a|'), [(1, 1), (2, 1), (1, 1), (2, 1), (1, 1), (2, 1), (1, 1)])
+        self.ae(groups('He\u0347\u0305llo\u0337,', font='LiberationMono-Regular.ttf'), [(1, 1), (1, 3), (1, 1), (1, 1), (1, 2), (1, 1)])
 
         self.ae(groups('i\u0332\u0308', font='LiberationMono-Regular.ttf'), [(1, 2)])
         self.ae(groups('u\u0332 u\u0332\u0301', font='LiberationMono-Regular.ttf'), [(1, 2), (1, 1), (1, 2)])
+
+    def test_shaped_run_cache(self):
+        # test_shape() already checks that a cached run matches the HarfBuzz
+        # output for the same run, here we check that different runs sharing a
+        # font, and therefore a cache, do not collide with each other
+        ctx = partial(setup_for_testing, size=self.font_size, dpi=self.dpi, main_face_path=self.path_for_font(self.font_name))
+
+        def shape(text):
+            s = Screen(None, 1, max(8, len(text) * 2))
+            s.draw(text)
+            return test_shape(s.line(0), None)
+
+        texts = ('abcd', 'a===b', '->', '<==>', '-' * 18, 'x' * 32, 'x' * 33, 'a<!--b', '\u00e1\u00e9', 'a>\u2060<b')
+        cold = {}
+        for text in texts:
+            with ctx():  # a fresh font, and therefore an empty cache, for every run
+                cold[text] = shape(text)
+        with ctx():  # all runs now share a single cache
+            for text in texts + tuple(reversed(texts)):
+                self.ae(cold[text], shape(text), f'cached shaping differs for: {text!r}')
+
+    def test_shaping_with_many_combining_chars(self):
+        # cells can hold more codepoints than MAX_NUM_CODEPOINTS_PER_CELL when
+        # built via the Python API, which must not overflow the shaped run cache key
+        s = Screen(None, 1, 64)
+        s.draw('a' * 32)
+        line = s.line(0)
+        for x in range(32):
+            for i in range(40):
+                line.add_combining_char(x, chr(0x300 + (i % 16)))
+        self.ae(sum(g[0] for g in test_shape(line, None)), 32)
 
     def test_emoji_presentation(self):
         s = self.create_screen()
@@ -509,12 +779,103 @@ class Rendering(FontBaseTest):
         self.ae((s.cursor.x, s.cursor.y), (2, 4))
         self.ae(str(s.line(s.cursor.y)), '\u2716\ufe0f')
 
+    def test_get_fallback_font_returns_new_reference(self):
+        # get_fallback_font() used to return a borrowed reference, which freed
+        # the Face while the FontGroup was still holding on to it.
+        for text in '\u4e2d\u0627\u05d0\u0905\u0e01\u10a0':
+            try:
+                face = get_fallback_font(text, False, False)
+            except ValueError:
+                continue
+            # one reference held by the FontGroup, one by face, one by the
+            # argument to getrefcount()
+            self.assertGreaterEqual(sys.getrefcount(face), 3, f'get_fallback_font() returned a borrowed reference for {text!r}')
+            del face
+            # the Face must still be usable via the FontGroup
+            self.assertIsInstance(get_fallback_font(text, False, False).postscript_name(), str)
+            break
+        else:
+            self.skipTest('No font on this system has a fallback font for any of the tested codepoints')
+
+    def test_private_use_fallback_font_ignores_style(self):
+        # private use codepoints such as Nerd Font icons must use the same
+        # fallback font in every style, rather than whatever unrelated bold or
+        # italic font happens to cover the codepoint
+        for text in '\uf00c\uf071\uf110\ue654':
+            try:
+                regular = get_fallback_font(text, False, False)
+            except ValueError:
+                continue
+            for bold, italic in ((True, False), (False, True), (True, True)):
+                self.ae(get_fallback_font(text, bold, italic).postscript_name(), regular.postscript_name(), f'{text!r} {bold=} {italic=}')
+
+    @unittest.skipIf(is_macos, 'fontconfig is not used on macOS')
+    def test_fallback_font_matching(self):
+        # Fallback font matching narrows the candidates down using a cached,
+        # pre-sorted candidate list before asking fontconfig to score them,
+        # instead of scoring the entire font database for every codepoint. See
+        # https://github.com/kovidgoyal/kitty/issues/10496
+        from kitty.fast_data_types import Face, clear_fallback_font_cache, fc_match_fallback
+
+        clear_fallback_font_cache()
+        faces = {}
+
+        def has_chars(descriptor, text):
+            key = descriptor['path'], descriptor['index']
+            if key not in faces:
+                faces[key] = Face(descriptor=descriptor)
+            face = faces[key]
+            return tuple(face.has_codepoint(ord(ch)) for ch in text)
+
+        def cells_to_test():
+            # a spread over every plane, plus the ranges most likely to need a
+            # fallback font: Private Use Area icons, Nerd Font icons, CJK,
+            # emoji, math and Braille
+            for cp in range(0, 0x110000, 0x1553):
+                yield chr(cp)
+            for start in (0xE000, 0xF0000, 0x4E00, 0x1F600, 0x2200, 0x2800):
+                for cp in range(start, start + 0x100, 0x11):
+                    yield chr(cp)
+            # multi-codepoint cells, where the best font is the one missing the
+            # fewest codepoints
+            for cp in (0x53, 0x4E2D, 0x905, 0xE0B0, 0x1F600):
+                yield chr(cp) + '\u0301'
+                yield chr(cp) + '\u20e3'
+
+        num_tested = num_changed = 0
+        # prefer_color matters most, as fontconfig ranks FC_COLOR above coverage
+        for bold, italic, prefer_color in ((False, False, False), (True, True, False), (False, False, True), (True, False, True)):
+            kw = {'bold': bold, 'italic': italic, 'prefer_color': prefer_color}
+            for text in cells_to_test():
+                if 0xD800 <= ord(text[0]) <= 0xDFFF:
+                    continue
+                expected = fc_match_fallback(text, use_candidate_cache=False, **kw)
+                actual = fc_match_fallback(text, use_candidate_cache=True, **kw)
+                num_tested += 1
+                if (expected['path'], expected['index']) == (actual['path'], actual['index']):
+                    continue
+                # fontconfig sorts with an unstable sort, so among fonts it
+                # scores identically a different one can be picked. That is
+                # acceptable only as long as glyph coverage is unchanged.
+                num_changed += 1
+                self.ae(
+                    has_chars(actual, text),
+                    has_chars(expected, text),
+                    f'Fallback font for {text!r} with {kw} has different coverage: {actual["path"]} instead of {expected["path"]}',
+                )
+        self.assertGreater(num_tested, 100)
+        # How often fonts fontconfig scores identically are ordered differently
+        # depends on the installed fonts, so this bound is deliberately loose:
+        # the meaningful check is the glyph coverage assertion above. Observed
+        # rates: 0% with a handful of fonts, 0.5% with 1600 families installed.
+        self.assertLess(num_changed, num_tested // 2, f'{num_changed} of {num_tested} fallback fonts changed')
+
     @unittest.skipUnless(is_macos, 'Only macOS has a Last Resort font')
     def test_fallback_font_not_last_resort(self):
         # Ensure that the LastResort font is not reported as a fallback font on
         # macOS. See https://github.com/kovidgoyal/kitty/issues/799
         with self.assertRaises(ValueError, msg='No fallback font found'):
-            get_fallback_font('\U0010FFFF', False, False)
+            get_fallback_font('\U0010ffff', False, False)
 
     def test_coalesce_symbol_maps(self):
         q = {(2, 3): 'a', (4, 6): 'b', (5, 5): 'b', (7, 7): 'b', (9, 9): 'b', (1, 1): 'a'}
@@ -534,15 +895,17 @@ class Rendering(FontBaseTest):
         q = {(4, 5): 'b', (1, 4): 'a'}
         self.ae(coalesce_symbol_maps(q), {(1, 4): 'a', (5, 5): 'b'})
         q = {(0, 30): 'a', (10, 10): 'b', (11, 11): 'b', (2, 2): 'c', (1, 1): 'c'}
-        self.ae(coalesce_symbol_maps(q), {
-            (0, 0): 'a', (1, 2): 'c', (3, 9): 'a', (10, 11): 'b', (12, 30): 'a'})
+        self.ae(coalesce_symbol_maps(q), {(0, 0): 'a', (1, 2): 'c', (3, 9): 'a', (10, 11): 'b', (12, 30): 'a'})
+
 
 def test_chars(chars: str = '╌', sz: int = 128) -> None:
     # kitty +runpy "from kitty.fonts.box_drawing import test_chars; test_chars('XXX')"
     from kitty.fast_data_types import concat_cells, render_box_char, set_send_sprite_to_gpu
     from kitty.fonts.render import display_bitmap, setup_for_testing
+
     if not chars:
         import sys
+
         chars = sys.argv[-1]
 
     def as_ord(x: str) -> int:
@@ -552,7 +915,7 @@ def test_chars(chars: str = '╌', sz: int = 128) -> None:
 
     if '...' in chars:
         start, end = chars.partition('...')[::2]
-        chars = ''.join(map(chr, range(as_ord(start), as_ord(end)+1)))
+        chars = ''.join(map(chr, range(as_ord(start), as_ord(end) + 1)))
 
     with setup_for_testing('monospace', sz) as (_, width, height):
         try:
@@ -603,714 +966,716 @@ def test_drawing(sz: int = 48, family: str = 'monospace', start: int = 0x2500, n
         finally:
             set_send_sprite_to_gpu(None)
 
+
 box_chars = {  # {{{
-'─',
- '━',
- '│',
- '┃',
- '┄',
- '┅',
- '┆',
- '┇',
- '┈',
- '┉',
- '┊',
- '┋',
- '┌',
- '┍',
- '┎',
- '┏',
- '┐',
- '┑',
- '┒',
- '┓',
- '└',
- '┕',
- '┖',
- '┗',
- '┘',
- '┙',
- '┚',
- '┛',
- '├',
- '┝',
- '┞',
- '┟',
- '┠',
- '┡',
- '┢',
- '┣',
- '┤',
- '┥',
- '┦',
- '┧',
- '┨',
- '┩',
- '┪',
- '┫',
- '┬',
- '┭',
- '┮',
- '┯',
- '┰',
- '┱',
- '┲',
- '┳',
- '┴',
- '┵',
- '┶',
- '┷',
- '┸',
- '┹',
- '┺',
- '┻',
- '┼',
- '┽',
- '┾',
- '┿',
- '╀',
- '╁',
- '╂',
- '╃',
- '╄',
- '╅',
- '╆',
- '╇',
- '╈',
- '╉',
- '╊',
- '╋',
- '╌',
- '╍',
- '╎',
- '╏',
- '═',
- '║',
- '╒',
- '╓',
- '╔',
- '╕',
- '╖',
- '╗',
- '╘',
- '╙',
- '╚',
- '╛',
- '╜',
- '╝',
- '╞',
- '╟',
- '╠',
- '╡',
- '╢',
- '╣',
- '╤',
- '╥',
- '╦',
- '╧',
- '╨',
- '╩',
- '╪',
- '╫',
- '╬',
- '╭',
- '╮',
- '╯',
- '╰',
- '╱',
- '╲',
- '╳',
- '╴',
- '╵',
- '╶',
- '╷',
- '╸',
- '╹',
- '╺',
- '╻',
- '╼',
- '╽',
- '╾',
- '╿',
- '▀',
- '▁',
- '▂',
- '▃',
- '▄',
- '▅',
- '▆',
- '▇',
- '█',
- '▉',
- '▊',
- '▋',
- '▌',
- '▍',
- '▎',
- '▏',
- '▐',
- '░',
- '▒',
- '▓',
- '▔',
- '▕',
- '▖',
- '▗',
- '▘',
- '▙',
- '▚',
- '▛',
- '▜',
- '▝',
- '▞',
- '▟',
- '◉',
- '○',
- '●',
- '◖',
- '◗',
- '◜',
- '◝',
- '◞',
- '◟',
- '◠',
- '◡',
- '◢',
- '◣',
- '◤',
- '◥',
- '⠀',
- '⠁',
- '⠂',
- '⠃',
- '⠄',
- '⠅',
- '⠆',
- '⠇',
- '⠈',
- '⠉',
- '⠊',
- '⠋',
- '⠌',
- '⠍',
- '⠎',
- '⠏',
- '⠐',
- '⠑',
- '⠒',
- '⠓',
- '⠔',
- '⠕',
- '⠖',
- '⠗',
- '⠘',
- '⠙',
- '⠚',
- '⠛',
- '⠜',
- '⠝',
- '⠞',
- '⠟',
- '⠠',
- '⠡',
- '⠢',
- '⠣',
- '⠤',
- '⠥',
- '⠦',
- '⠧',
- '⠨',
- '⠩',
- '⠪',
- '⠫',
- '⠬',
- '⠭',
- '⠮',
- '⠯',
- '⠰',
- '⠱',
- '⠲',
- '⠳',
- '⠴',
- '⠵',
- '⠶',
- '⠷',
- '⠸',
- '⠹',
- '⠺',
- '⠻',
- '⠼',
- '⠽',
- '⠾',
- '⠿',
- '⡀',
- '⡁',
- '⡂',
- '⡃',
- '⡄',
- '⡅',
- '⡆',
- '⡇',
- '⡈',
- '⡉',
- '⡊',
- '⡋',
- '⡌',
- '⡍',
- '⡎',
- '⡏',
- '⡐',
- '⡑',
- '⡒',
- '⡓',
- '⡔',
- '⡕',
- '⡖',
- '⡗',
- '⡘',
- '⡙',
- '⡚',
- '⡛',
- '⡜',
- '⡝',
- '⡞',
- '⡟',
- '⡠',
- '⡡',
- '⡢',
- '⡣',
- '⡤',
- '⡥',
- '⡦',
- '⡧',
- '⡨',
- '⡩',
- '⡪',
- '⡫',
- '⡬',
- '⡭',
- '⡮',
- '⡯',
- '⡰',
- '⡱',
- '⡲',
- '⡳',
- '⡴',
- '⡵',
- '⡶',
- '⡷',
- '⡸',
- '⡹',
- '⡺',
- '⡻',
- '⡼',
- '⡽',
- '⡾',
- '⡿',
- '⢀',
- '⢁',
- '⢂',
- '⢃',
- '⢄',
- '⢅',
- '⢆',
- '⢇',
- '⢈',
- '⢉',
- '⢊',
- '⢋',
- '⢌',
- '⢍',
- '⢎',
- '⢏',
- '⢐',
- '⢑',
- '⢒',
- '⢓',
- '⢔',
- '⢕',
- '⢖',
- '⢗',
- '⢘',
- '⢙',
- '⢚',
- '⢛',
- '⢜',
- '⢝',
- '⢞',
- '⢟',
- '⢠',
- '⢡',
- '⢢',
- '⢣',
- '⢤',
- '⢥',
- '⢦',
- '⢧',
- '⢨',
- '⢩',
- '⢪',
- '⢫',
- '⢬',
- '⢭',
- '⢮',
- '⢯',
- '⢰',
- '⢱',
- '⢲',
- '⢳',
- '⢴',
- '⢵',
- '⢶',
- '⢷',
- '⢸',
- '⢹',
- '⢺',
- '⢻',
- '⢼',
- '⢽',
- '⢾',
- '⢿',
- '⣀',
- '⣁',
- '⣂',
- '⣃',
- '⣄',
- '⣅',
- '⣆',
- '⣇',
- '⣈',
- '⣉',
- '⣊',
- '⣋',
- '⣌',
- '⣍',
- '⣎',
- '⣏',
- '⣐',
- '⣑',
- '⣒',
- '⣓',
- '⣔',
- '⣕',
- '⣖',
- '⣗',
- '⣘',
- '⣙',
- '⣚',
- '⣛',
- '⣜',
- '⣝',
- '⣞',
- '⣟',
- '⣠',
- '⣡',
- '⣢',
- '⣣',
- '⣤',
- '⣥',
- '⣦',
- '⣧',
- '⣨',
- '⣩',
- '⣪',
- '⣫',
- '⣬',
- '⣭',
- '⣮',
- '⣯',
- '⣰',
- '⣱',
- '⣲',
- '⣳',
- '⣴',
- '⣵',
- '⣶',
- '⣷',
- '⣸',
- '⣹',
- '⣺',
- '⣻',
- '⣼',
- '⣽',
- '⣾',
- '⣿',
- '\ue0b0',
- '\ue0b1',
- '\ue0b2',
- '\ue0b3',
- '\ue0b4',
- '\ue0b5',
- '\ue0b6',
- '\ue0b7',
- '\ue0b8',
- '\ue0b9',
- '\ue0ba',
- '\ue0bb',
- '\ue0bc',
- '\ue0bd',
- '\ue0be',
- '\ue0bf',
- '\ue0d6',
- '\ue0d7',
- '\uee00',
- '\uee01',
- '\uee02',
- '\uee03',
- '\uee04',
- '\uee05',
- '\uee06',
- '\uee07',
- '\uee08',
- '\uee09',
- '\uee0a',
- '\uee0b',
- '\uf5d0',
- '\uf5d1',
- '\uf5d2',
- '\uf5d3',
- '\uf5d4',
- '\uf5d5',
- '\uf5d6',
- '\uf5d7',
- '\uf5d8',
- '\uf5d9',
- '\uf5da',
- '\uf5db',
- '\uf5dc',
- '\uf5dd',
- '\uf5de',
- '\uf5df',
- '\uf5e0',
- '\uf5e1',
- '\uf5e2',
- '\uf5e3',
- '\uf5e4',
- '\uf5e5',
- '\uf5e6',
- '\uf5e7',
- '\uf5e8',
- '\uf5e9',
- '\uf5ea',
- '\uf5eb',
- '\uf5ec',
- '\uf5ed',
- '\uf5ee',
- '\uf5ef',
- '\uf5f0',
- '\uf5f1',
- '\uf5f2',
- '\uf5f3',
- '\uf5f4',
- '\uf5f5',
- '\uf5f6',
- '\uf5f7',
- '\uf5f8',
- '\uf5f9',
- '\uf5fa',
- '\uf5fb',
- '\uf5fc',
- '\uf5fd',
- '\uf5fe',
- '\uf5ff',
- '\uf600',
- '\uf601',
- '\uf602',
- '\uf603',
- '\uf604',
- '\uf605',
- '\uf606',
- '\uf607',
- '\uf608',
- '\uf609',
- '\uf60a',
- '\uf60b',
- '\uf60c',
- '\uf60d',
- '🬀',
- '🬁',
- '🬂',
- '🬃',
- '🬄',
- '🬅',
- '🬆',
- '🬇',
- '🬈',
- '🬉',
- '🬊',
- '🬋',
- '🬌',
- '🬍',
- '🬎',
- '🬏',
- '🬐',
- '🬑',
- '🬒',
- '🬓',
- '🬔',
- '🬕',
- '🬖',
- '🬗',
- '🬘',
- '🬙',
- '🬚',
- '🬛',
- '🬜',
- '🬝',
- '🬞',
- '🬟',
- '🬠',
- '🬡',
- '🬢',
- '🬣',
- '🬤',
- '🬥',
- '🬦',
- '🬧',
- '🬨',
- '🬩',
- '🬪',
- '🬫',
- '🬬',
- '🬭',
- '🬮',
- '🬯',
- '🬰',
- '🬱',
- '🬲',
- '🬳',
- '🬴',
- '🬵',
- '🬶',
- '🬷',
- '🬸',
- '🬹',
- '🬺',
- '🬻',
- '🬼',
- '🬽',
- '🬾',
- '🬿',
- '🭀',
- '🭁',
- '🭂',
- '🭃',
- '🭄',
- '🭅',
- '🭆',
- '🭇',
- '🭈',
- '🭉',
- '🭊',
- '🭋',
- '🭌',
- '🭍',
- '🭎',
- '🭏',
- '🭐',
- '🭑',
- '🭒',
- '🭓',
- '🭔',
- '🭕',
- '🭖',
- '🭗',
- '🭘',
- '🭙',
- '🭚',
- '🭛',
- '🭜',
- '🭝',
- '🭞',
- '🭟',
- '🭠',
- '🭡',
- '🭢',
- '🭣',
- '🭤',
- '🭥',
- '🭦',
- '🭧',
- '🭨',
- '🭩',
- '🭪',
- '🭫',
- '🭬',
- '🭭',
- '🭮',
- '🭯',
- '🭰',
- '🭱',
- '🭲',
- '🭳',
- '🭴',
- '🭵',
- '🭶',
- '🭷',
- '🭸',
- '🭹',
- '🭺',
- '🭻',
- '🭼',
- '🭽',
- '🭾',
- '🭿',
- '🮀',
- '🮁',
- '🮂',
- '🮃',
- '🮄',
- '🮅',
- '🮆',
- '🮇',
- '🮈',
- '🮉',
- '🮊',
- '🮋',
- '🮌',
- '🮍',
- '🮎',
- '🮏',
- '🮐',
- '🮑',
- '🮒',
- '\U0001fb93',
- '🮔',
- '🮕',
- '🮖',
- '🮗',
- '🮘',
- '🮙',
- '🮚',
- '🮛',
- '🮜',
- '🮝',
- '🮞',
- '🮟',
- '🮠',
- '🮡',
- '🮢',
- '🮣',
- '🮤',
- '🮥',
- '🮦',
- '🮧',
- '🮨',
- '🮩',
- '🮪',
- '🮫',
- '🮬',
- '🮭',
- '🮮',
- '\U0001fbe6', '\U0001fbe7',
- }  # }}}
-for ch in range(0x1cd00, 0x1cde5+1):  # octants
+    '─',
+    '━',
+    '│',
+    '┃',
+    '┄',
+    '┅',
+    '┆',
+    '┇',
+    '┈',
+    '┉',
+    '┊',
+    '┋',
+    '┌',
+    '┍',
+    '┎',
+    '┏',
+    '┐',
+    '┑',
+    '┒',
+    '┓',
+    '└',
+    '┕',
+    '┖',
+    '┗',
+    '┘',
+    '┙',
+    '┚',
+    '┛',
+    '├',
+    '┝',
+    '┞',
+    '┟',
+    '┠',
+    '┡',
+    '┢',
+    '┣',
+    '┤',
+    '┥',
+    '┦',
+    '┧',
+    '┨',
+    '┩',
+    '┪',
+    '┫',
+    '┬',
+    '┭',
+    '┮',
+    '┯',
+    '┰',
+    '┱',
+    '┲',
+    '┳',
+    '┴',
+    '┵',
+    '┶',
+    '┷',
+    '┸',
+    '┹',
+    '┺',
+    '┻',
+    '┼',
+    '┽',
+    '┾',
+    '┿',
+    '╀',
+    '╁',
+    '╂',
+    '╃',
+    '╄',
+    '╅',
+    '╆',
+    '╇',
+    '╈',
+    '╉',
+    '╊',
+    '╋',
+    '╌',
+    '╍',
+    '╎',
+    '╏',
+    '═',
+    '║',
+    '╒',
+    '╓',
+    '╔',
+    '╕',
+    '╖',
+    '╗',
+    '╘',
+    '╙',
+    '╚',
+    '╛',
+    '╜',
+    '╝',
+    '╞',
+    '╟',
+    '╠',
+    '╡',
+    '╢',
+    '╣',
+    '╤',
+    '╥',
+    '╦',
+    '╧',
+    '╨',
+    '╩',
+    '╪',
+    '╫',
+    '╬',
+    '╭',
+    '╮',
+    '╯',
+    '╰',
+    '╱',
+    '╲',
+    '╳',
+    '╴',
+    '╵',
+    '╶',
+    '╷',
+    '╸',
+    '╹',
+    '╺',
+    '╻',
+    '╼',
+    '╽',
+    '╾',
+    '╿',
+    '▀',
+    '▁',
+    '▂',
+    '▃',
+    '▄',
+    '▅',
+    '▆',
+    '▇',
+    '█',
+    '▉',
+    '▊',
+    '▋',
+    '▌',
+    '▍',
+    '▎',
+    '▏',
+    '▐',
+    '░',
+    '▒',
+    '▓',
+    '▔',
+    '▕',
+    '▖',
+    '▗',
+    '▘',
+    '▙',
+    '▚',
+    '▛',
+    '▜',
+    '▝',
+    '▞',
+    '▟',
+    '◉',
+    '○',
+    '●',
+    '◖',
+    '◗',
+    '◜',
+    '◝',
+    '◞',
+    '◟',
+    '◠',
+    '◡',
+    '◢',
+    '◣',
+    '◤',
+    '◥',
+    '⠀',
+    '⠁',
+    '⠂',
+    '⠃',
+    '⠄',
+    '⠅',
+    '⠆',
+    '⠇',
+    '⠈',
+    '⠉',
+    '⠊',
+    '⠋',
+    '⠌',
+    '⠍',
+    '⠎',
+    '⠏',
+    '⠐',
+    '⠑',
+    '⠒',
+    '⠓',
+    '⠔',
+    '⠕',
+    '⠖',
+    '⠗',
+    '⠘',
+    '⠙',
+    '⠚',
+    '⠛',
+    '⠜',
+    '⠝',
+    '⠞',
+    '⠟',
+    '⠠',
+    '⠡',
+    '⠢',
+    '⠣',
+    '⠤',
+    '⠥',
+    '⠦',
+    '⠧',
+    '⠨',
+    '⠩',
+    '⠪',
+    '⠫',
+    '⠬',
+    '⠭',
+    '⠮',
+    '⠯',
+    '⠰',
+    '⠱',
+    '⠲',
+    '⠳',
+    '⠴',
+    '⠵',
+    '⠶',
+    '⠷',
+    '⠸',
+    '⠹',
+    '⠺',
+    '⠻',
+    '⠼',
+    '⠽',
+    '⠾',
+    '⠿',
+    '⡀',
+    '⡁',
+    '⡂',
+    '⡃',
+    '⡄',
+    '⡅',
+    '⡆',
+    '⡇',
+    '⡈',
+    '⡉',
+    '⡊',
+    '⡋',
+    '⡌',
+    '⡍',
+    '⡎',
+    '⡏',
+    '⡐',
+    '⡑',
+    '⡒',
+    '⡓',
+    '⡔',
+    '⡕',
+    '⡖',
+    '⡗',
+    '⡘',
+    '⡙',
+    '⡚',
+    '⡛',
+    '⡜',
+    '⡝',
+    '⡞',
+    '⡟',
+    '⡠',
+    '⡡',
+    '⡢',
+    '⡣',
+    '⡤',
+    '⡥',
+    '⡦',
+    '⡧',
+    '⡨',
+    '⡩',
+    '⡪',
+    '⡫',
+    '⡬',
+    '⡭',
+    '⡮',
+    '⡯',
+    '⡰',
+    '⡱',
+    '⡲',
+    '⡳',
+    '⡴',
+    '⡵',
+    '⡶',
+    '⡷',
+    '⡸',
+    '⡹',
+    '⡺',
+    '⡻',
+    '⡼',
+    '⡽',
+    '⡾',
+    '⡿',
+    '⢀',
+    '⢁',
+    '⢂',
+    '⢃',
+    '⢄',
+    '⢅',
+    '⢆',
+    '⢇',
+    '⢈',
+    '⢉',
+    '⢊',
+    '⢋',
+    '⢌',
+    '⢍',
+    '⢎',
+    '⢏',
+    '⢐',
+    '⢑',
+    '⢒',
+    '⢓',
+    '⢔',
+    '⢕',
+    '⢖',
+    '⢗',
+    '⢘',
+    '⢙',
+    '⢚',
+    '⢛',
+    '⢜',
+    '⢝',
+    '⢞',
+    '⢟',
+    '⢠',
+    '⢡',
+    '⢢',
+    '⢣',
+    '⢤',
+    '⢥',
+    '⢦',
+    '⢧',
+    '⢨',
+    '⢩',
+    '⢪',
+    '⢫',
+    '⢬',
+    '⢭',
+    '⢮',
+    '⢯',
+    '⢰',
+    '⢱',
+    '⢲',
+    '⢳',
+    '⢴',
+    '⢵',
+    '⢶',
+    '⢷',
+    '⢸',
+    '⢹',
+    '⢺',
+    '⢻',
+    '⢼',
+    '⢽',
+    '⢾',
+    '⢿',
+    '⣀',
+    '⣁',
+    '⣂',
+    '⣃',
+    '⣄',
+    '⣅',
+    '⣆',
+    '⣇',
+    '⣈',
+    '⣉',
+    '⣊',
+    '⣋',
+    '⣌',
+    '⣍',
+    '⣎',
+    '⣏',
+    '⣐',
+    '⣑',
+    '⣒',
+    '⣓',
+    '⣔',
+    '⣕',
+    '⣖',
+    '⣗',
+    '⣘',
+    '⣙',
+    '⣚',
+    '⣛',
+    '⣜',
+    '⣝',
+    '⣞',
+    '⣟',
+    '⣠',
+    '⣡',
+    '⣢',
+    '⣣',
+    '⣤',
+    '⣥',
+    '⣦',
+    '⣧',
+    '⣨',
+    '⣩',
+    '⣪',
+    '⣫',
+    '⣬',
+    '⣭',
+    '⣮',
+    '⣯',
+    '⣰',
+    '⣱',
+    '⣲',
+    '⣳',
+    '⣴',
+    '⣵',
+    '⣶',
+    '⣷',
+    '⣸',
+    '⣹',
+    '⣺',
+    '⣻',
+    '⣼',
+    '⣽',
+    '⣾',
+    '⣿',
+    '\ue0b0',
+    '\ue0b1',
+    '\ue0b2',
+    '\ue0b3',
+    '\ue0b4',
+    '\ue0b5',
+    '\ue0b6',
+    '\ue0b7',
+    '\ue0b8',
+    '\ue0b9',
+    '\ue0ba',
+    '\ue0bb',
+    '\ue0bc',
+    '\ue0bd',
+    '\ue0be',
+    '\ue0bf',
+    '\ue0d6',
+    '\ue0d7',
+    '\uee00',
+    '\uee01',
+    '\uee02',
+    '\uee03',
+    '\uee04',
+    '\uee05',
+    '\uee06',
+    '\uee07',
+    '\uee08',
+    '\uee09',
+    '\uee0a',
+    '\uee0b',
+    '\uf5d0',
+    '\uf5d1',
+    '\uf5d2',
+    '\uf5d3',
+    '\uf5d4',
+    '\uf5d5',
+    '\uf5d6',
+    '\uf5d7',
+    '\uf5d8',
+    '\uf5d9',
+    '\uf5da',
+    '\uf5db',
+    '\uf5dc',
+    '\uf5dd',
+    '\uf5de',
+    '\uf5df',
+    '\uf5e0',
+    '\uf5e1',
+    '\uf5e2',
+    '\uf5e3',
+    '\uf5e4',
+    '\uf5e5',
+    '\uf5e6',
+    '\uf5e7',
+    '\uf5e8',
+    '\uf5e9',
+    '\uf5ea',
+    '\uf5eb',
+    '\uf5ec',
+    '\uf5ed',
+    '\uf5ee',
+    '\uf5ef',
+    '\uf5f0',
+    '\uf5f1',
+    '\uf5f2',
+    '\uf5f3',
+    '\uf5f4',
+    '\uf5f5',
+    '\uf5f6',
+    '\uf5f7',
+    '\uf5f8',
+    '\uf5f9',
+    '\uf5fa',
+    '\uf5fb',
+    '\uf5fc',
+    '\uf5fd',
+    '\uf5fe',
+    '\uf5ff',
+    '\uf600',
+    '\uf601',
+    '\uf602',
+    '\uf603',
+    '\uf604',
+    '\uf605',
+    '\uf606',
+    '\uf607',
+    '\uf608',
+    '\uf609',
+    '\uf60a',
+    '\uf60b',
+    '\uf60c',
+    '\uf60d',
+    '🬀',
+    '🬁',
+    '🬂',
+    '🬃',
+    '🬄',
+    '🬅',
+    '🬆',
+    '🬇',
+    '🬈',
+    '🬉',
+    '🬊',
+    '🬋',
+    '🬌',
+    '🬍',
+    '🬎',
+    '🬏',
+    '🬐',
+    '🬑',
+    '🬒',
+    '🬓',
+    '🬔',
+    '🬕',
+    '🬖',
+    '🬗',
+    '🬘',
+    '🬙',
+    '🬚',
+    '🬛',
+    '🬜',
+    '🬝',
+    '🬞',
+    '🬟',
+    '🬠',
+    '🬡',
+    '🬢',
+    '🬣',
+    '🬤',
+    '🬥',
+    '🬦',
+    '🬧',
+    '🬨',
+    '🬩',
+    '🬪',
+    '🬫',
+    '🬬',
+    '🬭',
+    '🬮',
+    '🬯',
+    '🬰',
+    '🬱',
+    '🬲',
+    '🬳',
+    '🬴',
+    '🬵',
+    '🬶',
+    '🬷',
+    '🬸',
+    '🬹',
+    '🬺',
+    '🬻',
+    '🬼',
+    '🬽',
+    '🬾',
+    '🬿',
+    '🭀',
+    '🭁',
+    '🭂',
+    '🭃',
+    '🭄',
+    '🭅',
+    '🭆',
+    '🭇',
+    '🭈',
+    '🭉',
+    '🭊',
+    '🭋',
+    '🭌',
+    '🭍',
+    '🭎',
+    '🭏',
+    '🭐',
+    '🭑',
+    '🭒',
+    '🭓',
+    '🭔',
+    '🭕',
+    '🭖',
+    '🭗',
+    '🭘',
+    '🭙',
+    '🭚',
+    '🭛',
+    '🭜',
+    '🭝',
+    '🭞',
+    '🭟',
+    '🭠',
+    '🭡',
+    '🭢',
+    '🭣',
+    '🭤',
+    '🭥',
+    '🭦',
+    '🭧',
+    '🭨',
+    '🭩',
+    '🭪',
+    '🭫',
+    '🭬',
+    '🭭',
+    '🭮',
+    '🭯',
+    '🭰',
+    '🭱',
+    '🭲',
+    '🭳',
+    '🭴',
+    '🭵',
+    '🭶',
+    '🭷',
+    '🭸',
+    '🭹',
+    '🭺',
+    '🭻',
+    '🭼',
+    '🭽',
+    '🭾',
+    '🭿',
+    '🮀',
+    '🮁',
+    '🮂',
+    '🮃',
+    '🮄',
+    '🮅',
+    '🮆',
+    '🮇',
+    '🮈',
+    '🮉',
+    '🮊',
+    '🮋',
+    '🮌',
+    '🮍',
+    '🮎',
+    '🮏',
+    '🮐',
+    '🮑',
+    '🮒',
+    '\U0001fb93',
+    '🮔',
+    '🮕',
+    '🮖',
+    '🮗',
+    '🮘',
+    '🮙',
+    '🮚',
+    '🮛',
+    '🮜',
+    '🮝',
+    '🮞',
+    '🮟',
+    '🮠',
+    '🮡',
+    '🮢',
+    '🮣',
+    '🮤',
+    '🮥',
+    '🮦',
+    '🮧',
+    '🮨',
+    '🮩',
+    '🮪',
+    '🮫',
+    '🮬',
+    '🮭',
+    '🮮',
+    '\U0001fbe6',
+    '\U0001fbe7',
+}  # }}}
+for ch in range(0x1CD00, 0x1CDE5 + 1):  # octants
     box_chars.add(chr(ch))
-for ch in range(0x1fbce, 0x1fbf0):  # blocks, diagonals, circles (legacy computing)
+for ch in range(0x1FBCE, 0x1FBF0):  # blocks, diagonals, circles (legacy computing)
     box_chars.add(chr(ch))
-for ch in range(0x1cc1b, 0x1cc40):  # box drawing variants, separated quadrants, circle arcs (supplement)
+for ch in range(0x1CC1B, 0x1CC40):  # box drawing variants, separated quadrants, circle arcs (supplement)
     box_chars.add(chr(ch))
-for ch in range(0x1ce16, 0x1ce1a):  # box drawings light vertical T-junctions (supplement)
+for ch in range(0x1CE16, 0x1CE1A):  # box drawings light vertical T-junctions (supplement)
     box_chars.add(chr(ch))
-for ch in range(0x1ce51, 0x1ceb0):  # separated block sextants, sixteenth blocks, quarter parts (supplement)
+for ch in range(0x1CE51, 0x1CEB0):  # separated block sextants, sixteenth blocks, quarter parts (supplement)
     box_chars.add(chr(ch))

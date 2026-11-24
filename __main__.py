@@ -21,4 +21,5 @@ if __name__ == '__main__':
             if not hasattr(os, _fn):
                 setattr(os, _fn, lambda: 0)
     from kitty.entry_points import main
+
     main()
