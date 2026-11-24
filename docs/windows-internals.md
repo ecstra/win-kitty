@@ -41,6 +41,8 @@ Wrapped kittens spawn from `kitten.exe`, built as part of the normal build. If i
 
 Output takes a side channel. A kitten running inside kitty opens `\\.\pipe\kitty-gfx-<pid>`, writes the target window id as an 8 byte header, and then streams its output down that pipe, which kitty injects into the right window. kitty serves the pipe with one thread per connection and applies backpressure when a window's queue is full. This is how the TUI kittens and the graphics protocol both avoid conhost. tools/tty/tty_windows.go routes writes to the bypass whenever `KITTY_WINDOW_ID` and `KITTY_PID` are set and the process is on a console.
 
+A TUI kitten's stream sets the top bit of its window id header, which says it owns the screen while it is open. The console it was started from never sees the kitten's UI, so resizing that console would have conhost repaint its own copy over it. While such a stream is open, `resize_pty` in kitty/child-monitor.c holds the console resize back and keeps the last size, and the stream's close applies it. The kitten still gets each size from the in-band resize notification, which conhost passes through to its input.
+
 Kittens refuse to run outside kitty. `New()` in tools/tui/loop/api.go checks for `KITTY_WINDOW_ID` on Windows and exits with a message if it is not there. It exits rather than returning an error because several kittens use the loop before they check the error, and a returned error surfaced as a nil dereference.
 
 Four kittens are not ported. dnd, panel, quick-access-terminal, and desktop-ui call `cli.NotImplementedOnWindows` at the top of their main and get `(not supported on Windows)` appended to their description in the `kitten` command list.

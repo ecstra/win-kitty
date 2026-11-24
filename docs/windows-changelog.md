@@ -15,6 +15,8 @@ Based on kitty 0.51.1.
 - `kitten run-shell` goes back to the shell that ran it, zsh, pwsh or cmd, instead of opening cmd. Kittens now find programs on your PATH by their name alone, without the `.exe`.
 - Pressing Ctrl+C no longer leaves the shell or program a kitten started running in the background, where it read your typing alongside the next shell.
 - With `cursor_trail` on, resizing or maximizing the window no longer sends the cursor flying in from the side. It stays in its cell.
+- Kittens such as choose-files no longer go blank when you resize the window while one is open.
+- The cursor no longer flashes off and on while you type in PowerShell.
 
 ### Changed
 

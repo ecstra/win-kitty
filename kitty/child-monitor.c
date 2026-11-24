@@ -75,6 +75,15 @@ typedef struct {
     unsigned long id;
     pid_t pid;
     int exit_status;
+#ifdef _WIN32
+    // Kitten side channel streams that own this window's screen, and the
+    // console resize held back while any is open, see resize_pty().
+    unsigned screen_owners;
+    struct {
+        bool pending;
+        unsigned short cols, rows;
+    } held_resize;
+#endif
 } Child;
 
 static const Child EMPTY_CHILD = {0};
@@ -308,7 +317,10 @@ typedef struct {
     id_type window_id;
     uint8_t *data;
     size_t sz;
+    int screen_owner_delta; // +1 or -1 as a screen owning stream opens or closes, with no data
 } GfxInjection;
+// Set in the window id header by a kitten stream that owns the screen
+#define GFX_STREAM_OWNS_SCREEN (((id_type)1) << 63)
 static GfxInjection gfx_queue[GFX_QUEUE_SZ];
 static unsigned gfx_queue_count = 0;
 static pthread_mutex_t gfx_queue_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -318,11 +330,12 @@ static bool gfx_listener_started = false;
  * connection) while the queue is full. Dropping is not an option: the payload
  * is a VT byte stream and a lost chunk would corrupt the window's parser state. */
 static void
-gfx_enqueue_chunk(id_type window_id, uint8_t *payload, size_t sz) {
+gfx_enqueue_chunk(id_type window_id, uint8_t *payload, size_t sz, int screen_owner_delta) {
     for (;;) {
         pthread_mutex_lock(&gfx_queue_lock);
         if (gfx_queue_count < GFX_QUEUE_SZ) {
-            gfx_queue[gfx_queue_count++] = (GfxInjection){.window_id = window_id, .data = payload, .sz = sz};
+            gfx_queue[gfx_queue_count++] =
+                (GfxInjection){.window_id = window_id, .data = payload, .sz = sz, .screen_owner_delta = screen_owner_delta};
             pthread_mutex_unlock(&gfx_queue_lock);
             windows_wakeup_child_monitor();
             return;
@@ -351,6 +364,11 @@ gfx_connection_handler(LPVOID param) {
     }
     id_type window_id = 0;
     for (unsigned i = 0; i < 8; i++) window_id |= ((id_type)hdr[i]) << (8u * i);
+    // The owner marks travel through the same queue as the data, so the io
+    // loop sees them in order with what the stream drew.
+    const bool owns_screen = (window_id & GFX_STREAM_OWNS_SCREEN) != 0;
+    window_id &= ~GFX_STREAM_OWNS_SCREEN;
+    if (owns_screen) gfx_enqueue_chunk(window_id, NULL, 0, 1);
     for (;;) {
         uint8_t *buf = malloc(1u << 16);
         if (!buf) break;
@@ -358,8 +376,9 @@ gfx_connection_handler(LPVOID param) {
             free(buf);
             break;
         }
-        gfx_enqueue_chunk(window_id, buf, got);
+        gfx_enqueue_chunk(window_id, buf, got, 0);
     }
+    if (owns_screen) gfx_enqueue_chunk(window_id, NULL, 0, -1);
 done:
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);
@@ -931,10 +950,24 @@ resize_pty(ChildMonitor *self, PyObject *args) {
         }                                    \
     }
     FIND(children, self->count);
+#ifdef _WIN32
+    // A kitten drawing over the side channel owns the screen. Resizing the
+    // console now would have conhost repaint its own copy, which never held the
+    // kitten's UI, right over it. The kitten gets the size from the in-band
+    // notification regardless, so hold the console back until it lets go.
+    for (size_t i = 0; fd != -1 && i < self->count; i++) {
+        if (children[i].id == window_id && children[i].screen_owners) {
+            children[i].held_resize.pending = true;
+            children[i].held_resize.cols = dim.ws_col;
+            children[i].held_resize.rows = dim.ws_row;
+            fd = -2;
+        }
+    }
+#endif
     if (fd == -1) FIND(add_queue, add_queue_count);
-    if (fd != -1) {
+    if (fd >= 0) {
         if (!pty_resize(fd, &dim)) PyErr_SetFromErrno(PyExc_OSError);
-    } else log_error("Failed to send resize signal to child with id: %lu (children count: %u) (add queue: %zu)", window_id, self->count, add_queue_count);
+    } else if (fd == -1) log_error("Failed to send resize signal to child with id: %lu (children count: %u) (add queue: %zu)", window_id, self->count, add_queue_count);
     children_mutex(unlock);
     if (PyErr_Occurred()) return NULL;
     Py_RETURN_NONE;
@@ -1003,6 +1036,29 @@ collect_cursor_info(CursorRenderInfo *ans, Window *w, monotonic_t now, OSWindow 
     if (!rendered_scrolled_by(rd->screen)) {
         ans->multicursor_count = screen_multi_cursor_count(rd->screen);
         ans->is_visible = screen_is_cursor_visible(rd->screen);
+#ifdef _WIN32
+        // conhost hands kitty a PSReadLine repaint in two pieces about 10 ms
+        // apart, the cursor hide alone, then the text and the cursor show. A
+        // frame drawn between them had no cursor, so it flashed on every key.
+        // A hide shorter than this keeps the cursor where it was last shown,
+        // and a real hide takes effect once it has lasted this long.
+        const monotonic_t brief_hide = ms_to_monotonic_t(50ll);
+        if (ans->is_visible) {
+            w->shown_cursor.hidden_since = 0;
+            w->shown_cursor.x = ans->x;
+            w->shown_cursor.y = ans->y;
+            w->shown_cursor.valid = true;
+        } else if (w->shown_cursor.valid && !screen_is_overlay_active(rd->screen)) {
+            if (!w->shown_cursor.hidden_since) w->shown_cursor.hidden_since = now;
+            const monotonic_t hidden_for = now - w->shown_cursor.hidden_since;
+            if (hidden_for < brief_hide) {
+                ans->is_visible = true;
+                ans->x = w->shown_cursor.x;
+                ans->y = w->shown_cursor.y;
+                set_maximum_wait(brief_hide - hidden_for);
+            } else w->shown_cursor.valid = false;
+        }
+#endif
     }
     if (!ans->is_visible && ans->multicursor_count == 0 && !rd->screen->sgr_blink_was_used) return cursor_needs_render(w);
     monotonic_t time_since_start_blink = now - os_window->cursor_blink_zero_time;
@@ -2191,7 +2247,20 @@ drain_graphics_injections(ChildMonitor *self, bool *data_received) {
                 break;
             }
         }
-        if (screen) {
+        if (screen && local[i].screen_owner_delta) {
+            children_mutex(lock);
+            Child *child = children + child_idx;
+            if (local[i].screen_owner_delta > 0) child->screen_owners++;
+            else if (child->screen_owners) child->screen_owners--;
+            if (!child->screen_owners && child->held_resize.pending) {
+                // The kitten let go of the screen, so the console catches up
+                // on the last size it was held back from.
+                extern int windows_pty_resize_for(int read_fd, int cols, int rows);
+                windows_pty_resize_for(child->fd, child->held_resize.cols, child->held_resize.rows);
+                child->held_resize.pending = false;
+            }
+            children_mutex(unlock);
+        } else if (screen) {
             size_t off = 0;
             while (off < local[i].sz) {
                 size_t space = 0;
