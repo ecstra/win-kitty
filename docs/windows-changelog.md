@@ -21,6 +21,13 @@ Based on kitty 0.51.1.
 - With `cursor_trail` on, resizing or maximizing the window no longer sends the cursor flying in from the side. It stays in its cell.
 - Kittens such as choose-files no longer go blank when you resize the window while one is open.
 - The cursor no longer flashes off and on while you type in PowerShell.
+- Many kitty.conf settings that did nothing on Windows now work. The pointer hides while you type (`mouse_hide_wait`), `focus_follows_mouse` moves between kitty windows, `confirm_os_window_close` asks when you set it, saving kitty.conf reloads it, `resize_in_steps` snaps to whole cells, and `clear_selection_on_clipboard_loss` notices other programs copying.
+- `command_on_bell` and background launches, such as `launch --type=background`, run instead of failing with an error.
+- The window keeps its size and place across restarts instead of growing and drifting a little each time.
+- Changing the background opacity while kitty runs works with blur on, and an opacity of 1 is fully opaque.
+- Keypad keys, the modifier keys on their own, and the mouse back and forward buttons can be bound. More pointer shapes show their own cursor.
+- A tab bar on the left or right starts below the title bar, and a precision touchpad scrolls smoothly instead of a line at a time.
+- `KITTY_OS` is `windows`, and kitty opens files to edit in Notepad when no other editor is found.
 
 ### Changed
 

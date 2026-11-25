@@ -311,7 +311,8 @@ def is_wayland(opts: Optional['Options'] = None) -> bool:
     return ans
 
 
-supports_primary_selection = not is_macos
+# Windows has no primary selection either, so kitty treats it as it does macOS
+supports_primary_selection = not is_macos and not is_windows
 
 
 def running_in_kitty(set_val: bool | None = None) -> bool:

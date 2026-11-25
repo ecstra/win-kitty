@@ -644,7 +644,8 @@ def get_editor_from_env_vars(opts: Options | None = None) -> list[str]:
     else:
         ans = ''
         if is_windows:
-            ans = editor_next_to_shell(opts, (editor, 'nano', 'micro', 'vim', 'nvim', 'vi', 'hx', 'kak', 'vis'))
+            # Notepad ships with every Windows install, where vim rarely is
+            ans = editor_next_to_shell(opts, (editor, 'nano', 'micro', 'vim', 'nvim', 'vi', 'hx', 'kak', 'vis')) or 'notepad.exe'
         if not ans:
             ans = 'vim'
     return list(shlex_split(ans))

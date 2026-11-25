@@ -5,6 +5,7 @@
 #include "internal.h"
 
 #include <stdlib.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -55,6 +56,43 @@ static void createKeyTables(void) {
     k[VK_OEM_MINUS] = '-';   k[VK_OEM_PERIOD]= '.';  k[VK_OEM_2]     = '/';
     k[VK_OEM_3]     = '`';   k[VK_OEM_4]     = '[';  k[VK_OEM_5]     = '\\';
     k[VK_OEM_6]     = ']';   k[VK_OEM_7]     = '\'';
+    for (int i = 0; i < 10; i++) k[VK_NUMPAD0 + i] = GLFW_FKEY_KP_0 + i;
+    k[VK_DECIMAL]   = GLFW_FKEY_KP_DECIMAL;  k[VK_DIVIDE]   = GLFW_FKEY_KP_DIVIDE;
+    k[VK_MULTIPLY]  = GLFW_FKEY_KP_MULTIPLY; k[VK_SUBTRACT] = GLFW_FKEY_KP_SUBTRACT;
+    k[VK_ADD]       = GLFW_FKEY_KP_ADD;      k[VK_SEPARATOR]= GLFW_FKEY_KP_SEPARATOR;
+    k[VK_CLEAR]     = GLFW_FKEY_KP_BEGIN;
+    k[VK_LWIN]      = GLFW_FKEY_LEFT_SUPER;  k[VK_RWIN]     = GLFW_FKEY_RIGHT_SUPER;
+}
+
+// The keys that share a virtual key with another and are told apart by the
+// extended flag: the keypad's Enter and, with NumLock off, its navigation keys
+// beside the dedicated ones, and the left and right modifiers.
+static uint32_t refineKey(WPARAM vk, LPARAM lParam, uint32_t key) {
+    const bool extended = HIWORD(lParam) & KF_EXTENDED;
+    switch (vk) {
+        case VK_RETURN: return extended ? GLFW_FKEY_KP_ENTER : key;
+        case VK_HOME:   return extended ? key : GLFW_FKEY_KP_HOME;
+        case VK_END:    return extended ? key : GLFW_FKEY_KP_END;
+        case VK_PRIOR:  return extended ? key : GLFW_FKEY_KP_PAGE_UP;
+        case VK_NEXT:   return extended ? key : GLFW_FKEY_KP_PAGE_DOWN;
+        case VK_LEFT:   return extended ? key : GLFW_FKEY_KP_LEFT;
+        case VK_RIGHT:  return extended ? key : GLFW_FKEY_KP_RIGHT;
+        case VK_UP:     return extended ? key : GLFW_FKEY_KP_UP;
+        case VK_DOWN:   return extended ? key : GLFW_FKEY_KP_DOWN;
+        case VK_INSERT: return extended ? key : GLFW_FKEY_KP_INSERT;
+        case VK_DELETE: return extended ? key : GLFW_FKEY_KP_DELETE;
+        case VK_CONTROL: return extended ? GLFW_FKEY_RIGHT_CONTROL : GLFW_FKEY_LEFT_CONTROL;
+        case VK_MENU:   return extended ? GLFW_FKEY_RIGHT_ALT : GLFW_FKEY_LEFT_ALT;
+        case VK_SHIFT:
+            return MapVirtualKeyW((lParam >> 16) & 0xff, MAPVK_VSC_TO_VK_EX) == VK_RSHIFT ? GLFW_FKEY_RIGHT_SHIFT : GLFW_FKEY_LEFT_SHIFT;
+    }
+    return key;
+}
+
+// The keypad keys that type a character, which WM_CHAR delivers
+static bool isKeypadTextKey(uint32_t key) {
+    return (key >= GLFW_FKEY_KP_0 && key <= GLFW_FKEY_KP_9) || key == GLFW_FKEY_KP_DECIMAL || key == GLFW_FKEY_KP_DIVIDE ||
+        key == GLFW_FKEY_KP_MULTIPLY || key == GLFW_FKEY_KP_SUBTRACT || key == GLFW_FKEY_KP_ADD || key == GLFW_FKEY_KP_SEPARATOR;
 }
 
 static int getKeyMods(void) {
@@ -131,6 +169,8 @@ static void CALLBACK resizeTickProc(UINT id, UINT msg, DWORD_PTR user, DWORD_PTR
 // mouse move, so without this the shape set by _glfwPlatformSetCursor survives
 // only until the pointer moves again.
 static void applyClientCursor(_GLFWwindow* window) {
+    // kitty hides the pointer while typing, see mouse_hide_wait
+    if (window->cursorMode != GLFW_CURSOR_NORMAL) { SetCursor(NULL); return; }
     SetCursor((window->cursor && window->cursor->win32.handle)
               ? window->cursor->win32.handle
               : LoadCursorW(NULL, (LPCWSTR) IDC_ARROW));
@@ -186,6 +226,12 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     // it can take along: the drag starts there and its repaint ticks go there.
     if (hWnd == _glfw.win32.helperWindowHandle) {
         if (uMsg == WM_APP_START_DRAG) { runPendingDrag(); return 0; }
+        // kitty writes the clipboard through this window, so another owner
+        // means another program copied
+        if (uMsg == WM_CLIPBOARDUPDATE) {
+            if (GetClipboardOwner() != hWnd) _glfwInputClipboardLost(GLFW_CLIPBOARD);
+            return 0;
+        }
         if (uMsg == WM_APP_RESIZE_TICK || (uMsg == WM_TIMER && wParam == 1001)) {
             MSG extra;
             while (PeekMessageW(&extra, hWnd, WM_APP_RESIZE_TICK, WM_APP_RESIZE_TICK, PM_REMOVE)) { }
@@ -310,10 +356,27 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             return 0;
         }
 
-        case WM_ENTERSIZEMOVE:
+        case WM_ENTERSIZEMOVE: {
+            RECT r; GetWindowRect(hWnd, &r);
+            window->win32.sizeAtResizeStart = (SIZE){r.right - r.left, r.bottom - r.top};
             _glfwInputLiveResize(window, true);
             startResizeTimer(hWnd);
             break;
+        }
+        // resize_in_steps: the dragged edges move in whole cells from where the
+        // resize started, as X11 window managers do with size increments
+        case WM_SIZING: {
+            if (window->widthincr <= 0 || window->heightincr <= 0 || window->win32.maximized) break;
+            RECT* r = (RECT*) lParam;
+            const SIZE start = window->win32.sizeAtResizeStart;
+            const int w = start.cx + (int) lround((double) (r->right - r->left - start.cx) / window->widthincr) * window->widthincr;
+            const int h = start.cy + (int) lround((double) (r->bottom - r->top - start.cy) / window->heightincr) * window->heightincr;
+            if (wParam == WMSZ_LEFT || wParam == WMSZ_TOPLEFT || wParam == WMSZ_BOTTOMLEFT) r->left = r->right - w;
+            else r->right = r->left + w;
+            if (wParam == WMSZ_TOP || wParam == WMSZ_TOPLEFT || wParam == WMSZ_TOPRIGHT) r->top = r->bottom - h;
+            else r->bottom = r->top + h;
+            return TRUE;
+        }
         case WM_EXITSIZEMOVE:
             stopResizeTimer(hWnd);
             _glfwInputLiveResize(window, false);
@@ -355,17 +418,26 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             _glfwInputMouseClick(window, button, action, getKeyMods());
             return 0;
         }
+        // The back and forward buttons, the fourth and fifth as on X11
+        case WM_XBUTTONDOWN: case WM_XBUTTONUP: {
+            const int button = GET_XBUTTON_WPARAM(wParam) == XBUTTON1 ? GLFW_MOUSE_BUTTON_4 : GLFW_MOUSE_BUTTON_5;
+            _glfwInputMouseClick(window, button, uMsg == WM_XBUTTONDOWN ? GLFW_PRESS : GLFW_RELEASE, getKeyMods());
+            return TRUE;
+        }
 
+        // The delta is in 120ths of a notch, which a precision touchpad sends a
+        // few at a time, so it goes to kitty as is and kitty adds the pieces up
+        // rather than rounding each one up to a whole line
         case WM_MOUSEWHEEL: {
-            GLFWScrollEvent ev = {0};
-            ev.y_offset = ev.unscaled.y = (double) GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+            GLFWScrollEvent ev = {.offset_type = GLFW_SCROLL_OFFEST_V120};
+            ev.y_offset = ev.unscaled.y = (double) GET_WHEEL_DELTA_WPARAM(wParam);
             ev.keyboard_modifiers = getKeyMods();
             _glfwInputScroll(window, &ev);
             return 0;
         }
         case WM_MOUSEHWHEEL: {
-            GLFWScrollEvent ev = {0};
-            ev.x_offset = ev.unscaled.x = -(double) GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+            GLFWScrollEvent ev = {.offset_type = GLFW_SCROLL_OFFEST_V120};
+            ev.x_offset = ev.unscaled.x = -(double) GET_WHEEL_DELTA_WPARAM(wParam);
             ev.keyboard_modifiers = getKeyMods();
             _glfwInputScroll(window, &ev);
             return 0;
@@ -374,15 +446,25 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_KEYDOWN: case WM_SYSKEYDOWN:
         case WM_KEYUP: case WM_SYSKEYUP: {
             const bool up = uMsg == WM_KEYUP || uMsg == WM_SYSKEYUP;
-            uint32_t key = (wParam < 512) ? (uint32_t) _glfw.win32.keycodes[wParam] : 0;
+            uint32_t key = refineKey(wParam, lParam, (wParam < 512) ? (uint32_t) _glfw.win32.keycodes[wParam] : 0);
             int mods = getKeyMods();
             const bool functional = key >= GLFW_FKEY_FIRST;
-            const bool shortcutMod = mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER);
+            const int shortcutMods = mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER);
+            if (!up) window->win32.pendingKeypadKey = 0;
+            if (isKeypadTextKey(key) && (!shortcutMods || (shortcutMods == GLFW_MOD_ALT && key <= GLFW_FKEY_KP_9))) {
+                // A keypad key that types goes out with its text from WM_CHAR,
+                // which follows, as one key event the way X11 sends it. Alt and
+                // keypad digits are left to Windows, which types the character
+                // their code names once Alt comes up.
+                if (!up && !shortcutMods) window->win32.pendingKeypadKey = key;
+                if (uMsg == WM_SYSKEYDOWN || uMsg == WM_SYSKEYUP) break;
+                return 0;
+            }
             // A plain printable key (no ctrl/alt) is delivered as text by WM_CHAR,
             // to keep dead keys and layouts working. Forward everything else here:
             // functional keys (arrows, enter, tab...) and any key combined with a
             // shortcut modifier, so kitty can match bindings and encode ctrl+<key>.
-            if (key && (functional || shortcutMod)) {
+            if (key && (functional || shortcutMods)) {
                 GLFWkeyevent ev = {0};
                 ev.key = key;
                 ev.native_key = (int) wParam;
@@ -395,6 +477,8 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         }
 
         case WM_CHAR: case WM_SYSCHAR: {
+            const uint32_t keypadKey = window->win32.pendingKeypadKey;
+            window->win32.pendingKeypadKey = 0;
             // Control chars (< 0x20) and pure-ctrl combos are encoded from the key
             // event above; only genuine text reaches the child here.
             if ((WCHAR) wParam < 0x20) return 0;
@@ -418,7 +502,7 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                     if (n == 2) cp = 0x10000 + (((utf16[0] - 0xd800) << 10) | (utf16[1] - 0xdc00));
                     else cp = utf16[0];
                     GLFWkeyevent ev = {0};
-                    ev.key = cp;
+                    ev.key = keypadKey ? keypadKey : cp;
                     ev.text = text;
                     ev.action = GLFW_PRESS;
                     ev.mods = getKeyMods();
@@ -462,11 +546,16 @@ bool _glfwRegisterWindowClassWin32(void) {
 
     _glfw.win32.helperWindowHandle = CreateWindowExW(0, _GLFW_WNDCLASSNAME, L"kitty-helper",
         WS_CLIPSIBLINGS | WS_CLIPCHILDREN, 0, 0, 1, 1, HWND_MESSAGE, NULL, _glfw.win32.instance, NULL);
+    // Told of every clipboard change, so kitty learns when another program copies
+    if (_glfw.win32.helperWindowHandle) AddClipboardFormatListener(_glfw.win32.helperWindowHandle);
     return true;
 }
 
 void _glfwUnregisterWindowClassWin32(void) {
-    if (_glfw.win32.helperWindowHandle) DestroyWindow(_glfw.win32.helperWindowHandle);
+    if (_glfw.win32.helperWindowHandle) {
+        RemoveClipboardFormatListener(_glfw.win32.helperWindowHandle);
+        DestroyWindow(_glfw.win32.helperWindowHandle);
+    }
     if (_glfw.win32.mainWindowClass) UnregisterClassW(_GLFW_WNDCLASSNAME, _glfw.win32.instance);
 }
 
@@ -857,7 +946,9 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
 
     DWORD style = windowStyle(window);
     RECT rect = { 0, 0, wndconfig->width, wndconfig->height };
-    AdjustWindowRectEx(&rect, style, FALSE, WS_EX_APPWINDOW);
+    // The custom frame, turned on below, makes the whole window client area,
+    // so the size asked for is the window's own
+    if (!(window->decorated && !window->monitor)) AdjustWindowRectEx(&rect, style, FALSE, WS_EX_APPWINDOW);
 
     // WS_EX_NOREDIRECTIONBITMAP has to be decided here, since it cannot be
     // added after the window exists. Acrylic needs it: the material lives in a
@@ -1030,9 +1121,15 @@ void _glfwPlatformGetWindowPos(_GLFWwindow* window, int* xpos, int* ypos) {
     if (ypos) *ypos = pos.y;
 }
 
+// With the custom frame the whole window is client area, so a size or a place
+// kitty asks for is the window's own, with no standard frame around it
+static void adjustForFrame(_GLFWwindow* window, RECT* rect) {
+    if (!window->win32.customFrame) AdjustWindowRectEx(rect, windowStyle(window), FALSE, WS_EX_APPWINDOW);
+}
+
 void _glfwPlatformSetWindowPos(_GLFWwindow* window, int xpos, int ypos) {
     RECT rect = { xpos, ypos, xpos, ypos };
-    AdjustWindowRectEx(&rect, windowStyle(window), FALSE, WS_EX_APPWINDOW);
+    adjustForFrame(window, &rect);
     SetWindowPos(window->win32.handle, NULL, rect.left, rect.top, 0, 0, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE);
 }
 
@@ -1045,7 +1142,7 @@ void _glfwPlatformGetWindowSize(_GLFWwindow* window, int* width, int* height) {
 
 void _glfwPlatformSetWindowSize(_GLFWwindow* window, int width, int height) {
     RECT rect = { 0, 0, width, height };
-    AdjustWindowRectEx(&rect, windowStyle(window), FALSE, WS_EX_APPWINDOW);
+    adjustForFrame(window, &rect);
     SetWindowPos(window->win32.handle, HWND_TOP, 0, 0, rect.right - rect.left, rect.bottom - rect.top,
                  SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOMOVE | SWP_NOZORDER);
 }
@@ -1063,7 +1160,7 @@ void _glfwPlatformGetWindowContentScale(_GLFWwindow* window, float* xscale, floa
 
 void _glfwPlatformGetWindowFrameSize(_GLFWwindow* window, int* left, int* top, int* right, int* bottom) {
     RECT rect = {0};
-    AdjustWindowRectEx(&rect, windowStyle(window), FALSE, WS_EX_APPWINDOW);
+    adjustForFrame(window, &rect);
     if (left) *left = -rect.left;
     if (top) *top = -rect.top;
     if (right) *right = rect.right;
@@ -1166,8 +1263,10 @@ void _glfwPlatformSetCursorPos(_GLFWwindow* window, double xpos, double ypos) {
     ClientToScreen(window->win32.handle, &pos);
     SetCursorPos(pos.x, pos.y);
 }
+// glfw has stored the mode already, which applyClientCursor reads
 void _glfwPlatformSetCursorMode(_GLFWwindow* window, int mode) {
-    if (mode == GLFW_CURSOR_HIDDEN || mode == GLFW_CURSOR_DISABLED) { (void) window; }
+    (void) mode;
+    if (window->win32.cursorTracked) applyClientCursor(window);
 }
 void _glfwPlatformSetRawMouseMotion(_GLFWwindow* window, bool enabled) { (void) window; (void) enabled; }
 bool _glfwPlatformRawMouseMotionSupported(void) { return false; }
@@ -1188,16 +1287,26 @@ int _glfwPlatformCreateStandardCursor(_GLFWcursor* cursor, GLFWCursorShape shape
         case GLFW_NOT_ALLOWED_CURSOR: id = IDC_NO; break;
         case GLFW_EW_RESIZE_CURSOR: case GLFW_E_RESIZE_CURSOR: case GLFW_W_RESIZE_CURSOR: id = IDC_SIZEWE; break;
         case GLFW_NS_RESIZE_CURSOR: case GLFW_N_RESIZE_CURSOR: case GLFW_S_RESIZE_CURSOR: id = IDC_SIZENS; break;
-        case GLFW_NWSE_RESIZE_CURSOR: id = IDC_SIZENWSE; break;
-        case GLFW_NESW_RESIZE_CURSOR: id = IDC_SIZENESW; break;
+        case GLFW_NWSE_RESIZE_CURSOR: case GLFW_NW_RESIZE_CURSOR: case GLFW_SE_RESIZE_CURSOR: id = IDC_SIZENWSE; break;
+        case GLFW_NESW_RESIZE_CURSOR: case GLFW_NE_RESIZE_CURSOR: case GLFW_SW_RESIZE_CURSOR: id = IDC_SIZENESW; break;
+        // The nearest of the cursors Windows has, for the shapes it lacks
+        case GLFW_HELP_CURSOR: id = IDC_HELP; break;
+        case GLFW_PROGRESS_CURSOR: id = IDC_APPSTARTING; break;
+        case GLFW_CELL_CURSOR: id = IDC_CROSS; break;
+        case GLFW_VERTICAL_TEXT_CURSOR: id = IDC_IBEAM; break;
+        case GLFW_NO_DROP_CURSOR: id = IDC_NO; break;
+        case GLFW_GRAB_CURSOR: id = IDC_HAND; break;
+        case GLFW_GRABBING_CURSOR: id = IDC_SIZEALL; break;
         default: break;
     }
     cursor->win32.handle = LoadCursorW(NULL, (LPCWSTR) id);
     return true;
 }
 void _glfwPlatformDestroyCursor(_GLFWcursor* cursor) { (void) cursor; }
+// glfw has stored the cursor already, and a pointer hidden while typing stays hidden
 void _glfwPlatformSetCursor(_GLFWwindow* window, _GLFWcursor* cursor) {
-    if (window->win32.cursorTracked && cursor && cursor->win32.handle) SetCursor(cursor->win32.handle);
+    (void) cursor;
+    if (window->win32.cursorTracked) applyClientCursor(window);
 }
 
 // ---------------------------------------------------------------------------

@@ -76,6 +76,25 @@ New in kitty 0.49 to 0.51 and not ported yet.
 - `restore_session_after_logout`. Nothing on Windows tells kitty the session is ending yet. Turning it on logs that it is not supported and changes nothing else.
 - `tab.children_mem_usage` in tab titles, and the tracking of a window's root and descendant processes. Both read `/proc` and cgroups.
 
+kitty.conf options that do nothing or only part of their job on Windows yet.
+
+- The bell sound, `enable_audio_bell` and `bell_path`, the taskbar flash of `window_alert_on_bell`, and the tab's bell mark while kitty has focus. conhost turns parts of a shell's output into stray bells, which would make all three go off on many prompts until they are filtered out.
+- The scrollback pager, `scrollback_pager` and the actions that open it, such as ctrl+shift+h. The pager gets no scrollback, and the default `less` is not on a stock Windows PATH.
+- Fullscreen, the `toggle_fullscreen` action.
+- The IME candidate window, which is not placed at the cursor.
+- `hide_window_decorations`. With `yes` the window cannot be resized or moved with the mouse, and `titlebar-only` does nothing.
+- `remap_modifiers`.
+- `env read_from_shell`, which imports nothing.
+- `notify_on_cmd_finish`. The toast shows, but clicking it does not focus the window, and `clear_on` does not remove it.
+- `{tab.active_exe}` and `{tab.active_oldest_exe}` in tab titles, which always show the shell.
+- The 6 pixel resize band along the window's edges takes clicks meant for a tab bar at the bottom and for the scrollbar of the rightmost window. A maximized window has no band.
+- Custom pointer images. Every shape name maps to the nearest cursor Windows has.
+- `touch_scroll_multiplier` and `pixel_scroll`. A touchpad scrolls smoothly, by the wheel settings, but not by the pixel.
+- The `count-background` part of `confirm_os_window_close`.
+- `update_check_interval`.
+- `close_on_child_death`. A window always closes when its shell exits.
+- `forward_stdio` and `menu_map`, which have nothing on Windows to attach to yet.
+
 Deliberate, not missing.
 
 - Kittens refuse to start outside kitty. On Windows a kitten needs kitty's own input and output path, and in another terminal it misbehaves in ways that look like bugs, so it exits with a message. Inside kitty every ported kitten works.
@@ -168,7 +187,17 @@ The folder is not created for you. A working config, commented for the options
 where Windows differs, is in `example/.config/kitty`. Copy `kitty.conf` and the
 `kitty-themes` folder next to it into your own `.config\kitty`.
 
-Config reloading works, so edits show up without a restart.
+Config reloading works, so edits show up without a restart, and with
+`auto_reload_config` on, the default, saving kitty.conf is enough.
+
+Write paths in commands, such as `shell`, `editor` or `scrollback_pager`, with
+forward slashes, as in `shell C:/msys64/usr/bin/zsh.exe`, or inside single
+quotes. kitty splits these values the way a POSIX shell does, where a bare
+backslash escapes the character after it and is dropped.
+
+`KITTY_OS` is `windows`, so `include ${KITTY_OS}.conf` picks up a
+`windows.conf` beside kitty.conf. With no editor configured and none found,
+kitty opens files to edit in Notepad.
 
 ## Shells
 

@@ -2557,11 +2557,6 @@ class Boss:
         q = get_options().confirm_os_window_close[0]
         num = num_active_windows if q < 0 else len(windows)
         needs_confirmation = tm is not None and q != 0 and num >= abs(q)
-        # The confirmation prompt is the 'ask' kitten, which needs the Go tool and
-        # a working kitten TUI, neither of which is available on Windows yet. Skip
-        # it so the window can always close.
-        if is_windows:
-            needs_confirmation = False
         if not needs_confirmation:
             self.mark_os_window_for_close(os_window_id)
             return
@@ -3613,7 +3608,14 @@ class Boss:
 
             def run(stdin: int | None, stdout: int | None, stderr: int | None) -> None:
                 try:
-                    p = subprocess.Popen(cmd, env=env, cwd=cwd, preexec_fn=clear_handled_signals, pass_fds=pass_fds, stdin=stdin, stdout=stdout, stderr=stderr)
+                    if is_windows:
+                        # preexec_fn and pass_fds both raise on Windows, and the
+                        # descriptors the child needs reach it as its standard handles
+                        p = subprocess.Popen(
+                            cmd, env=env, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NO_WINDOW)
+                    else:
+                        p = subprocess.Popen(
+                            cmd, env=env, cwd=cwd, preexec_fn=clear_handled_signals, pass_fds=pass_fds, stdin=stdin, stdout=stdout, stderr=stderr)
                     if notify_on_death:
                         self.background_process_death_notify_map[p.pid] = notify_on_death
                         monitor_pid(p.pid)

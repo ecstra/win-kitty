@@ -645,6 +645,9 @@ typedef struct OSWindow {
     struct {
         float alpha;
         bool os_forces_opaque, supports_transparency;
+#ifdef _WIN32
+        float requested;  // before platform_bg_alpha's discount, which the acrylic tint takes
+#endif
     } background_opacity;
     FONTS_DATA_HANDLE fonts_data;
     id_type temp_font_group_id;
