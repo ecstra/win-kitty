@@ -1913,6 +1913,10 @@ PYWRAP1(update_tab_bar_edge_colors) {
             if ((os_window->tab_bar_edge_color.left & 0xffffff) == bg) left_is_default = true;
             if ((os_window->tab_bar_edge_color.right & 0xffffff) == bg) right_is_default = true;
         }
+        // A side tab bar starts right under the title strip, so the band above
+        // its first tab is drawn like the strip, rather than stretching the
+        // first tab's left edge, often a fade cell, across the bar's width
+        if (ok && is_vertical) left_is_default = true;
 #endif
         if (ok) { return Py_BuildValue("OO", left_is_default ? Py_True : Py_False, right_is_default ? Py_True : Py_False); }
     }
