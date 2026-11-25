@@ -954,11 +954,17 @@ resize_pty(ChildMonitor *self, PyObject *args) {
     // stream closes. A stream with no in-band notification, such as the ssh
     // kitten's while ssh draws through the console, holds nothing back.
     for (size_t i = 0; fd != -1 && i < self->count; i++) {
-        if (children[i].id == window_id && children[i].side_channel_streams && children[i].screen->modes.mINBAND_RESIZE_NOTIFICATION) {
+        if (children[i].id != window_id) continue;
+        if (children[i].side_channel_streams && children[i].screen->modes.mINBAND_RESIZE_NOTIFICATION) {
             children[i].held_resize.pending = true;
             children[i].held_resize.cols = dim.ws_col;
             children[i].held_resize.rows = dim.ws_row;
             fd = -2;
+        } else {
+            // This size reaches the console now, so a size held back earlier,
+            // such as by a kitten that turned its notification off on exit just
+            // before its stream closed, must not be applied over it later.
+            children[i].held_resize.pending = false;
         }
     }
 #endif
