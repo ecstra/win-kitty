@@ -103,7 +103,9 @@ static UINT resizeTimerMs(HWND hWnd) {
 static void ensureCaptionButtons(_GLFWwindow* window);      // fwd
 static void positionCaptionButtons(_GLFWwindow* window);    // fwd
 static void updateWindowComposition(_GLFWwindow* window);   // fwd
-static void runPendingDrag(_GLFWwindow* window);            // fwd
+static void runPendingDrag(void);                           // fwd
+static void dragSourceWindowClosing(_GLFWwindow* window);   // fwd
+static void placeAtDropPoint(int width, int height, int* x, int* y);  // fwd
 
 // A multimedia timer drives the repaint during a live resize, because SetTimer
 // clamps any interval below 10ms up to USER_TIMER_MINIMUM, which held the
@@ -117,6 +119,7 @@ static void runPendingDrag(_GLFWwindow* window);            // fwd
 #define TIME_PERIODIC 0x0001
 #endif
 static UINT g_resizeMMTimer = 0;
+static HWND g_tickWindow = NULL;  // where the ticks go, the one window that stops them
 
 static void CALLBACK resizeTickProc(UINT id, UINT msg, DWORD_PTR user, DWORD_PTR d1, DWORD_PTR d2) {
     (void) id; (void) msg; (void) d1; (void) d2;
@@ -133,14 +136,20 @@ static void applyClientCursor(_GLFWwindow* window) {
               : LoadCursorW(NULL, (LPCWSTR) IDC_ARROW));
 }
 
-static void startResizeTimer(HWND hWnd) {
-    UINT period = resizeTimerMs(hWnd);
+static void startTickTimer(HWND target, UINT period) {
+    g_tickWindow = target;
     if (_glfw.win32.winmm.SetEvent)
-        g_resizeMMTimer = _glfw.win32.winmm.SetEvent(period, 1, resizeTickProc, (DWORD_PTR) hWnd, TIME_PERIODIC);
-    if (!g_resizeMMTimer) SetTimer(hWnd, 1001, period, NULL);  // fallback: winmm missing
+        g_resizeMMTimer = _glfw.win32.winmm.SetEvent(period, 1, resizeTickProc, (DWORD_PTR) target, TIME_PERIODIC);
+    if (!g_resizeMMTimer) SetTimer(target, 1001, period, NULL);  // fallback: winmm missing
 }
 
+static void startResizeTimer(HWND hWnd) { startTickTimer(hWnd, resizeTimerMs(hWnd)); }
+
+// Only the window the ticks go to stops them, so another window that closes
+// during a live resize or a drag leaves them running.
 static void stopResizeTimer(HWND hWnd) {
+    if (hWnd != g_tickWindow) return;
+    g_tickWindow = NULL;
     if (g_resizeMMTimer) {
         if (_glfw.win32.winmm.KillEvent) _glfw.win32.winmm.KillEvent(g_resizeMMTimer);
         g_resizeMMTimer = 0;
@@ -173,6 +182,18 @@ static float backgroundOpacity(void) {
 static void fitToMonitor(_GLFWwindow* window); // fwd
 
 static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    // A drag runs from the helper window, which no kitty window closing during
+    // it can take along: the drag starts there and its repaint ticks go there.
+    if (hWnd == _glfw.win32.helperWindowHandle) {
+        if (uMsg == WM_APP_START_DRAG) { runPendingDrag(); return 0; }
+        if (uMsg == WM_APP_RESIZE_TICK || (uMsg == WM_TIMER && wParam == 1001)) {
+            MSG extra;
+            while (PeekMessageW(&extra, hWnd, WM_APP_RESIZE_TICK, WM_APP_RESIZE_TICK, PM_REMOVE)) { }
+            if (_glfw.win32.tickCallback) _glfw.win32.tickCallback(_glfw.win32.tickCallbackData);
+            _glfwWin32ProcessTimers();
+            return 0;
+        }
+    }
     _GLFWwindow* window = GetPropW(hWnd, L"GLFW");
     if (!window) return DefWindowProcW(hWnd, uMsg, wParam, lParam);
 
@@ -266,14 +287,10 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             if (_glfw.win32.tickCallback && !window->win32.iconified)
                 _glfw.win32.tickCallback(_glfw.win32.tickCallbackData);
             // The main loop that runs kitty's timers is blocked too, and its
-            // animations and the drag hover that switches tabs need them.
+            // animations need them.
             _glfwWin32ProcessTimers();
             return 0;
         }
-
-        case WM_APP_START_DRAG:
-            runPendingDrag(window);
-            return 0;
 
         case WM_SIZE: {
             int width = LOWORD(lParam), height = HIWORD(lParam);
@@ -851,8 +868,10 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
     const DWORD exStyle = WS_EX_APPWINDOW |
         (window->win32.transparent && window->win32.blur > 0 ? WS_EX_NOREDIRECTIONBITMAP : 0);
 
+    int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
+    placeAtDropPoint(rect.right - rect.left, rect.bottom - rect.top, &x, &y);
     window->win32.handle = CreateWindowExW(exStyle, _GLFW_WNDCLASSNAME, wtitle ? wtitle : L"kitty",
-        style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
+        style, x, y, rect.right - rect.left, rect.bottom - rect.top,
         NULL, NULL, _glfw.win32.instance, NULL);
     free(wtitle);
     if (!window->win32.handle) {
@@ -895,6 +914,7 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
 }
 
 void _glfwPlatformDestroyWindow(_GLFWwindow* window) {
+    dragSourceWindowClosing(window);
     if (window->win32.handle) stopResizeTimer(window->win32.handle);
     if (window->win32.acrylic) {
         // Unregistering the interop objects needs the context that registered
@@ -1241,10 +1261,35 @@ static struct {
     size_t count;
     CLIPFORMAT formats[WIN32_DRAG_MAX_FORMATS];
     char *mimes[WIN32_DRAG_MAX_FORMATS];
-    char *data[WIN32_DRAG_MAX_FORMATS];   // NULL when the data is asked for on demand
+    char *data[WIN32_DRAG_MAX_FORMATS];
     size_t sizes[WIN32_DRAG_MAX_FORMATS];
     bool has_image;          // a picture is set, which a thread of its own shows
+    POINT released_at;       // where the button came up, in screen pixels
 } win32_drag;
+
+// A tab or a window dropped outside kitty opens where it was dropped. kitty
+// opens it while it handles the drop, the only time this is on.
+static struct { bool on; POINT at; } drop_placement;
+
+static void
+placeAtDropPoint(int width, int height, int* x, int* y) {
+    if (!drop_placement.on) return;
+    MONITORINFO mi = {.cbSize = sizeof mi};
+    if (!GetMonitorInfoW(MonitorFromPoint(drop_placement.at, MONITOR_DEFAULTTONEAREST), &mi)) return;
+    // Kept inside the work area of the monitor it was dropped on
+    const RECT work = mi.rcWork;
+    *x = drop_placement.at.x + width > work.right ? work.right - width : drop_placement.at.x;
+    *y = drop_placement.at.y + height > work.bottom ? work.bottom - height : drop_placement.at.y;
+    if (*x < work.left) *x = work.left;
+    if (*y < work.top) *y = work.top;
+}
+
+// kitty's tick runs during a drag and can close the window the drag started
+// from, which ends the drag as a cancel.
+static void
+dragSourceWindowClosing(_GLFWwindow* window) {
+    if ((win32_drag.pending || win32_drag.active) && win32_drag.window_id == window->id) win32_drag.cancel_requested = true;
+}
 
 static void
 free_win32_drop_items(void) {
@@ -1384,9 +1429,12 @@ self_drag_event(_GLFWwindow *window, GLFWDropEventType type, POINTL pt) {
     return win32_drag.count ? _glfwInputDropEvent(window, type, x, y, m, win32_drag.count, true) : 0;
 }
 
+// A drag holds its own reference to the target under the pointer, so the
+// target can outlive its window, which leaves the window NULL behind it.
 static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pdo, DWORD keys, POINTL pt, DWORD *effect) {
     (void)keys;
     Win32DropTarget *self = (Win32DropTarget*)This;
+    if (!self->window) { *effect = DROPEFFECT_NONE; return S_OK; }
     win32_drop.window = self->window;
     if (win32_drag.active) {
         win32_drop.offered_count = 0;
@@ -1405,6 +1453,7 @@ static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pd
 static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POINTL pt, DWORD *effect) {
     (void)keys;
     Win32DropTarget *self = (Win32DropTarget*)This;
+    if (!self->window) { *effect = DROPEFFECT_NONE; return S_OK; }
     if (win32_drag.active) {
         *effect = self_drag_event(self->window, GLFW_DROP_MOVE, pt) ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
         return S_OK;
@@ -1419,13 +1468,14 @@ static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POIN
 }
 static HRESULT STDMETHODCALLTYPE dt_DragLeave(IDropTarget *This) {
     Win32DropTarget *self = (Win32DropTarget*)This;
-    _glfwInputDropEvent(self->window, GLFW_DROP_LEAVE, 0, 0, NULL, 0, win32_drag.active);
+    if (self->window) _glfwInputDropEvent(self->window, GLFW_DROP_LEAVE, 0, 0, NULL, 0, win32_drag.active);
     win32_drop.offered_count = 0;
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dt_Drop(IDropTarget *This, IDataObject *pdo, DWORD keys, POINTL pt, DWORD *effect) {
     (void)keys;
     Win32DropTarget *self = (Win32DropTarget*)This;
+    if (!self->window) { *effect = DROPEFFECT_NONE; return S_OK; }
     free_win32_drop_items();
     win32_drop.window = self->window;
     win32_drop.offered_count = 0;
@@ -1466,6 +1516,7 @@ _glfwWin32RevokeDropTarget(_GLFWwindow *window) {
     IDropTarget *dt = (IDropTarget*)window->win32.dropTarget;
     if (dt) {
         RevokeDragDrop(window->win32.handle);
+        ((Win32DropTarget*)dt)->window = NULL;
         dt->lpVtbl->Release(dt);
         window->win32.dropTarget = NULL;
         if (win32_drop.window == window) { free_win32_drop_items(); win32_drop.window = NULL; win32_drop.offered_count = 0; }
@@ -1545,25 +1596,13 @@ drag_format_index(const FORMATETC *f) {
 // round the size up and a reader trusting it then sees the padding as data.
 static HGLOBAL
 drag_data_for(size_t idx) {
-    const char *data = win32_drag.data[idx];
-    size_t sz = win32_drag.sizes[idx];
-    _GLFWwindow *source = _glfwWindowForId(win32_drag.window_id);
-    GLFWDragEvent ev = {.type = GLFW_DRAG_DATA_REQUEST, .mime_type = win32_drag.mimes[idx]};
-    bool requested = false;
-    if (!data) {
-        if (!source) return NULL;
-        _glfwInputDragSourceRequest(source, &ev);
-        if (ev.err_num || !ev.data) return NULL;
-        data = ev.data; sz = ev.data_sz; requested = true;
-    }
+    const size_t sz = win32_drag.sizes[idx];
     HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sz ? sz : 1);
     if (h) {
         void *p = GlobalLock(h);
-        if (p) { if (sz) memcpy(p, data, sz); GlobalUnlock(h); }
+        if (p) { if (sz) memcpy(p, win32_drag.data[idx], sz); GlobalUnlock(h); }
         else { GlobalFree(h); h = NULL; }
     }
-    // Called again with the data it handed over, so the application frees it
-    if (requested && source) _glfwInputDragSourceRequest(source, &ev);
     return h;
 }
 
@@ -1840,7 +1879,11 @@ static HRESULT STDMETHODCALLTYPE ds_QueryContinueDrag(IDropSource *This, BOOL es
     (void)This;
     if (escape) { win32_drag.escape_pressed = true; return DRAGDROP_S_CANCEL; }
     if (win32_drag.cancel_requested) return DRAGDROP_S_CANCEL;
-    if (!(keys & MK_LBUTTON)) { win32_drag.button_released = true; return DRAGDROP_S_DROP; }
+    if (!(keys & MK_LBUTTON)) {
+        win32_drag.button_released = true;
+        GetCursorPos(&win32_drag.released_at);
+        return DRAGDROP_S_DROP;
+    }
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE ds_GiveFeedback(IDropSource *This, DWORD effect) {
@@ -1883,27 +1926,28 @@ blank_shell_drag_image(IDataObject *data) {
 }
 
 static void
-runPendingDrag(_GLFWwindow* window) {
+runPendingDrag(void) {
     if (!win32_drag.pending) return;
     win32_drag.pending = false;
-    const HWND hwnd = window->win32.handle;
+    _GLFWwindow *window = _glfwWindowForId(win32_drag.window_id);
     GLFWDragEvent ev = {.type = GLFW_DRAG_CANCELLED};
     Win32DragData *data = calloc(1, sizeof *data);
     Win32DropSource *source = calloc(1, sizeof *source);
-    if (data && source && win32_drag.count && !win32_drag.cancel_requested) {
-        data->iface.lpVtbl = &win32_drag_data_vtbl; data->ref = 1;
-        source->iface.lpVtbl = &win32_drop_source_vtbl; source->ref = 1;
+    if (data) { data->iface.lpVtbl = &win32_drag_data_vtbl; data->ref = 1; }
+    if (source) { source->iface.lpVtbl = &win32_drop_source_vtbl; source->ref = 1; }
+    if (window && data && source && win32_drag.count && !win32_drag.cancel_requested) {
         blank_shell_drag_image(&data->iface);
         win32_drag.active = true;
         if (win32_drag.has_image) post_drag_image(true, NULL);
-        // kitty's own loop is blocked until DoDragDrop returns, so the live
-        // resize's repaint timer runs it meanwhile, for its drop previews and
-        // for the output of its windows. The window may close during the drag,
-        // so only the handle is used after it.
-        startResizeTimer(hwnd);
+        // kitty's own loop is blocked until DoDragDrop returns, so a repaint
+        // timer like the live resize's runs it meanwhile, for its drop previews,
+        // its timers and the output of its windows. The window may close during
+        // the drag, so its ticks go to the helper window.
+        const HWND helper = _glfw.win32.helperWindowHandle;
+        startTickTimer(helper, resizeTimerMs(window->win32.handle));
         DWORD effect = DROPEFFECT_NONE;
         const HRESULT hr = DoDragDrop(&data->iface, &source->iface, allowed_drop_effects(), &effect);
-        stopResizeTimer(hwnd);
+        stopResizeTimer(helper);
         win32_drag.active = false;
         post_drag_image(false, NULL);
         if (hr == DRAGDROP_S_DROP && effect != DROPEFFECT_NONE) {
@@ -1916,9 +1960,15 @@ runPendingDrag(_GLFWwindow* window) {
     }
     if (data) data->iface.lpVtbl->Release(&data->iface);
     if (source) source->iface.lpVtbl->Release(&source->iface);
+    // kitty's handler for the end of its drag does not look at the window, so
+    // when the one the drag started from has closed, any window left carries it
     _GLFWwindow *from = _glfwWindowForId(win32_drag.window_id);
+    if (!from) from = _glfw.windowListHead;
     if (from) {
+        drop_placement.on = ev.drop_maybe_a_cancel;
+        drop_placement.at = win32_drag.released_at;
         _glfwInputDragSourceRequest(from, &ev);
+        drop_placement.on = false;
         if (ev.type == GLFW_DRAG_DROPPED) {
             GLFWDragEvent finished = {.type = GLFW_DRAG_FINSHED, .action = ev.action};
             _glfwInputDragSourceRequest(from, &finished);
@@ -1933,29 +1983,29 @@ int _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
     free_win32_drag();
     for (size_t i = 0; i < _glfw.drag.item_count && win32_drag.count < WIN32_DRAG_MAX_FORMATS; i++) {
         const GLFWDragSourceItem *item = _glfw.drag.items + i;
+        // Data kitty hands over only when asked belongs to the drags programs
+        // in a window start, the dnd kitten's side, which is not done here
+        if (!item->optional_data) continue;
         const UINT cf = RegisterClipboardFormatA(item->mime_type);
         if (!cf) continue;
         const size_t n = win32_drag.count;
         win32_drag.formats[n] = (CLIPFORMAT)cf;
         win32_drag.mimes[n] = _glfw_strdup(item->mime_type);
-        win32_drag.data[n] = NULL;
         win32_drag.sizes[n] = item->data_size;
-        if (item->optional_data) {
-            win32_drag.data[n] = malloc(item->data_size ? item->data_size : 1);
-            if (win32_drag.data[n] && item->data_size) memcpy(win32_drag.data[n], item->optional_data, item->data_size);
-        }
-        if (!win32_drag.mimes[n] || (item->optional_data && !win32_drag.data[n])) {
+        win32_drag.data[n] = malloc(item->data_size ? item->data_size : 1);
+        if (!win32_drag.mimes[n] || !win32_drag.data[n]) {
             free(win32_drag.mimes[n]); free(win32_drag.data[n]);
             free_win32_drag();
             return ENOMEM;
         }
+        if (item->data_size) memcpy(win32_drag.data[n], item->optional_data, item->data_size);
         win32_drag.count++;
     }
     if (!win32_drag.count) return EINVAL;
     win32_drag.window_id = window->id;
     win32_drag.escape_pressed = win32_drag.button_released = win32_drag.cancel_requested = false;
     set_drag_image(thumbnail);
-    if (!PostMessageW(window->win32.handle, WM_APP_START_DRAG, 0, 0)) {
+    if (!_glfw.win32.helperWindowHandle || !PostMessageW(_glfw.win32.helperWindowHandle, WM_APP_START_DRAG, 0, 0)) {
         free_win32_drag();
         return EIO;
     }
@@ -1976,7 +2026,7 @@ void _glfwPlatformFreeDragSourceData(void) {
     if (win32_drag.pending) win32_drag.cancel_requested = true;
 }
 
-// Data asked for on demand is fetched synchronously in drag_data_for
+// No drag here asks for its data on demand, see _glfwPlatformStartDrag
 int _glfwPlatformDragDataReady(const char* mime_type, const char* data, size_t sz, int type) { (void) mime_type; (void) data; (void) sz; (void) type; return 0; }
 
 int _glfwPlatformChangeDragImage(const GLFWimage* thumbnail) {
