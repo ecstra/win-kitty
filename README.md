@@ -40,11 +40,10 @@ I built it so I could use kitty as my daily terminal on Windows, and it does tha
 * **Notifications:** real Windows notifications from kitty.
 * **Explorer:** an Open in kitty entry when you right click a folder.
 * **Low input lag:** typing feels instant, and kitty draws at your monitor's real refresh rate.
-* **The rest of kitty:** tabs, OS windows, scrollback, mouse selection, the clipboard, ligatures, per monitor scaling, live config reload, and dropping files onto a window.
+* **The rest of kitty:** tabs, OS windows, scrollback, mouse selection, the clipboard, ligatures, per monitor scaling, live config reload, dropping files onto a window, and dragging tabs along the tab bar, into another window or out into a new one.
 
 ## What is missing
 
-* Dragging tabs to move them around or into another window.
 * Remote control over `listen_on unix:`. TCP works.
 * The dnd, panel, quick-access-terminal and desktop-ui kittens.
 * Dragging text or files out of a window. Dropping them in works.

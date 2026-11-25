@@ -306,7 +306,9 @@ void _glfwPlatformRemoveTimer(unsigned long long timer_id) {
     }
 }
 
-static monotonic_t process_timers(void) {
+// Also run from the repaint tick of the modal loops, a live resize or a drag,
+// which block the main loop below, so kitty's timers keep firing during them.
+monotonic_t _glfwWin32ProcessTimers(void) {
     monotonic_t now = monotonic();
     monotonic_t soonest = -1;
     for (int i = 0; i < MAX_TIMERS; i++) {
@@ -337,7 +339,7 @@ void _glfwPlatformRunMainLoop(GLFWtickcallback tick_callback, void* data) {
 
         tick_callback(data);
 
-        monotonic_t soonest = process_timers();
+        monotonic_t soonest = _glfwWin32ProcessTimers();
         DWORD wait_ms = INFINITE;
         if (soonest >= 0) {
             monotonic_t delta = soonest - monotonic();
