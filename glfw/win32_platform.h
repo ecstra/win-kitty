@@ -35,8 +35,9 @@ typedef struct _GLFWwindowWin32 {
     int     lastCursorPosY;
     // The last WM_CHAR high surrogate awaiting its low surrogate.
     WCHAR   highSurrogate;
-    // A keypad key that types, waiting for the WM_CHAR that carries its text.
-    uint32_t pendingKeypadKey;
+    // A keypad key, or a key pressed with Alt, waiting for the WM_CHAR or
+    // WM_SYSCHAR that carries its text.
+    uint32_t pendingCharKey;
 
     int     minwidth, minheight, maxwidth, maxheight;
     SIZE    sizeAtResizeStart;  // the window's size as a mouse resize began

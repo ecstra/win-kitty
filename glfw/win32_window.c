@@ -450,15 +450,23 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             int mods = getKeyMods();
             const bool functional = key >= GLFW_FKEY_FIRST;
             const int shortcutMods = mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER);
-            if (!up) window->win32.pendingKeypadKey = 0;
+            if (!up) window->win32.pendingCharKey = 0;
             if (isKeypadTextKey(key) && (!shortcutMods || (shortcutMods == GLFW_MOD_ALT && key <= GLFW_FKEY_KP_9))) {
                 // A keypad key that types goes out with its text from WM_CHAR,
                 // which follows, as one key event the way X11 sends it. Alt and
                 // keypad digits are left to Windows, which types the character
                 // their code names once Alt comes up.
-                if (!up && !shortcutMods) window->win32.pendingKeypadKey = key;
+                if (!up && !shortcutMods) window->win32.pendingCharKey = key;
                 if (uMsg == WM_SYSKEYDOWN || uMsg == WM_SYSKEYUP) break;
                 return 0;
+            }
+            if (key && !functional && shortcutMods == GLFW_MOD_ALT) {
+                // Alt with a key that types: WM_SYSCHAR follows with the
+                // character, shift and the layout applied, and the two go out as
+                // one event. Sent from both, the shell got the key's escape code
+                // and then the character as well.
+                if (!up) window->win32.pendingCharKey = key;
+                break;  // a system key, which DefWindowProc still sees
             }
             // A plain printable key (no ctrl/alt) is delivered as text by WM_CHAR,
             // to keep dead keys and layouts working. Forward everything else here:
@@ -477,8 +485,8 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         }
 
         case WM_CHAR: case WM_SYSCHAR: {
-            const uint32_t keypadKey = window->win32.pendingKeypadKey;
-            window->win32.pendingKeypadKey = 0;
+            const uint32_t pairedKey = window->win32.pendingCharKey;
+            window->win32.pendingCharKey = 0;
             // Control chars (< 0x20) and pure-ctrl combos are encoded from the key
             // event above; only genuine text reaches the child here.
             if ((WCHAR) wParam < 0x20) return 0;
@@ -502,7 +510,7 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                     if (n == 2) cp = 0x10000 + (((utf16[0] - 0xd800) << 10) | (utf16[1] - 0xdc00));
                     else cp = utf16[0];
                     GLFWkeyevent ev = {0};
-                    ev.key = keypadKey ? keypadKey : cp;
+                    ev.key = pairedKey ? pairedKey : cp;
                     ev.text = text;
                     ev.action = GLFW_PRESS;
                     ev.mods = getKeyMods();
