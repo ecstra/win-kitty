@@ -215,6 +215,14 @@ static float backgroundOpacity(void) {
     return (float) v;
 }
 
+// The environment holds the values of whichever window kitty restyled last, so
+// each window keeps its own from the moment kitty sets them for it, for a later
+// re-tint on focus or a repaint of its caption buttons
+static void captureTint(_GLFWwindow* window) {
+    window->win32.tintRGB = titlebarRGB();
+    window->win32.tintOpacity = backgroundOpacity();
+}
+
 // ---------------------------------------------------------------------------
 // Window procedure
 // ---------------------------------------------------------------------------
@@ -460,13 +468,16 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                 if (uMsg == WM_SYSKEYDOWN || uMsg == WM_SYSKEYUP) break;
                 return 0;
             }
-            if (key && !functional && shortcutMods == GLFW_MOD_ALT) {
-                // Alt with a key that types: WM_SYSCHAR follows with the
-                // character, shift and the layout applied, and the two go out as
-                // one event. Sent from both, the shell got the key's escape code
-                // and then the character as well.
-                if (!up) window->win32.pendingCharKey = key;
-                break;  // a system key, which DefWindowProc still sees
+            // AltGr, which Windows reports as ctrl and alt, types a character
+            const bool altGr = shortcutMods == (GLFW_MOD_CONTROL | GLFW_MOD_ALT) && (GetKeyState(VK_RMENU) & 0x8000);
+            if (!up && key && (!functional || isKeypadTextKey(key)) && (shortcutMods == GLFW_MOD_ALT || altGr)) {
+                // Alt or AltGr with a key that types: the WM_SYSCHAR or WM_CHAR
+                // that follows carries the character with shift and the layout
+                // applied, and the two go out as one event from there. Sent from
+                // both, the shell got an escape code and then the character too.
+                window->win32.pendingCharKey = key;
+                if (uMsg == WM_SYSKEYDOWN) break;  // a system key, which DefWindowProc still sees
+                return 0;
             }
             // A plain printable key (no ctrl/alt) is delivered as text by WM_CHAR,
             // to keep dead keys and layouts working. Forward everything else here:
@@ -484,16 +495,27 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             return 0;
         }
 
+        case WM_SYSDEADCHAR:
+            // Alt with a dead key: no character follows, so the key goes out alone
+            if (window->win32.pendingCharKey) {
+                GLFWkeyevent ev = {.key = window->win32.pendingCharKey, .action = GLFW_PRESS, .mods = getKeyMods()};
+                window->win32.pendingCharKey = 0;
+                _glfwInputKeyboard(window, &ev);
+            }
+            return 0;
+        case WM_DEADCHAR:
+            // AltGr with a dead key composes with the next key, like any dead key
+            window->win32.pendingCharKey = 0;
+            break;
+
         case WM_CHAR: case WM_SYSCHAR: {
             const uint32_t pairedKey = window->win32.pendingCharKey;
             window->win32.pendingCharKey = 0;
             // Control chars (< 0x20) and pure-ctrl combos are encoded from the key
             // event above; only genuine text reaches the child here.
             if ((WCHAR) wParam < 0x20) return 0;
-            {
-                int m = getKeyMods();
-                if ((m & GLFW_MOD_CONTROL) && !(m & GLFW_MOD_ALT)) return 0;
-            }
+            int mods = getKeyMods();
+            if ((mods & GLFW_MOD_CONTROL) && !(mods & GLFW_MOD_ALT)) return 0;
             // wParam is a UTF-16 code unit; accumulate surrogate pairs.
             WCHAR utf16[2]; int n = 0;
             WCHAR c = (WCHAR) wParam;
@@ -511,9 +533,20 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                     else cp = utf16[0];
                     GLFWkeyevent ev = {0};
                     ev.key = pairedKey ? pairedKey : cp;
-                    ev.text = text;
                     ev.action = GLFW_PRESS;
-                    ev.mods = getKeyMods();
+                    if (uMsg == WM_SYSCHAR) {
+                        // Alt with a key goes out as the key, which kitty encodes
+                        // with the Alt, since an event with text goes out as the
+                        // bare character. The character shift made lets it send
+                        // ESC S for Alt+Shift+S, as on X11.
+                        if ((mods & GLFW_MOD_SHIFT) && cp != ev.key) ev.shifted_key = cp;
+                    } else {
+                        ev.text = text;
+                        // A character AltGr typed carries no ctrl or alt
+                        if ((mods & GLFW_MOD_CONTROL) && (mods & GLFW_MOD_ALT) && (GetKeyState(VK_RMENU) & 0x8000))
+                            mods &= ~(GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+                    }
+                    ev.mods = mods;
                     _glfwInputKeyboard(window, &ev);
                 }
             }
@@ -648,10 +681,9 @@ static void* cbIconBitmap(int idx, bool dark) {
 
 // A light caption (near-white theme background) needs dark button glyphs. The
 // caption colour is published by kitty as KITTY_TITLEBAR_RGB (the window bg).
-static bool cbCaptionIsLight(void) {
-    const char* rgb = getenv("KITTY_TITLEBAR_RGB");
-    if (!rgb || strlen(rgb) < 6) return false;
-    unsigned long v = strtoul(rgb, NULL, 16);
+static bool cbCaptionIsLight(const _GLFWwindow* window) {
+    if (!window) return false;
+    const unsigned int v = window->win32.tintRGB;
     int r = (int)((v >> 16) & 255), g = (int)((v >> 8) & 255), b = (int)(v & 255);
     return (r * 299 + g * 587 + b * 114) / 1000 >= 128;  // Rec. 601 luma midpoint
 }
@@ -704,7 +736,7 @@ static void cbPaint(HWND overlay) {
         GdipSetInterpolationMode(g, 7 /* HighQualityBicubic: crisp icon downscale */);
         int top = (H - bh) / 2;
         float rad = (float) MulDiv(7, dpi, 96);
-        bool light_caption = cbCaptionIsLight();
+        bool light_caption = cbCaptionIsLight(st->owner);
         for (int i = 0; i < CB_COUNT; i++) {
             int bx = pad + i * (bw + gap);
             bool hot = st->hovered == i;
@@ -922,7 +954,7 @@ static void updateWindowComposition(_GLFWwindow* window) {
         }
         if (!window->win32.acrylic) _glfwWin32AcrylicCreate(window);
         if (window->win32.acrylic) {
-            _glfwWin32AcrylicSetTint(window, titlebarRGB(), backgroundOpacity());
+            _glfwWin32AcrylicSetTint(window, window->win32.tintRGB, window->win32.tintOpacity);
             return;
         }
         // Creating it failed, most likely no WGL_NV_DX_interop2. Fall through
@@ -990,6 +1022,7 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
         if (!_glfwRefreshContextAttribs(window, ctxconfig)) return false;
     }
     window->win32.customFrame = window->decorated && !window->monitor;
+    captureTint(window);
     if (window->win32.transparent) updateWindowComposition(window);
     if (window->win32.acrylic) {
         // _glfwRefreshContextAttribs restores whatever context was current
@@ -1245,6 +1278,7 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow* w, const GLFWIMEUpdateEvent* ev) {
 
 int _glfwPlatformSetWindowBlur(_GLFWwindow* window, int value) {
     window->win32.blur = value;
+    captureTint(window);  // kitty set them for this window just before the call
     updateWindowComposition(window);
     styleTitlebar(window);  // re-read KITTY_TITLEBAR_RGB (config/theme may have changed)
     return _glfw.win32.dwmapi.SetWindowAttribute != NULL;

@@ -44,6 +44,8 @@ typedef struct _GLFWwindowWin32 {
     int     numer, denom;     // aspect ratio
     float   opacity;
     int     blur;             // background_blur radius (0 = off)
+    unsigned int tintRGB;     // this window's caption and acrylic tint colour
+    float   tintOpacity;      // and its opacity, from kitty when its chrome changed
     bool    customFrame;      // reclaim the caption for an acrylic custom title bar
     HWND    captionButtons;   // layered overlay hosting min/max/close
     void*   dropTarget;       // IDropTarget* registered for OLE drag-and-drop (drop-in)

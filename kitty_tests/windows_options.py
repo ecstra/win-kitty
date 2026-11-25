@@ -32,18 +32,32 @@ class WindowsOptionsTest(BaseTest):
                 patch.object(utils, 'read_shell_environment', return_value={}), patch.object(utils, 'editor_next_to_shell', return_value=''):
             self.assertEqual(utils.get_editor_from_env_vars(), ['notepad.exe'])
 
+    def test_notepad_gets_no_line_number(self):
+        from kitty import utils
+        from kitty.cli import create_default_opts
+        opts = create_default_opts()
+        opts.editor = '.'
+        with patch.object(utils, 'get_editor_from_env_vars', return_value=['notepad.exe']):
+            self.assertEqual(utils.get_editor(opts, 'C:/x/file.txt', 12), ['notepad.exe', 'C:/x/file.txt'])
+
+    def test_background_process_with_remote_control_starts(self):
+        from kitty.boss import Boss
+        boss = self.FakeBoss()
+        sort = os.path.join(os.environ['SystemRoot'], 'System32', 'sort.exe')
+        Boss.run_background_process(boss, [sort], allow_remote_control=True)  # type: ignore[arg-type]
+        self.assertEqual(boss.errors, [])
+
+    class FakeBoss:
+        def __init__(self) -> None:
+            self.errors: list[str] = []
+            self.background_process_death_notify_map: dict[int, object] = {}
+
+        def show_error(self, title: str, msg: str) -> None:
+            self.errors.append(msg)
+
     def test_background_process_starts_and_reads_its_input(self):
         from kitty.boss import Boss
-
-        class FakeBoss:
-            def __init__(self) -> None:
-                self.errors: list[str] = []
-                self.background_process_death_notify_map: dict[int, object] = {}
-
-            def show_error(self, title: str, msg: str) -> None:
-                self.errors.append(msg)
-
-        boss = FakeBoss()
+        boss = self.FakeBoss()
         # sys.executable is kitty itself under the test runner, so Windows' own
         # sort, which copies a single line through, stands in as the program
         sort = os.path.join(os.environ['SystemRoot'], 'System32', 'sort.exe')

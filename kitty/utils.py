@@ -673,6 +673,8 @@ def get_editor(opts: Options | None = None, path_to_edit: str = '', line_number:
                 ans.append('--goto')
             elif eq in ('subl', 'subl.exe', 'sublime_text', 'sublime_text.exe', 'zed', 'zed.exe', 'zeditor'):
                 path_to_edit += f':{line_number}'
+            elif is_windows and eq in ('notepad', 'notepad.exe'):
+                pass  # Notepad takes no line, and would read +N as part of the file name
             else:
                 ans.append(f'+{line_number}')
         ans.append(path_to_edit)

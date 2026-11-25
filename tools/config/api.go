@@ -70,6 +70,8 @@ var kitty_os = sync.OnceValue(func() string {
 		return "bsd"
 	case "darwin":
 		return "macos"
+	case "windows":
+		return "windows"
 	}
 	return "unknown"
 })

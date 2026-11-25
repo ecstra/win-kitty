@@ -3619,6 +3619,17 @@ class Boss:
                     if notify_on_death:
                         self.background_process_death_notify_map[p.pid] = notify_on_death
                         monitor_pid(p.pid)
+                        if is_windows:
+                            # Nothing wakes the child monitor when a process that
+                            # is not a window's child exits, so a thread waits on
+                            # it and wakes the monitor, which then reaps it
+                            import threading
+
+                            def wake_when_done(proc: 'subprocess.Popen[bytes]' = p) -> None:
+                                proc.wait()
+                                self.child_monitor.wakeup()
+
+                            threading.Thread(target=wake_when_done, name='BackgroundProcessWaiter', daemon=True).start()
                 except Exception as err:
                     for fd in fds_to_close_on_launch_failure:
                         with suppress(OSError):
@@ -3644,7 +3655,8 @@ class Boss:
             finally:
                 if stdin:
                     os.close(r)
-                if allow_remote_control:
+                # On Windows no remote control socket was made, see above
+                if allow_remote_control and not is_windows:
                     remote.close()
 
         if is_wayland():

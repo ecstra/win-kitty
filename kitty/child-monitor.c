@@ -2167,7 +2167,30 @@ windows_reap_children(ChildMonitor *self) {
             }
         }
     }
+    // The other monitored processes, kitty's background ones, have no pty to
+    // watch and waitpid cannot wait on any child here, so each is checked by
+    // its handle. Python wakes this loop when one exits.
+    bool reaped_any = false;
+    for (ssize_t j = (ssize_t)monitored_pids_count - 1; j >= 0; j--) {
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)monitored_pids[j]);
+        DWORD code = 0;
+        bool exited = false;
+        if (!h) exited = GetLastError() == ERROR_INVALID_PARAMETER;  // gone already
+        else {
+            if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) { GetExitCodeProcess(h, &code); exited = true; }
+            CloseHandle(h);
+        }
+        if (!exited) continue;
+        if (reaped_pids_count < arraysz(reaped_pids)) {
+            reaped_pids[reaped_pids_count].status = (int)(code & 0xff);
+            reaped_pids[reaped_pids_count++].pid = monitored_pids[j];
+        }
+        remove_i_from_array(monitored_pids, (size_t)j, monitored_pids_count);
+        reaped_any = true;
+    }
     children_mutex(unlock);
+    // The main loop reports reaped processes to Python
+    if (reaped_any) wakeup_main_loop();
 }
 #endif
 

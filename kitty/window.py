@@ -1778,7 +1778,10 @@ class Window:
 
     def on_bell(self) -> None:
         cb = get_options().command_on_bell
-        if cb and cb != ['none']:
+        # conhost turns parts of a shell's output into stray bells, so on Windows
+        # the command waits for kitty to be in the background, as the tab mark
+        # below does, rather than running on every prompt
+        if cb and cb != ['none'] and not (is_windows and self.os_window_id == current_focused_os_window_id()):
             import shlex
             import subprocess
 
