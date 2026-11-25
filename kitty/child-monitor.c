@@ -2182,7 +2182,8 @@ windows_reap_children(ChildMonitor *self) {
         }
         if (!exited) continue;
         if (reaped_pids_count < arraysz(reaped_pids)) {
-            reaped_pids[reaped_pids_count].status = (int)(code & 0xff);
+            // Shifted as waitpid reports it, which os.waitstatus_to_exitcode undoes on Windows
+            reaped_pids[reaped_pids_count].status = (int)((code & 0xff) << 8);
             reaped_pids[reaped_pids_count++].pid = monitored_pids[j];
         }
         remove_i_from_array(monitored_pids, (size_t)j, monitored_pids_count);

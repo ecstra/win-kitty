@@ -89,6 +89,13 @@ static uint32_t refineKey(WPARAM vk, LPARAM lParam, uint32_t key) {
     return key;
 }
 
+// TranslateMessage posts the character a key types before the key itself is
+// dispatched, so whether one follows can be read off the queue
+static bool charFollows(HWND hWnd) {
+    MSG m;
+    return PeekMessageW(&m, hWnd, WM_CHAR, WM_DEADCHAR, PM_NOREMOVE) || PeekMessageW(&m, hWnd, WM_SYSCHAR, WM_SYSDEADCHAR, PM_NOREMOVE);
+}
+
 // The keypad keys that type a character, which WM_CHAR delivers
 static bool isKeypadTextKey(uint32_t key) {
     return (key >= GLFW_FKEY_KP_0 && key <= GLFW_FKEY_KP_9) || key == GLFW_FKEY_KP_DECIMAL || key == GLFW_FKEY_KP_DIVIDE ||
@@ -459,7 +466,8 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             const bool functional = key >= GLFW_FKEY_FIRST;
             const int shortcutMods = mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER);
             if (!up) window->win32.pendingCharKey = 0;
-            if (isKeypadTextKey(key) && (!shortcutMods || (shortcutMods == GLFW_MOD_ALT && key <= GLFW_FKEY_KP_9))) {
+            if (isKeypadTextKey(key) && (!shortcutMods || (shortcutMods == GLFW_MOD_ALT && key <= GLFW_FKEY_KP_9)) &&
+                    (up || shortcutMods || charFollows(hWnd))) {
                 // A keypad key that types goes out with its text from WM_CHAR,
                 // which follows, as one key event the way X11 sends it. Alt and
                 // keypad digits are left to Windows, which types the character
@@ -468,13 +476,15 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                 if (uMsg == WM_SYSKEYDOWN || uMsg == WM_SYSKEYUP) break;
                 return 0;
             }
-            // AltGr, which Windows reports as ctrl and alt, types a character
-            const bool altGr = shortcutMods == (GLFW_MOD_CONTROL | GLFW_MOD_ALT) && (GetKeyState(VK_RMENU) & 0x8000);
-            if (!up && key && (!functional || isKeypadTextKey(key)) && (shortcutMods == GLFW_MOD_ALT || altGr)) {
-                // Alt or AltGr with a key that types: the WM_SYSCHAR or WM_CHAR
-                // that follows carries the character with shift and the layout
-                // applied, and the two go out as one event from there. Sent from
-                // both, the shell got an escape code and then the character too.
+            if (!up && key && (!functional || isKeypadTextKey(key)) &&
+                    (shortcutMods == GLFW_MOD_ALT || shortcutMods == (GLFW_MOD_CONTROL | GLFW_MOD_ALT)) && charFollows(hWnd)) {
+                // Alt, or ctrl and alt, with a key that types: the WM_SYSCHAR or
+                // WM_CHAR waiting in the queue carries the character with shift
+                // and the layout applied, and the two go out as one event from
+                // there. Sent from both, the shell got an escape code and then the
+                // character too. Ctrl and alt that type a character are AltGr, or
+                // stand for it on a layout that has one. When no character
+                // follows, the key goes out below as the shortcut it is.
                 window->win32.pendingCharKey = key;
                 if (uMsg == WM_SYSKEYDOWN) break;  // a system key, which DefWindowProc still sees
                 return 0;
@@ -500,6 +510,8 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             if (window->win32.pendingCharKey) {
                 GLFWkeyevent ev = {.key = window->win32.pendingCharKey, .action = GLFW_PRESS, .mods = getKeyMods()};
                 window->win32.pendingCharKey = 0;
+                // The dead key's own character, as the one shift made
+                if ((ev.mods & GLFW_MOD_SHIFT) && (uint32_t) wParam != ev.key) ev.shifted_key = (uint32_t) wParam;
                 _glfwInputKeyboard(window, &ev);
             }
             return 0;
@@ -511,10 +523,17 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_CHAR: case WM_SYSCHAR: {
             const uint32_t pairedKey = window->win32.pendingCharKey;
             window->win32.pendingCharKey = 0;
-            // Control chars (< 0x20) and pure-ctrl combos are encoded from the key
-            // event above; only genuine text reaches the child here.
-            if ((WCHAR) wParam < 0x20) return 0;
             int mods = getKeyMods();
+            // Control chars (< 0x20) and pure-ctrl combos are encoded from the key
+            // event above; only genuine text reaches the child here. A key waiting
+            // for its character still goes out, as the key alone.
+            if ((WCHAR) wParam < 0x20) {
+                if (pairedKey) {
+                    GLFWkeyevent ev = {.key = pairedKey, .action = GLFW_PRESS, .mods = mods};
+                    _glfwInputKeyboard(window, &ev);
+                }
+                return 0;
+            }
             if ((mods & GLFW_MOD_CONTROL) && !(mods & GLFW_MOD_ALT)) return 0;
             // wParam is a UTF-16 code unit; accumulate surrogate pairs.
             WCHAR utf16[2]; int n = 0;
@@ -542,8 +561,9 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                         if ((mods & GLFW_MOD_SHIFT) && cp != ev.key) ev.shifted_key = cp;
                     } else {
                         ev.text = text;
-                        // A character AltGr typed carries no ctrl or alt
-                        if ((mods & GLFW_MOD_CONTROL) && (mods & GLFW_MOD_ALT) && (GetKeyState(VK_RMENU) & 0x8000))
+                        // A character ctrl and alt typed is AltGr's, and carries
+                        // neither
+                        if ((mods & GLFW_MOD_CONTROL) && (mods & GLFW_MOD_ALT))
                             mods &= ~(GLFW_MOD_CONTROL | GLFW_MOD_ALT);
                     }
                     ev.mods = mods;
