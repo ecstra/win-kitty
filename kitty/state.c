@@ -1901,6 +1901,19 @@ PYWRAP1(update_tab_bar_edge_colors) {
                 right_is_default = bottom_is_default;
             }
         }
+#ifdef _WIN32
+        // The tab bar paints its empty cells with its background as an RGB
+        // colour, which reads as not default, and the band beside the tabs is
+        // then drawn in that colour opaque, a solid strip across a see-through
+        // window. While the tab bar follows the window background such a cell
+        // is the background, so the band is drawn the way the background is.
+        if (ok && !OPT(tab_bar_background)) {
+            const color_type bg = colorprofile_to_color(
+                screen->color_profile, screen->color_profile->overridden.default_bg, screen->color_profile->configured.default_bg).rgb & 0xffffff;
+            if ((os_window->tab_bar_edge_color.left & 0xffffff) == bg) left_is_default = true;
+            if ((os_window->tab_bar_edge_color.right & 0xffffff) == bg) right_is_default = true;
+        }
+#endif
         if (ok) { return Py_BuildValue("OO", left_is_default ? Py_True : Py_False, right_is_default ? Py_True : Py_False); }
     }
     END_WITH_OS_WINDOW

@@ -29,6 +29,7 @@ Based on kitty 0.51.1.
 - A tab bar on the left or right starts below the title bar, and a precision touchpad scrolls smoothly instead of a line at a time.
 - `KITTY_OS` is `windows`, and kitty opens files to edit in Notepad when no other editor is found.
 - Windows opened after the first one, a dragged out tab among them, no longer draw their window borders and the edges of the tab bar in random colours, often black.
+- With a see-through background, the space beside the tabs no longer shows as a solid dark strip.
 - Alt with a letter, such as Alt+B in a shell, no longer types the letter as well, which also left stray text like `5;4uS` behind after Shift+Alt+S.
 
 ### Changed
