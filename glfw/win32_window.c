@@ -265,6 +265,9 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             while (PeekMessageW(&extra, hWnd, WM_APP_RESIZE_TICK, WM_APP_RESIZE_TICK, PM_REMOVE)) { }
             if (_glfw.win32.tickCallback && !window->win32.iconified)
                 _glfw.win32.tickCallback(_glfw.win32.tickCallbackData);
+            // The main loop that runs kitty's timers is blocked too, and its
+            // animations and the drag hover that switches tabs need them.
+            _glfwWin32ProcessTimers();
             return 0;
         }
 
@@ -1240,8 +1243,7 @@ static struct {
     char *mimes[WIN32_DRAG_MAX_FORMATS];
     char *data[WIN32_DRAG_MAX_FORMATS];   // NULL when the data is asked for on demand
     size_t sizes[WIN32_DRAG_MAX_FORMATS];
-    HWND image;              // the drag picture, a layered window beside the pointer
-    bool has_image;
+    bool has_image;          // a picture is set, which a thread of its own shows
 } win32_drag;
 
 static void
@@ -1566,7 +1568,43 @@ drag_data_for(size_t idx) {
 }
 
 // --- IDataObject COM object, offering the drag's formats ---
-typedef struct { IDataObject iface; LONG ref; } Win32DragData;
+// The shell's drag helpers keep their own state in the data object through
+// SetData, the drag picture and the drop target's hints among it, so what
+// they set is held and handed back beside the drag's own formats.
+#define WIN32_DRAG_MAX_STORED 16
+typedef struct {
+    IDataObject iface; LONG ref;
+    size_t stored_count;
+    FORMATETC stored_formats[WIN32_DRAG_MAX_STORED];
+    STGMEDIUM stored_media[WIN32_DRAG_MAX_STORED];
+} Win32DragData;
+
+static int
+stored_format_index(const Win32DragData *self, const FORMATETC *f) {
+    if (!f) return -1;
+    for (size_t i = 0; i < self->stored_count; i++) {
+        const FORMATETC *s = self->stored_formats + i;
+        if (s->cfFormat == f->cfFormat && s->dwAspect == f->dwAspect && (s->tymed & f->tymed)) return (int)i;
+    }
+    return -1;
+}
+
+// A copy of a stored medium for a reader, who releases it with ReleaseStgMedium
+static bool
+copy_stored_medium(CLIPFORMAT cf, const STGMEDIUM *src, STGMEDIUM *dst) {
+    *dst = *src;
+    switch (src->tymed) {
+        case TYMED_HGLOBAL:
+            dst->hGlobal = OleDuplicateData(src->hGlobal, cf, 0);
+            dst->pUnkForRelease = NULL;
+            return dst->hGlobal != NULL;
+        case TYMED_ISTREAM: dst->pstm->lpVtbl->AddRef(dst->pstm); break;
+        case TYMED_ISTORAGE: dst->pstg->lpVtbl->AddRef(dst->pstg); break;
+        default: return false;
+    }
+    if (dst->pUnkForRelease) dst->pUnkForRelease->lpVtbl->AddRef(dst->pUnkForRelease);
+    return true;
+}
 
 static HRESULT STDMETHODCALLTYPE dd_QueryInterface(IDataObject *This, REFIID riid, void **ppv) {
     if (!ppv) return E_POINTER;
@@ -1579,32 +1617,56 @@ static ULONG STDMETHODCALLTYPE dd_AddRef(IDataObject *This) { return Interlocked
 static ULONG STDMETHODCALLTYPE dd_Release(IDataObject *This) {
     Win32DragData *self = (Win32DragData*)This;
     LONG r = InterlockedDecrement(&self->ref);
-    if (r == 0) free(self);
+    if (r == 0) {
+        for (size_t i = 0; i < self->stored_count; i++) ReleaseStgMedium(self->stored_media + i);
+        free(self);
+    }
     return r;
 }
 static HRESULT STDMETHODCALLTYPE dd_GetData(IDataObject *This, FORMATETC *f, STGMEDIUM *m) {
-    (void)This;
+    Win32DragData *self = (Win32DragData*)This;
+    if (!m) return E_POINTER;
+    const int stored = stored_format_index(self, f);
+    if (stored >= 0) return copy_stored_medium(f->cfFormat, self->stored_media + stored, m) ? S_OK : E_OUTOFMEMORY;
     int idx = drag_format_index(f);
-    if (idx < 0 || !m) return DV_E_FORMATETC;
+    if (idx < 0) return DV_E_FORMATETC;
     HGLOBAL h = drag_data_for((size_t)idx);
     if (!h) return E_OUTOFMEMORY;
     m->tymed = TYMED_HGLOBAL; m->hGlobal = h; m->pUnkForRelease = NULL;
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dd_GetDataHere(IDataObject *This, FORMATETC *f, STGMEDIUM *m) { (void)This; (void)f; (void)m; return E_NOTIMPL; }
-static HRESULT STDMETHODCALLTYPE dd_QueryGetData(IDataObject *This, FORMATETC *f) { (void)This; return drag_format_index(f) < 0 ? DV_E_FORMATETC : S_OK; }
+static HRESULT STDMETHODCALLTYPE dd_QueryGetData(IDataObject *This, FORMATETC *f) {
+    return (stored_format_index((Win32DragData*)This, f) < 0 && drag_format_index(f) < 0) ? DV_E_FORMATETC : S_OK;
+}
 static HRESULT STDMETHODCALLTYPE dd_GetCanonicalFormatEtc(IDataObject *This, FORMATETC *in, FORMATETC *out) {
     (void)This; (void)in;
     if (out) out->ptd = NULL;
     return E_NOTIMPL;
 }
-static HRESULT STDMETHODCALLTYPE dd_SetData(IDataObject *This, FORMATETC *f, STGMEDIUM *m, BOOL release) { (void)This; (void)f; (void)m; (void)release; return E_NOTIMPL; }
+static HRESULT STDMETHODCALLTYPE dd_SetData(IDataObject *This, FORMATETC *f, STGMEDIUM *m, BOOL release) {
+    Win32DragData *self = (Win32DragData*)This;
+    if (!f || !m || f->ptd) return E_INVALIDARG;
+    STGMEDIUM held;
+    if (release) held = *m;
+    else if (!copy_stored_medium(f->cfFormat, m, &held)) return DV_E_TYMED;
+    int idx = stored_format_index(self, f);
+    if (idx >= 0) ReleaseStgMedium(self->stored_media + idx);
+    else if (self->stored_count < WIN32_DRAG_MAX_STORED) idx = (int)self->stored_count++;
+    else { if (!release) ReleaseStgMedium(&held); return E_OUTOFMEMORY; }
+    self->stored_formats[idx] = *f;
+    self->stored_formats[idx].tymed = held.tymed;
+    self->stored_media[idx] = held;
+    return S_OK;
+}
 static HRESULT STDMETHODCALLTYPE dd_EnumFormatEtc(IDataObject *This, DWORD direction, IEnumFORMATETC **out) {
-    (void)This;
+    const Win32DragData *self = (Win32DragData*)This;
     if (direction != DATADIR_GET) return E_NOTIMPL;
-    FORMATETC f[WIN32_DRAG_MAX_FORMATS];
-    for (size_t i = 0; i < win32_drag.count; i++) f[i] = (FORMATETC){win32_drag.formats[i], NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-    return SHCreateStdEnumFmtEtc((UINT)win32_drag.count, f, out);
+    FORMATETC f[WIN32_DRAG_MAX_FORMATS + WIN32_DRAG_MAX_STORED];
+    size_t n = 0;
+    for (size_t i = 0; i < win32_drag.count; i++) f[n++] = (FORMATETC){win32_drag.formats[i], NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    for (size_t i = 0; i < self->stored_count; i++) f[n++] = self->stored_formats[i];
+    return SHCreateStdEnumFmtEtc((UINT)n, f, out);
 }
 static HRESULT STDMETHODCALLTYPE dd_DAdvise(IDataObject *This, FORMATETC *f, DWORD adv, IAdviseSink *sink, DWORD *conn) {
     (void)This; (void)f; (void)adv; (void)sink; (void)conn;
@@ -1618,70 +1680,140 @@ static IDataObjectVtbl win32_drag_data_vtbl = {
     dd_GetCanonicalFormatEtc, dd_SetData, dd_EnumFormatEtc, dd_DAdvise, dd_DUnadvise, dd_EnumDAdvise
 };
 
+bool _glfwWin32DragInProgress(void) { return win32_drag.active; }
+
 // --- The drag picture, a layered window that follows the pointer ---
+// It lives on a thread of its own. The drag's modal loop runs on the main
+// thread, which also draws kitty, so a picture moved from there followed the
+// pointer in steps whenever a frame was being drawn. This thread moves it once
+// per display refresh, right before DWM composes, whatever the main thread is
+// doing, and waits on its message queue while no picture shows.
 #define DRAG_IMAGE_CLASS L"GLFW_kitty_drag_image"
+#define WM_APP_DRAG_IMAGE (WM_APP + 10)  // wParam: show it, lParam: a new DragImageBits, or NULL to keep the picture
+
+typedef struct { int width, height; uint8_t *bgra; } DragImageBits;  // premultiplied, top down
+
+static struct {
+    DWORD thread_id;  // written by the main thread, the rest only by the picture's thread
+    HWND window;
+    int height;
+    bool visible;
+} drag_image;
+
+// Where macOS puts it, the lower left corner a little above the pointer. The
+// window is click through, so OLE still finds the window under the pointer to
+// deliver the drop to.
+static void
+place_drag_image(void) {
+    POINT p; GetCursorPos(&p);
+    const int gap = MulDiv(20, windowDpi(drag_image.window), 96);
+    SetWindowPos(drag_image.window, NULL, p.x, p.y - drag_image.height - gap, 0, 0,
+                 SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER);
+}
 
 static void
-move_drag_image(void) {
-    if (!win32_drag.image || !win32_drag.has_image) return;
-    // Below and right of the pointer, so the window under the pointer, which
-    // OLE finds to deliver the drop to, is never the picture itself
-    POINT p; GetCursorPos(&p);
-    const int offset = MulDiv(16, windowDpi(win32_drag.image), 96);
-    SetWindowPos(win32_drag.image, HWND_TOPMOST, p.x + offset, p.y + offset, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+update_drag_image(bool show, DragImageBits *bits) {
+    if (!drag_image.window) show = false;
+    if (bits && drag_image.window) {
+        BITMAPINFO bi; ZeroMemory(&bi, sizeof bi);
+        bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+        bi.bmiHeader.biWidth = bits->width; bi.bmiHeader.biHeight = -bits->height;
+        bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+        HDC screen = GetDC(NULL);
+        HDC dc = CreateCompatibleDC(screen);
+        void *pixels = NULL;
+        HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &pixels, NULL, 0);
+        if (dib && pixels) {
+            memcpy(pixels, bits->bgra, (size_t)bits->width * bits->height * 4);
+            HGDIOBJ old = SelectObject(dc, dib);
+            POINT origin = {0, 0}; SIZE size = {bits->width, bits->height};
+            BLENDFUNCTION bf = {AC_SRC_OVER, 0, 216, AC_SRC_ALPHA};  // a touch see-through, as drag pictures are
+            UpdateLayeredWindow(drag_image.window, screen, NULL, &size, dc, &origin, 0, &bf, ULW_ALPHA);
+            SelectObject(dc, old);
+            drag_image.height = bits->height;
+        }
+        if (dib) DeleteObject(dib);
+        DeleteDC(dc); ReleaseDC(NULL, screen);
+    }
+    if (bits) { free(bits->bgra); free(bits); }
+    if (show) place_drag_image();
+    if (show != drag_image.visible) ShowWindow(drag_image.window, show ? SW_SHOWNOACTIVATE : SW_HIDE);
+    drag_image.visible = show;
+}
+
+static void
+handle_drag_image_message(MSG *msg) {
+    if (msg->message == WM_APP_DRAG_IMAGE && !msg->hwnd) update_drag_image(msg->wParam != 0, (DragImageBits*)msg->lParam);
+    else { TranslateMessage(msg); DispatchMessageW(msg); }
+}
+
+static DWORD WINAPI
+drag_image_thread(LPVOID ready) {
+    WNDCLASSEXW wc; ZeroMemory(&wc, sizeof wc); wc.cbSize = sizeof wc;
+    wc.lpfnWndProc = DefWindowProcW; wc.hInstance = _glfw.win32.instance; wc.lpszClassName = DRAG_IMAGE_CLASS;
+    RegisterClassExW(&wc);
+    drag_image.window = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+        DRAG_IMAGE_CLASS, L"", WS_POPUP, 0, 0, 1, 1, NULL, NULL, _glfw.win32.instance, NULL);
+    MSG msg;
+    PeekMessageW(&msg, NULL, 0, 0, PM_NOREMOVE);  // the queue exists before anything is posted to it
+    SetEvent((HANDLE)ready);
+    for (;;) {
+        if (!drag_image.visible) {
+            if (GetMessageW(&msg, NULL, 0, 0) <= 0) return 0;
+            handle_drag_image_message(&msg);
+        }
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) return 0;
+            handle_drag_image_message(&msg);
+        }
+        if (drag_image.visible) {
+            place_drag_image();
+            if (FAILED(DwmFlush())) Sleep(4);
+        }
+    }
+}
+
+static void
+post_drag_image(bool show, DragImageBits *bits) {
+    if (!drag_image.thread_id && (bits || show)) {
+        HANDLE ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+        DWORD tid = 0;
+        HANDLE t = ready ? CreateThread(NULL, 0, drag_image_thread, ready, 0, &tid) : NULL;
+        if (t) {
+            WaitForSingleObject(ready, 2000);
+            CloseHandle(t);
+            drag_image.thread_id = tid;
+        }
+        if (ready) CloseHandle(ready);
+    }
+    if (!drag_image.thread_id || !PostThreadMessageW(drag_image.thread_id, WM_APP_DRAG_IMAGE, show, (LPARAM)bits)) {
+        if (bits) { free(bits->bgra); free(bits); }
+    }
 }
 
 static void
 set_drag_image(const GLFWimage *thumbnail) {
     win32_drag.has_image = false;
     if (!thumbnail || !thumbnail->pixels || thumbnail->width <= 0 || thumbnail->height <= 0) {
-        if (win32_drag.image) ShowWindow(win32_drag.image, SW_HIDE);
+        post_drag_image(false, NULL);
         return;
     }
-    if (!win32_drag.image) {
-        static bool class_registered = false;
-        if (!class_registered) {
-            WNDCLASSEXW wc; ZeroMemory(&wc, sizeof wc); wc.cbSize = sizeof wc;
-            wc.lpfnWndProc = DefWindowProcW; wc.hInstance = _glfw.win32.instance; wc.lpszClassName = DRAG_IMAGE_CLASS;
-            if (!RegisterClassExW(&wc)) return;
-            class_registered = true;
-        }
-        win32_drag.image = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
-            DRAG_IMAGE_CLASS, L"", WS_POPUP, 0, 0, 1, 1, NULL, NULL, _glfw.win32.instance, NULL);
-        if (!win32_drag.image) return;
-    }
     const int w = thumbnail->width, h = thumbnail->height;
-    BITMAPINFO bi; ZeroMemory(&bi, sizeof bi);
-    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
-    bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h;  // top down, as kitty's pixels are
-    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
-    HDC screen = GetDC(NULL);
-    HDC dc = CreateCompatibleDC(screen);
-    void *bits = NULL;
-    HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
-    if (dib && bits) {
-        // kitty's pixels are straight RGBA, a layered window wants premultiplied BGRA
-        const uint8_t *src = thumbnail->pixels;
-        uint8_t *dst = bits;
-        for (int i = 0; i < w * h; i++, src += 4, dst += 4) {
-            const uint8_t a = src[3];
-            dst[0] = (uint8_t)(src[2] * a / 255); dst[1] = (uint8_t)(src[1] * a / 255);
-            dst[2] = (uint8_t)(src[0] * a / 255); dst[3] = a;
-        }
-        HGDIOBJ old = SelectObject(dc, dib);
-        POINT origin = {0, 0}; SIZE size = {w, h};
-        BLENDFUNCTION bf = {AC_SRC_OVER, 0, 216, AC_SRC_ALPHA};  // a touch see-through, as drag pictures are
-        UpdateLayeredWindow(win32_drag.image, screen, NULL, &size, dc, &origin, 0, &bf, ULW_ALPHA);
-        SelectObject(dc, old);
-        win32_drag.has_image = true;
+    DragImageBits *bits = malloc(sizeof *bits);
+    uint8_t *bgra = malloc((size_t)w * h * 4);
+    if (!bits || !bgra) { free(bits); free(bgra); return; }
+    // kitty's pixels are straight RGBA, a layered window wants premultiplied BGRA
+    const uint8_t *src = thumbnail->pixels;
+    uint8_t *dst = bgra;
+    for (int i = 0; i < w * h; i++, src += 4, dst += 4) {
+        const uint8_t a = src[3];
+        dst[0] = (uint8_t)(src[2] * a / 255); dst[1] = (uint8_t)(src[1] * a / 255);
+        dst[2] = (uint8_t)(src[0] * a / 255); dst[3] = a;
     }
-    if (dib) DeleteObject(dib);
-    DeleteDC(dc); ReleaseDC(NULL, screen);
-    if (win32_drag.has_image && win32_drag.active) {
-        move_drag_image();
-        ShowWindow(win32_drag.image, SW_SHOWNOACTIVATE);
-    }
+    *bits = (DragImageBits){.width = w, .height = h, .bgra = bgra};
+    win32_drag.has_image = true;
+    post_drag_image(win32_drag.active, bits);
 }
 
 // --- IDropSource COM object ---
@@ -1713,7 +1845,6 @@ static HRESULT STDMETHODCALLTYPE ds_QueryContinueDrag(IDropSource *This, BOOL es
 }
 static HRESULT STDMETHODCALLTYPE ds_GiveFeedback(IDropSource *This, DWORD effect) {
     (void)This; (void)effect;
-    move_drag_image();
     return DRAGDROP_S_USEDEFAULTCURSORS;
 }
 
@@ -1731,6 +1862,26 @@ allowed_drop_effects(void) {
     return e;
 }
 
+// The shell's drop targets, the taskbar and Explorer among them, draw a
+// generic file picture under the pointer when the drag carries none, moved
+// from their own process and so behind the pointer. A transparent one pixel
+// picture keeps them from it, leaving kitty's own picture the only one.
+static void
+blank_shell_drag_image(IDataObject *data) {
+    IDragSourceHelper *helper = NULL;
+    if (FAILED(CoCreateInstance(&CLSID_DragDropHelper, NULL, CLSCTX_INPROC_SERVER, &IID_IDragSourceHelper, (void**)&helper))) return;
+    BITMAPINFO bmi = {.bmiHeader = {
+        .biSize = sizeof(BITMAPINFOHEADER), .biWidth = 1, .biHeight = -1, .biPlanes = 1, .biBitCount = 32, .biCompression = BI_RGB}};
+    void *bits = NULL;
+    HBITMAP bitmap = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (bitmap) {
+        SHDRAGIMAGE image = {.sizeDragImage = {1, 1}, .hbmpDragImage = bitmap, .crColorKey = CLR_NONE};
+        // The helper owns the bitmap once this succeeds
+        if (FAILED(helper->lpVtbl->InitializeFromBitmap(helper, &image, data))) DeleteObject(bitmap);
+    }
+    helper->lpVtbl->Release(helper);
+}
+
 static void
 runPendingDrag(_GLFWwindow* window) {
     if (!win32_drag.pending) return;
@@ -1742,8 +1893,9 @@ runPendingDrag(_GLFWwindow* window) {
     if (data && source && win32_drag.count && !win32_drag.cancel_requested) {
         data->iface.lpVtbl = &win32_drag_data_vtbl; data->ref = 1;
         source->iface.lpVtbl = &win32_drop_source_vtbl; source->ref = 1;
+        blank_shell_drag_image(&data->iface);
         win32_drag.active = true;
-        if (win32_drag.has_image) { move_drag_image(); ShowWindow(win32_drag.image, SW_SHOWNOACTIVATE); }
+        if (win32_drag.has_image) post_drag_image(true, NULL);
         // kitty's own loop is blocked until DoDragDrop returns, so the live
         // resize's repaint timer runs it meanwhile, for its drop previews and
         // for the output of its windows. The window may close during the drag,
@@ -1753,7 +1905,7 @@ runPendingDrag(_GLFWwindow* window) {
         const HRESULT hr = DoDragDrop(&data->iface, &source->iface, allowed_drop_effects(), &effect);
         stopResizeTimer(hwnd);
         win32_drag.active = false;
-        if (win32_drag.image) ShowWindow(win32_drag.image, SW_HIDE);
+        post_drag_image(false, NULL);
         if (hr == DRAGDROP_S_DROP && effect != DROPEFFECT_NONE) {
             ev.type = GLFW_DRAG_DROPPED;
             ev.action = (effect & DROPEFFECT_MOVE) ? GLFW_DRAG_OPERATION_MOVE : GLFW_DRAG_OPERATION_COPY;

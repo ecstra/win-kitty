@@ -48,7 +48,10 @@ static void swapBuffersWGL(_GLFWwindow* window) {
     // makes tearing impossible anyway, so swap immediately and pace with
     // DwmFlush() instead (the strategy upstream GLFW uses): the present goes
     // out right away and we wait at most one composition pass.
-    if (window->context.wgl.interval > 0) DwmFlush();
+    // Not during a drag, whose modal loop runs on this thread and moves the drag
+    // picture: waiting here starved it, so the picture stuttered. The repaint
+    // timer that drives kitty during the drag paces it to the display already.
+    if (window->context.wgl.interval > 0 && !_glfwWin32DragInProgress()) DwmFlush();
     // With acrylic the window has no redirection surface, so SwapBuffers has
     // nowhere to present. The frame was drawn straight into the composition
     // swapchain instead, and that is what gets presented.
