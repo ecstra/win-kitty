@@ -890,7 +890,12 @@ static void updateWindowComposition(_GLFWwindow* window) {
     HWND hwnd = window->win32.handle;
     if (!hwnd) return;
     const bool wantTransparent = window->win32.transparent;
-    const bool wantAcrylic = wantTransparent && window->win32.blur > 0;
+    // A window made for acrylic has no redirection surface, so the material is
+    // the only way its frames reach the screen. Dropping it, as an opacity of 1
+    // asks with dynamic_background_opacity, would freeze the window, so the
+    // material stays and its tint and the cells turn opaque instead.
+    const bool noRedirection = (GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_NOREDIRECTIONBITMAP) != 0;
+    const bool wantAcrylic = wantTransparent && (window->win32.blur > 0 || (noRedirection && window->win32.acrylic));
 
     if (wantAcrylic) {
         // The host backdrop brush samples what is behind the window, and needs
