@@ -2596,6 +2596,11 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         extern ssize_t create_cell_vao(void);
         extern void remove_vao(ssize_t vao_idx);
         make_os_window_context_current(w);
+        // Uniform buffer binding points are per-context too, and the binding
+        // above went to that other context, which left this window's border
+        // colours, the tab bar edges and the window borders, reading whatever
+        // the unbound point held
+        bind_shader_globals_to_current_context();
         if (w->tab_bar_render_data.vao_idx > -1) remove_vao(w->tab_bar_render_data.vao_idx);
         w->tab_bar_render_data.vao_idx = create_cell_vao();
     }
