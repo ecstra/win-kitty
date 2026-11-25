@@ -29,4 +29,9 @@ func TestWhichWithPathextWindows(t *testing.T) {
 			t.Fatalf("Which(%q) = %q, expected %q", tc.cmd, actual, tc.expected)
 		}
 	}
+	// An empty entry, from a trailing or doubled semicolon, is no extension
+	t.Setenv("PATHEXT", ".COM;.EXE;;.BAT;.CMD;")
+	if actual, expected := Which("prog", dir), filepath.Join(dir, "prog.exe"); actual != expected {
+		t.Fatalf("Which(prog) with empty PATHEXT entries = %q, expected %q", actual, expected)
+	}
 }

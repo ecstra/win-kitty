@@ -257,6 +257,10 @@ typedef struct {
         bool active;
         DnDCommand metadata;
     } dnd_chunking;
+#ifdef _WIN32
+    // When the program last hid the cursor, see collect_cursor_info()
+    monotonic_t cursor_hidden_at;
+#endif
 } Screen;
 
 #define live_pixel_scroll_enabled(screen) (OPT(pixel_scroll) && (screen)->linebuf == (screen)->main_linebuf)

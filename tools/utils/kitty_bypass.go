@@ -11,10 +11,6 @@ import (
 	"time"
 )
 
-// Set in the window id header of a stream that owns the screen. Window ids
-// never reach the top bit.
-const BypassStreamOwnsScreen uint64 = 1 << 63
-
 func open_bypass_pipe() (f *os.File, window_id uint64, err error) {
 	pid := os.Getenv("KITTY_PID")
 	wid := os.Getenv("KITTY_WINDOW_ID")
@@ -46,9 +42,7 @@ func OpenKittyBypassStream() (io.WriteCloser, error) {
 		return nil, err
 	}
 	var header [8]byte
-	// The top bit tells kitty this stream owns the screen while it is open, so
-	// kitty holds back resizing the console, whose repaint would wipe our UI.
-	binary.LittleEndian.PutUint64(header[:], window_id|BypassStreamOwnsScreen)
+	binary.LittleEndian.PutUint64(header[:], window_id)
 	if _, err = f.Write(header[:]); err != nil {
 		f.Close()
 		return nil, err

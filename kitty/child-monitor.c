@@ -76,9 +76,10 @@ typedef struct {
     pid_t pid;
     int exit_status;
 #ifdef _WIN32
-    // Kitten side channel streams that own this window's screen, and the
-    // console resize held back while any is open, see resize_pty().
-    unsigned screen_owners;
+    // Kitten side channel streams open to this window, and the console resize
+    // held back while a kitten drawing over one owns the screen, see
+    // resize_pty().
+    unsigned side_channel_streams;
     struct {
         bool pending;
         unsigned short cols, rows;
@@ -317,10 +318,8 @@ typedef struct {
     id_type window_id;
     uint8_t *data;
     size_t sz;
-    int screen_owner_delta; // +1 or -1 as a screen owning stream opens or closes, with no data
+    int stream_delta; // +1 or -1 as a stream opens or closes, with no data
 } GfxInjection;
-// Set in the window id header by a kitten stream that owns the screen
-#define GFX_STREAM_OWNS_SCREEN (((id_type)1) << 63)
 static GfxInjection gfx_queue[GFX_QUEUE_SZ];
 static unsigned gfx_queue_count = 0;
 static pthread_mutex_t gfx_queue_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -330,12 +329,11 @@ static bool gfx_listener_started = false;
  * connection) while the queue is full. Dropping is not an option: the payload
  * is a VT byte stream and a lost chunk would corrupt the window's parser state. */
 static void
-gfx_enqueue_chunk(id_type window_id, uint8_t *payload, size_t sz, int screen_owner_delta) {
+gfx_enqueue_chunk(id_type window_id, uint8_t *payload, size_t sz, int stream_delta) {
     for (;;) {
         pthread_mutex_lock(&gfx_queue_lock);
         if (gfx_queue_count < GFX_QUEUE_SZ) {
-            gfx_queue[gfx_queue_count++] =
-                (GfxInjection){.window_id = window_id, .data = payload, .sz = sz, .screen_owner_delta = screen_owner_delta};
+            gfx_queue[gfx_queue_count++] = (GfxInjection){.window_id = window_id, .data = payload, .sz = sz, .stream_delta = stream_delta};
             pthread_mutex_unlock(&gfx_queue_lock);
             windows_wakeup_child_monitor();
             return;
@@ -364,11 +362,9 @@ gfx_connection_handler(LPVOID param) {
     }
     id_type window_id = 0;
     for (unsigned i = 0; i < 8; i++) window_id |= ((id_type)hdr[i]) << (8u * i);
-    // The owner marks travel through the same queue as the data, so the io
-    // loop sees them in order with what the stream drew.
-    const bool owns_screen = (window_id & GFX_STREAM_OWNS_SCREEN) != 0;
-    window_id &= ~GFX_STREAM_OWNS_SCREEN;
-    if (owns_screen) gfx_enqueue_chunk(window_id, NULL, 0, 1);
+    // The open and close marks travel through the same queue as the data, so
+    // the io loop sees them in order with what the stream drew.
+    gfx_enqueue_chunk(window_id, NULL, 0, 1);
     for (;;) {
         uint8_t *buf = malloc(1u << 16);
         if (!buf) break;
@@ -378,7 +374,7 @@ gfx_connection_handler(LPVOID param) {
         }
         gfx_enqueue_chunk(window_id, buf, got, 0);
     }
-    if (owns_screen) gfx_enqueue_chunk(window_id, NULL, 0, -1);
+    gfx_enqueue_chunk(window_id, NULL, 0, -1);
 done:
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);
@@ -953,10 +949,12 @@ resize_pty(ChildMonitor *self, PyObject *args) {
 #ifdef _WIN32
     // A kitten drawing over the side channel owns the screen. Resizing the
     // console now would have conhost repaint its own copy, which never held the
-    // kitten's UI, right over it. The kitten gets the size from the in-band
-    // notification regardless, so hold the console back until it lets go.
+    // kitten's UI, right over it. Such a kitten reads its size from the in-band
+    // notification, which it asked for, so hold the console back until its
+    // stream closes. A stream with no in-band notification, such as the ssh
+    // kitten's while ssh draws through the console, holds nothing back.
     for (size_t i = 0; fd != -1 && i < self->count; i++) {
-        if (children[i].id == window_id && children[i].screen_owners) {
+        if (children[i].id == window_id && children[i].side_channel_streams && children[i].screen->modes.mINBAND_RESIZE_NOTIFICATION) {
             children[i].held_resize.pending = true;
             children[i].held_resize.cols = dim.ws_col;
             children[i].held_resize.rows = dim.ws_row;
@@ -1041,22 +1039,24 @@ collect_cursor_info(CursorRenderInfo *ans, Window *w, monotonic_t now, OSWindow 
         // apart, the cursor hide alone, then the text and the cursor show. A
         // frame drawn between them had no cursor, so it flashed on every key.
         // A hide shorter than this keeps the cursor where it was last shown,
-        // and a real hide takes effect once it has lasted this long.
+        // and a real hide takes effect once it has lasted this long. It counts
+        // from the hide itself, so one made while the window was not drawn
+        // never shows, and a switch to the other buffer, as a program entering
+        // the alternate screen makes, never carries the cursor across.
         const monotonic_t brief_hide = ms_to_monotonic_t(50ll);
         if (ans->is_visible) {
-            w->shown_cursor.hidden_since = 0;
             w->shown_cursor.x = ans->x;
             w->shown_cursor.y = ans->y;
+            w->shown_cursor.linebuf = rd->screen->linebuf;
             w->shown_cursor.valid = true;
-        } else if (w->shown_cursor.valid && !screen_is_overlay_active(rd->screen)) {
-            if (!w->shown_cursor.hidden_since) w->shown_cursor.hidden_since = now;
-            const monotonic_t hidden_for = now - w->shown_cursor.hidden_since;
-            if (hidden_for < brief_hide) {
+        } else if (w->shown_cursor.valid && w->shown_cursor.linebuf == rd->screen->linebuf && !screen_is_overlay_active(rd->screen)) {
+            const monotonic_t hidden_for = now - rd->screen->cursor_hidden_at;
+            if (hidden_for >= 0 && hidden_for < brief_hide) {
                 ans->is_visible = true;
                 ans->x = w->shown_cursor.x;
                 ans->y = w->shown_cursor.y;
                 set_maximum_wait(brief_hide - hidden_for);
-            } else w->shown_cursor.valid = false;
+            }
         }
 #endif
     }
@@ -2247,12 +2247,12 @@ drain_graphics_injections(ChildMonitor *self, bool *data_received) {
                 break;
             }
         }
-        if (screen && local[i].screen_owner_delta) {
+        if (screen && local[i].stream_delta) {
             children_mutex(lock);
             Child *child = children + child_idx;
-            if (local[i].screen_owner_delta > 0) child->screen_owners++;
-            else if (child->screen_owners) child->screen_owners--;
-            if (!child->screen_owners && child->held_resize.pending) {
+            if (local[i].stream_delta > 0) child->side_channel_streams++;
+            else if (child->side_channel_streams) child->side_channel_streams--;
+            if (!child->side_channel_streams && child->held_resize.pending) {
                 // The kitten let go of the screen, so the console catches up
                 // on the last size it was held back from.
                 extern int windows_pty_resize_for(int read_fd, int cols, int rows);

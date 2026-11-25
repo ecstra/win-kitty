@@ -428,11 +428,11 @@ typedef struct Window {
         size_t file_promises_count, file_promises_capacity;
     } drag_source;
 #ifdef _WIN32
-    // Where the cursor was last shown, and since when it has been hidden, so a
-    // brief hide keeps it on screen, see collect_cursor_info()
+    // Where the cursor was last shown, and on which of the screen's buffers,
+    // so a brief hide keeps it on screen, see collect_cursor_info()
     struct {
-        monotonic_t hidden_since;
         unsigned x, y;
+        const void *linebuf;
         bool valid;
     } shown_cursor;
 #endif

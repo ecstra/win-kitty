@@ -190,6 +190,8 @@ func RunShell(shell_cmd []string, shell_integration_env_var_val, cwd string) (er
 			shell_env = copy_os_env_as_dict()
 			shell_env["KITTY_SHELL_INTEGRATION"] = shell_integration_env_var_val
 		}
+	} else {
+		shell_cmd, shell_env = setup_native_shell_integration(shell_name, shell_integration_env_var_val, shell_cmd, shell_env)
 	}
 	exe := shell_cmd[0]
 	if runtime.GOOS == "darwin" && (os.Getenv("KITTY_RUNNING_SHELL_INTEGRATION_TEST") != "1" || os.Getenv("KITTY_RUNNING_BASH_INTEGRATION_TEST") != "") {
