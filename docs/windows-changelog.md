@@ -6,6 +6,10 @@ What changed in each release of kitty for Windows, newest first. What upstream k
 
 Based on kitty 0.51.1.
 
+### Added
+
+- Dragging tabs. Drag one along the tab bar to move it, onto another kitty window to move it there, or out of kitty to open it in a new window. Escape cancels.
+
 ### Fixed
 
 - With the acrylic background on, the window could show only the background, with no text and no cursor.

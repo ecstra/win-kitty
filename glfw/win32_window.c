@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <ole2.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #include "win32_acrylic.h"
 
@@ -102,6 +103,7 @@ static UINT resizeTimerMs(HWND hWnd) {
 static void ensureCaptionButtons(_GLFWwindow* window);      // fwd
 static void positionCaptionButtons(_GLFWwindow* window);    // fwd
 static void updateWindowComposition(_GLFWwindow* window);   // fwd
+static void runPendingDrag(_GLFWwindow* window);            // fwd
 
 // A multimedia timer drives the repaint during a live resize, because SetTimer
 // clamps any interval below 10ms up to USER_TIMER_MINIMUM, which held the
@@ -109,6 +111,8 @@ static void updateWindowComposition(_GLFWwindow* window);   // fwd
 // only posts this message; the render happens on the main thread where the
 // modal loop pumps it. Coalesced in the handler so it never backs up.
 #define WM_APP_RESIZE_TICK (WM_APP + 1)
+// Starts a drag kitty asked for, see _glfwPlatformStartDrag
+#define WM_APP_START_DRAG (WM_APP + 2)
 #ifndef TIME_PERIODIC
 #define TIME_PERIODIC 0x0001
 #endif
@@ -263,6 +267,10 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                 _glfw.win32.tickCallback(_glfw.win32.tickCallbackData);
             return 0;
         }
+
+        case WM_APP_START_DRAG:
+            runPendingDrag(window);
+            return 0;
 
         case WM_SIZE: {
             int width = LOWORD(lParam), height = HIWORD(lParam);
@@ -1200,8 +1208,8 @@ void _glfwPlatformWaitEventsTimeout(monotonic_t timeout) {
 // kitty's platform-agnostic drop API as text/uri-list (CF_HDROP file lists, as
 // file:// URIs) and text/plain;charset=utf-8 (CF_UNICODETEXT), which kitty then
 // pastes into the window (see glfw.c drop_dest_callback and window.py on_drop).
-// Dragging OUT of kitty (the dnd kitten) is not implemented -- see
-// _glfwPlatformStartDrag below.
+// kitty's own drags, of tabs and windows, are the drag source further below,
+// and a drop of one of those onto a kitty window is handed to kitty as its own.
 
 #define DND_MIME_URI_LIST "text/uri-list"
 #define DND_MIME_TEXT "text/plain;charset=utf-8"
@@ -1217,6 +1225,24 @@ static struct {
     size_t offered_count;
     _GLFWwindow *window;
 } win32_drop;
+
+// A drag kitty started, of a tab or a window. Its mime types and data are
+// copied here at the start, since glfw frees its own copy whenever another
+// drag is asked for, and the drag outlives that.
+#define WIN32_DRAG_MAX_FORMATS 8
+static struct {
+    bool pending;            // posted, DoDragDrop not running yet
+    bool active;             // inside DoDragDrop
+    bool escape_pressed, button_released, cancel_requested;
+    GLFWid window_id;
+    size_t count;
+    CLIPFORMAT formats[WIN32_DRAG_MAX_FORMATS];
+    char *mimes[WIN32_DRAG_MAX_FORMATS];
+    char *data[WIN32_DRAG_MAX_FORMATS];   // NULL when the data is asked for on demand
+    size_t sizes[WIN32_DRAG_MAX_FORMATS];
+    HWND image;              // the drag picture, a layered window beside the pointer
+    bool has_image;
+} win32_drag;
 
 static void
 free_win32_drop_items(void) {
@@ -1345,10 +1371,26 @@ static ULONG STDMETHODCALLTYPE dt_Release(IDropTarget *This) {
     if (r == 0) free(self);
     return r;
 }
+// A drag of kitty's own reaches a kitty window here. kitty already holds what it
+// dragged, so it only needs the mime types, to tell a tab from a window, and to
+// know the drag is its own, which makes it use that data rather than read any.
+static size_t
+self_drag_event(_GLFWwindow *window, GLFWDropEventType type, POINTL pt) {
+    double x, y; drop_point_to_client(window, pt, &x, &y);
+    const char *m[WIN32_DRAG_MAX_FORMATS];
+    for (size_t i = 0; i < win32_drag.count; i++) m[i] = win32_drag.mimes[i];
+    return win32_drag.count ? _glfwInputDropEvent(window, type, x, y, m, win32_drag.count, true) : 0;
+}
+
 static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pdo, DWORD keys, POINTL pt, DWORD *effect) {
     (void)keys;
     Win32DropTarget *self = (Win32DropTarget*)This;
     win32_drop.window = self->window;
+    if (win32_drag.active) {
+        win32_drop.offered_count = 0;
+        *effect = self_drag_event(self->window, GLFW_DROP_ENTER, pt) ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
+        return S_OK;
+    }
     win32_drop.offered_count = collect_drop_mimes(pdo, win32_drop.offered);
     double x, y; drop_point_to_client(self->window, pt, &x, &y);
     if (win32_drop.offered_count) {
@@ -1361,6 +1403,10 @@ static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pd
 static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POINTL pt, DWORD *effect) {
     (void)keys;
     Win32DropTarget *self = (Win32DropTarget*)This;
+    if (win32_drag.active) {
+        *effect = self_drag_event(self->window, GLFW_DROP_MOVE, pt) ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
+        return S_OK;
+    }
     double x, y; drop_point_to_client(self->window, pt, &x, &y);
     if (win32_drop.offered_count) {
         const char *m[2]; for (size_t i = 0; i < win32_drop.offered_count; i++) m[i] = win32_drop.offered[i];
@@ -1371,7 +1417,7 @@ static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POIN
 }
 static HRESULT STDMETHODCALLTYPE dt_DragLeave(IDropTarget *This) {
     Win32DropTarget *self = (Win32DropTarget*)This;
-    _glfwInputDropEvent(self->window, GLFW_DROP_LEAVE, 0, 0, NULL, 0, false);
+    _glfwInputDropEvent(self->window, GLFW_DROP_LEAVE, 0, 0, NULL, 0, win32_drag.active);
     win32_drop.offered_count = 0;
     return S_OK;
 }
@@ -1381,6 +1427,10 @@ static HRESULT STDMETHODCALLTYPE dt_Drop(IDropTarget *This, IDataObject *pdo, DW
     free_win32_drop_items();
     win32_drop.window = self->window;
     win32_drop.offered_count = 0;
+    if (win32_drag.active) {
+        *effect = self_drag_event(self->window, GLFW_DROP_DROP, pt) ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
+        return S_OK;
+    }
     size_t u8len; char *u8;
     if ((u8 = win32_get_format(pdo, CF_HDROP, &u8len))) add_win32_drop_item(DND_MIME_URI_LIST, u8, u8len);
     if ((u8 = win32_get_format(pdo, CF_UNICODETEXT, &u8len))) add_win32_drop_item(DND_MIME_TEXT, u8, u8len);
@@ -1466,15 +1516,322 @@ int _glfwPlatformRequestDropData(_GLFWwindow* window, const char* mime) {
     }
     return EINVAL;
 }
-// Drag and drop is not implemented on Windows. Report it as unsupported (not 0,
-// which glfwStartDrag reads as success) so kitty cleans up its drag state instead
-// of waiting forever for a drop. Without this, dragging a tab wedges the tab bar
-// and blocks all later mouse dragging until restart.
-int _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) { (void) window; (void) thumbnail; return ENOTSUP; }
-void _glfwPlatformCancelDrag(_GLFWwindow* window) { (void) window; }
-void _glfwPlatformFreeDragSourceData(void) {}
-int _glfwPlatformDragDataReady(const char* mime_type, const char* data, size_t sz, int type) { (void) mime_type; (void) data; (void) sz; (void) type; return false; }
-int _glfwPlatformChangeDragImage(const GLFWimage* thumbnail) { (void) thumbnail; return false; }
+// ---------------------------------------------------------------------------
+// Drag and drop -- drag source (kitty's own drags of tabs and windows)
+// ---------------------------------------------------------------------------
+// Each mime type travels as a clipboard format registered under its own name.
+// DoDragDrop runs a modal loop, so the drag starts from a posted message rather
+// than inside the call that asked for it, which comes from kitty's Python, and
+// the repaint timer the live resize uses keeps kitty drawing during the loop.
+// Dragging content out to other programs, the dnd kitten's side, needs the
+// client drag protocol and is not done here.
+
+static void
+free_win32_drag(void) {
+    for (size_t i = 0; i < win32_drag.count; i++) { free(win32_drag.mimes[i]); free(win32_drag.data[i]); }
+    win32_drag.count = 0;
+}
+
+static int
+drag_format_index(const FORMATETC *f) {
+    if (!f || !(f->tymed & TYMED_HGLOBAL) || f->dwAspect != DVASPECT_CONTENT) return -1;
+    for (size_t i = 0; i < win32_drag.count; i++) if (win32_drag.formats[i] == f->cfFormat) return (int)i;
+    return -1;
+}
+
+// The data for one format in an HGLOBAL. It is zero filled, since GlobalSize may
+// round the size up and a reader trusting it then sees the padding as data.
+static HGLOBAL
+drag_data_for(size_t idx) {
+    const char *data = win32_drag.data[idx];
+    size_t sz = win32_drag.sizes[idx];
+    _GLFWwindow *source = _glfwWindowForId(win32_drag.window_id);
+    GLFWDragEvent ev = {.type = GLFW_DRAG_DATA_REQUEST, .mime_type = win32_drag.mimes[idx]};
+    bool requested = false;
+    if (!data) {
+        if (!source) return NULL;
+        _glfwInputDragSourceRequest(source, &ev);
+        if (ev.err_num || !ev.data) return NULL;
+        data = ev.data; sz = ev.data_sz; requested = true;
+    }
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sz ? sz : 1);
+    if (h) {
+        void *p = GlobalLock(h);
+        if (p) { if (sz) memcpy(p, data, sz); GlobalUnlock(h); }
+        else { GlobalFree(h); h = NULL; }
+    }
+    // Called again with the data it handed over, so the application frees it
+    if (requested && source) _glfwInputDragSourceRequest(source, &ev);
+    return h;
+}
+
+// --- IDataObject COM object, offering the drag's formats ---
+typedef struct { IDataObject iface; LONG ref; } Win32DragData;
+
+static HRESULT STDMETHODCALLTYPE dd_QueryInterface(IDataObject *This, REFIID riid, void **ppv) {
+    if (!ppv) return E_POINTER;
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDataObject)) {
+        *ppv = This; This->lpVtbl->AddRef(This); return S_OK;
+    }
+    *ppv = NULL; return E_NOINTERFACE;
+}
+static ULONG STDMETHODCALLTYPE dd_AddRef(IDataObject *This) { return InterlockedIncrement(&((Win32DragData*)This)->ref); }
+static ULONG STDMETHODCALLTYPE dd_Release(IDataObject *This) {
+    Win32DragData *self = (Win32DragData*)This;
+    LONG r = InterlockedDecrement(&self->ref);
+    if (r == 0) free(self);
+    return r;
+}
+static HRESULT STDMETHODCALLTYPE dd_GetData(IDataObject *This, FORMATETC *f, STGMEDIUM *m) {
+    (void)This;
+    int idx = drag_format_index(f);
+    if (idx < 0 || !m) return DV_E_FORMATETC;
+    HGLOBAL h = drag_data_for((size_t)idx);
+    if (!h) return E_OUTOFMEMORY;
+    m->tymed = TYMED_HGLOBAL; m->hGlobal = h; m->pUnkForRelease = NULL;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE dd_GetDataHere(IDataObject *This, FORMATETC *f, STGMEDIUM *m) { (void)This; (void)f; (void)m; return E_NOTIMPL; }
+static HRESULT STDMETHODCALLTYPE dd_QueryGetData(IDataObject *This, FORMATETC *f) { (void)This; return drag_format_index(f) < 0 ? DV_E_FORMATETC : S_OK; }
+static HRESULT STDMETHODCALLTYPE dd_GetCanonicalFormatEtc(IDataObject *This, FORMATETC *in, FORMATETC *out) {
+    (void)This; (void)in;
+    if (out) out->ptd = NULL;
+    return E_NOTIMPL;
+}
+static HRESULT STDMETHODCALLTYPE dd_SetData(IDataObject *This, FORMATETC *f, STGMEDIUM *m, BOOL release) { (void)This; (void)f; (void)m; (void)release; return E_NOTIMPL; }
+static HRESULT STDMETHODCALLTYPE dd_EnumFormatEtc(IDataObject *This, DWORD direction, IEnumFORMATETC **out) {
+    (void)This;
+    if (direction != DATADIR_GET) return E_NOTIMPL;
+    FORMATETC f[WIN32_DRAG_MAX_FORMATS];
+    for (size_t i = 0; i < win32_drag.count; i++) f[i] = (FORMATETC){win32_drag.formats[i], NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    return SHCreateStdEnumFmtEtc((UINT)win32_drag.count, f, out);
+}
+static HRESULT STDMETHODCALLTYPE dd_DAdvise(IDataObject *This, FORMATETC *f, DWORD adv, IAdviseSink *sink, DWORD *conn) {
+    (void)This; (void)f; (void)adv; (void)sink; (void)conn;
+    return OLE_E_ADVISENOTSUPPORTED;
+}
+static HRESULT STDMETHODCALLTYPE dd_DUnadvise(IDataObject *This, DWORD conn) { (void)This; (void)conn; return OLE_E_ADVISENOTSUPPORTED; }
+static HRESULT STDMETHODCALLTYPE dd_EnumDAdvise(IDataObject *This, IEnumSTATDATA **out) { (void)This; (void)out; return OLE_E_ADVISENOTSUPPORTED; }
+
+static IDataObjectVtbl win32_drag_data_vtbl = {
+    dd_QueryInterface, dd_AddRef, dd_Release, dd_GetData, dd_GetDataHere, dd_QueryGetData,
+    dd_GetCanonicalFormatEtc, dd_SetData, dd_EnumFormatEtc, dd_DAdvise, dd_DUnadvise, dd_EnumDAdvise
+};
+
+// --- The drag picture, a layered window that follows the pointer ---
+#define DRAG_IMAGE_CLASS L"GLFW_kitty_drag_image"
+
+static void
+move_drag_image(void) {
+    if (!win32_drag.image || !win32_drag.has_image) return;
+    // Below and right of the pointer, so the window under the pointer, which
+    // OLE finds to deliver the drop to, is never the picture itself
+    POINT p; GetCursorPos(&p);
+    const int offset = MulDiv(16, windowDpi(win32_drag.image), 96);
+    SetWindowPos(win32_drag.image, HWND_TOPMOST, p.x + offset, p.y + offset, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+static void
+set_drag_image(const GLFWimage *thumbnail) {
+    win32_drag.has_image = false;
+    if (!thumbnail || !thumbnail->pixels || thumbnail->width <= 0 || thumbnail->height <= 0) {
+        if (win32_drag.image) ShowWindow(win32_drag.image, SW_HIDE);
+        return;
+    }
+    if (!win32_drag.image) {
+        static bool class_registered = false;
+        if (!class_registered) {
+            WNDCLASSEXW wc; ZeroMemory(&wc, sizeof wc); wc.cbSize = sizeof wc;
+            wc.lpfnWndProc = DefWindowProcW; wc.hInstance = _glfw.win32.instance; wc.lpszClassName = DRAG_IMAGE_CLASS;
+            if (!RegisterClassExW(&wc)) return;
+            class_registered = true;
+        }
+        win32_drag.image = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+            DRAG_IMAGE_CLASS, L"", WS_POPUP, 0, 0, 1, 1, NULL, NULL, _glfw.win32.instance, NULL);
+        if (!win32_drag.image) return;
+    }
+    const int w = thumbnail->width, h = thumbnail->height;
+    BITMAPINFO bi; ZeroMemory(&bi, sizeof bi);
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h;  // top down, as kitty's pixels are
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+    HDC screen = GetDC(NULL);
+    HDC dc = CreateCompatibleDC(screen);
+    void *bits = NULL;
+    HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (dib && bits) {
+        // kitty's pixels are straight RGBA, a layered window wants premultiplied BGRA
+        const uint8_t *src = thumbnail->pixels;
+        uint8_t *dst = bits;
+        for (int i = 0; i < w * h; i++, src += 4, dst += 4) {
+            const uint8_t a = src[3];
+            dst[0] = (uint8_t)(src[2] * a / 255); dst[1] = (uint8_t)(src[1] * a / 255);
+            dst[2] = (uint8_t)(src[0] * a / 255); dst[3] = a;
+        }
+        HGDIOBJ old = SelectObject(dc, dib);
+        POINT origin = {0, 0}; SIZE size = {w, h};
+        BLENDFUNCTION bf = {AC_SRC_OVER, 0, 216, AC_SRC_ALPHA};  // a touch see-through, as drag pictures are
+        UpdateLayeredWindow(win32_drag.image, screen, NULL, &size, dc, &origin, 0, &bf, ULW_ALPHA);
+        SelectObject(dc, old);
+        win32_drag.has_image = true;
+    }
+    if (dib) DeleteObject(dib);
+    DeleteDC(dc); ReleaseDC(NULL, screen);
+    if (win32_drag.has_image && win32_drag.active) {
+        move_drag_image();
+        ShowWindow(win32_drag.image, SW_SHOWNOACTIVATE);
+    }
+}
+
+// --- IDropSource COM object ---
+typedef struct { IDropSource iface; LONG ref; } Win32DropSource;
+
+static HRESULT STDMETHODCALLTYPE ds_QueryInterface(IDropSource *This, REFIID riid, void **ppv) {
+    if (!ppv) return E_POINTER;
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDropSource)) {
+        *ppv = This; This->lpVtbl->AddRef(This); return S_OK;
+    }
+    *ppv = NULL; return E_NOINTERFACE;
+}
+static ULONG STDMETHODCALLTYPE ds_AddRef(IDropSource *This) { return InterlockedIncrement(&((Win32DropSource*)This)->ref); }
+static ULONG STDMETHODCALLTYPE ds_Release(IDropSource *This) {
+    Win32DropSource *self = (Win32DropSource*)This;
+    LONG r = InterlockedDecrement(&self->ref);
+    if (r == 0) free(self);
+    return r;
+}
+// Escape and a release both end the drag, and only this sees which it was. A
+// release counts as a drop even over something that accepts nothing, which is
+// how kitty learns a tab was dropped outside every kitty window.
+static HRESULT STDMETHODCALLTYPE ds_QueryContinueDrag(IDropSource *This, BOOL escape, DWORD keys) {
+    (void)This;
+    if (escape) { win32_drag.escape_pressed = true; return DRAGDROP_S_CANCEL; }
+    if (win32_drag.cancel_requested) return DRAGDROP_S_CANCEL;
+    if (!(keys & MK_LBUTTON)) { win32_drag.button_released = true; return DRAGDROP_S_DROP; }
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE ds_GiveFeedback(IDropSource *This, DWORD effect) {
+    (void)This; (void)effect;
+    move_drag_image();
+    return DRAGDROP_S_USEDEFAULTCURSORS;
+}
+
+static IDropSourceVtbl win32_drop_source_vtbl = {
+    ds_QueryInterface, ds_AddRef, ds_Release, ds_QueryContinueDrag, ds_GiveFeedback
+};
+
+static DWORD
+allowed_drop_effects(void) {
+    const int ops = _glfw.drag.operations;
+    DWORD e = 0;
+    if (ops & GLFW_DRAG_OPERATION_COPY) e |= DROPEFFECT_COPY;
+    if (ops & GLFW_DRAG_OPERATION_MOVE) e |= DROPEFFECT_MOVE;
+    if ((ops & GLFW_DRAG_OPERATION_GENERIC) || !e) e |= DROPEFFECT_COPY | DROPEFFECT_MOVE;
+    return e;
+}
+
+static void
+runPendingDrag(_GLFWwindow* window) {
+    if (!win32_drag.pending) return;
+    win32_drag.pending = false;
+    const HWND hwnd = window->win32.handle;
+    GLFWDragEvent ev = {.type = GLFW_DRAG_CANCELLED};
+    Win32DragData *data = calloc(1, sizeof *data);
+    Win32DropSource *source = calloc(1, sizeof *source);
+    if (data && source && win32_drag.count && !win32_drag.cancel_requested) {
+        data->iface.lpVtbl = &win32_drag_data_vtbl; data->ref = 1;
+        source->iface.lpVtbl = &win32_drop_source_vtbl; source->ref = 1;
+        win32_drag.active = true;
+        if (win32_drag.has_image) { move_drag_image(); ShowWindow(win32_drag.image, SW_SHOWNOACTIVATE); }
+        // kitty's own loop is blocked until DoDragDrop returns, so the live
+        // resize's repaint timer runs it meanwhile, for its drop previews and
+        // for the output of its windows. The window may close during the drag,
+        // so only the handle is used after it.
+        startResizeTimer(hwnd);
+        DWORD effect = DROPEFFECT_NONE;
+        const HRESULT hr = DoDragDrop(&data->iface, &source->iface, allowed_drop_effects(), &effect);
+        stopResizeTimer(hwnd);
+        win32_drag.active = false;
+        if (win32_drag.image) ShowWindow(win32_drag.image, SW_HIDE);
+        if (hr == DRAGDROP_S_DROP && effect != DROPEFFECT_NONE) {
+            ev.type = GLFW_DRAG_DROPPED;
+            ev.action = (effect & DROPEFFECT_MOVE) ? GLFW_DRAG_OPERATION_MOVE : GLFW_DRAG_OPERATION_COPY;
+        } else if (win32_drag.button_released && !win32_drag.escape_pressed && !win32_drag.cancel_requested) {
+            ev.type = GLFW_DRAG_DROPPED;
+            ev.drop_maybe_a_cancel = true;
+        }
+    }
+    if (data) data->iface.lpVtbl->Release(&data->iface);
+    if (source) source->iface.lpVtbl->Release(&source->iface);
+    _GLFWwindow *from = _glfwWindowForId(win32_drag.window_id);
+    if (from) {
+        _glfwInputDragSourceRequest(from, &ev);
+        if (ev.type == GLFW_DRAG_DROPPED) {
+            GLFWDragEvent finished = {.type = GLFW_DRAG_FINSHED, .action = ev.action};
+            _glfwInputDragSourceRequest(from, &finished);
+        }
+    }
+    free_win32_drag();
+    _glfwFreeDragSourceData();
+}
+
+int _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
+    if (win32_drag.pending || win32_drag.active) return EBUSY;
+    free_win32_drag();
+    for (size_t i = 0; i < _glfw.drag.item_count && win32_drag.count < WIN32_DRAG_MAX_FORMATS; i++) {
+        const GLFWDragSourceItem *item = _glfw.drag.items + i;
+        const UINT cf = RegisterClipboardFormatA(item->mime_type);
+        if (!cf) continue;
+        const size_t n = win32_drag.count;
+        win32_drag.formats[n] = (CLIPFORMAT)cf;
+        win32_drag.mimes[n] = _glfw_strdup(item->mime_type);
+        win32_drag.data[n] = NULL;
+        win32_drag.sizes[n] = item->data_size;
+        if (item->optional_data) {
+            win32_drag.data[n] = malloc(item->data_size ? item->data_size : 1);
+            if (win32_drag.data[n] && item->data_size) memcpy(win32_drag.data[n], item->optional_data, item->data_size);
+        }
+        if (!win32_drag.mimes[n] || (item->optional_data && !win32_drag.data[n])) {
+            free(win32_drag.mimes[n]); free(win32_drag.data[n]);
+            free_win32_drag();
+            return ENOMEM;
+        }
+        win32_drag.count++;
+    }
+    if (!win32_drag.count) return EINVAL;
+    win32_drag.window_id = window->id;
+    win32_drag.escape_pressed = win32_drag.button_released = win32_drag.cancel_requested = false;
+    set_drag_image(thumbnail);
+    if (!PostMessageW(window->win32.handle, WM_APP_START_DRAG, 0, 0)) {
+        free_win32_drag();
+        return EIO;
+    }
+    win32_drag.pending = true;
+    return 0;
+}
+
+// The drag ends, and kitty hears it was cancelled, once DoDragDrop asks
+// whether to go on, or at once when it has not started yet.
+void _glfwPlatformCancelDrag(_GLFWwindow* window) {
+    (void) window;
+    if (win32_drag.pending || win32_drag.active) win32_drag.cancel_requested = true;
+}
+
+void _glfwPlatformFreeDragSourceData(void) {
+    // glfw frees its copy of a drag when another is asked for. One that has not
+    // started by then is dropped, one in flight keeps its own copy.
+    if (win32_drag.pending) win32_drag.cancel_requested = true;
+}
+
+// Data asked for on demand is fetched synchronously in drag_data_for
+int _glfwPlatformDragDataReady(const char* mime_type, const char* data, size_t sz, int type) { (void) mime_type; (void) data; (void) sz; (void) type; return 0; }
+
+int _glfwPlatformChangeDragImage(const GLFWimage* thumbnail) {
+    if (!win32_drag.pending && !win32_drag.active) return 0;
+    set_drag_image(thumbnail);
+    return 0;
+}
 
 // Public API defined per platform. Layer shell is a Wayland concept.
 GLFWAPI bool glfwIsLayerShellSupported(void) { return false; }

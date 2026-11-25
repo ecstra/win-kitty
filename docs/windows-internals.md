@@ -101,7 +101,9 @@ Desktop notifications are real Windows toasts. kitty/notifications.py registers 
 
 Windows has an eager clipboard rather than the lazy selection ownership of X11 and Wayland, so kitty pulls its own data at the time of the copy and hands it over as CF_UNICODETEXT. There is no primary selection, so only GLFW_CLIPBOARD is honoured.
 
-Drops arrive through OLE. Each window registers an IDropTarget, and on a drop the data is pulled out of the IDataObject synchronously and surfaced to kitty's platform independent drop API, with CF_HDROP file lists converted to `file://` URIs and CF_UNICODETEXT passed through as text. Dragging out of a window is not implemented.
+Drops arrive through OLE. Each window registers an IDropTarget, and on a drop the data is pulled out of the IDataObject synchronously and surfaced to kitty's platform independent drop API, with CF_HDROP file lists converted to `file://` URIs and CF_UNICODETEXT passed through as text.
+
+kitty's own drags, of a tab or a window, go out through OLE as well, in `_glfwPlatformStartDrag` in glfw/win32_window.c. Each mime type travels as a clipboard format registered under its own name, served by an IDataObject of the port's own, and an IDropSource tells Escape, a cancel, from a release, a drop, so a release over something that accepts nothing reaches kitty as a drop outside every kitty window, which opens the tab in a new one. DoDragDrop runs a modal loop, so the drag starts from a posted message rather than inside the Python call that asked for it, and the repaint timer the live resize uses runs kitty's tick during the loop. When the drag is kitty's own, the drop target hands kitty only the mime types and flags the drop as its own, since kitty already holds the data. The drag picture is a layered window kept below and right of the pointer, because kitty swaps between two pictures during a drag. Dragging text or files out to other programs, the dnd kitten's side, is not implemented.
 
 ## POSIX shims
 
