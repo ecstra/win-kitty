@@ -8,7 +8,7 @@ Based on kitty 0.51.1.
 
 ### Added
 
-- Dragging tabs. Drag one along the tab bar to move it, onto another kitty window to move it there, or out of kitty to open it in a new window. Escape cancels.
+- Dragging tabs. Drag one along the tab bar to move it, onto another kitty window to move it there, or out of kitty to open it in a new window where you drop it. Escape cancels.
 
 ### Fixed
 
