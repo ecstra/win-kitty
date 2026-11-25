@@ -32,13 +32,13 @@ func (s *file_state) equal(o *file_state) bool {
 	return o != nil && s.Size == o.Size && s.ModTime.Equal(o.ModTime) && s.Inode == o.Inode
 }
 
-func get_file_state(fi fs.FileInfo) *file_state {
+func get_file_state(path string, fi fs.FileInfo) *file_state {
 	// The Sys() method returns the underlying data source (can be nil).
 	// For Unix-like systems, it's a *syscall.Stat_t.
 	return &file_state{
 		Size:    fi.Size(),
 		ModTime: fi.ModTime(),
-		Inode:   file_inode(fi),
+		Inode:   file_inode(path, fi),
 	}
 }
 
@@ -46,7 +46,7 @@ func get_file_state_from_path(path string) (*file_state, error) {
 	if s, err := os.Stat(path); err != nil {
 		return nil, err
 	} else {
-		return get_file_state(s), nil
+		return get_file_state(path, s), nil
 	}
 }
 
@@ -98,7 +98,7 @@ func key_for_path(path, extra_key string) (key, resolved_path string, err error)
 	if err != nil {
 		return
 	}
-	s := get_file_state(info)
+	s := get_file_state(resolved_path, info)
 	data := fmt.Sprintf("%s\x00%d\x00%d\x00%d", resolved_path, s.Inode, s.Size, s.ModTime.UnixNano())
 	if extra_key != "" {
 		data += "\x00" + extra_key
