@@ -75,6 +75,16 @@ typedef struct {
     unsigned long id;
     pid_t pid;
     int exit_status;
+#ifdef _WIN32
+    // Kitten side channel streams open to this window, and the console resize
+    // held back while a kitten drawing over one owns the screen, see
+    // resize_pty().
+    unsigned side_channel_streams;
+    struct {
+        bool pending;
+        unsigned short cols, rows;
+    } held_resize;
+#endif
 } Child;
 
 static const Child EMPTY_CHILD = {0};
@@ -308,6 +318,7 @@ typedef struct {
     id_type window_id;
     uint8_t *data;
     size_t sz;
+    int stream_delta; // +1 or -1 as a stream opens or closes, with no data
 } GfxInjection;
 static GfxInjection gfx_queue[GFX_QUEUE_SZ];
 static unsigned gfx_queue_count = 0;
@@ -318,11 +329,11 @@ static bool gfx_listener_started = false;
  * connection) while the queue is full. Dropping is not an option: the payload
  * is a VT byte stream and a lost chunk would corrupt the window's parser state. */
 static void
-gfx_enqueue_chunk(id_type window_id, uint8_t *payload, size_t sz) {
+gfx_enqueue_chunk(id_type window_id, uint8_t *payload, size_t sz, int stream_delta) {
     for (;;) {
         pthread_mutex_lock(&gfx_queue_lock);
         if (gfx_queue_count < GFX_QUEUE_SZ) {
-            gfx_queue[gfx_queue_count++] = (GfxInjection){.window_id = window_id, .data = payload, .sz = sz};
+            gfx_queue[gfx_queue_count++] = (GfxInjection){.window_id = window_id, .data = payload, .sz = sz, .stream_delta = stream_delta};
             pthread_mutex_unlock(&gfx_queue_lock);
             windows_wakeup_child_monitor();
             return;
@@ -351,6 +362,9 @@ gfx_connection_handler(LPVOID param) {
     }
     id_type window_id = 0;
     for (unsigned i = 0; i < 8; i++) window_id |= ((id_type)hdr[i]) << (8u * i);
+    // The open and close marks travel through the same queue as the data, so
+    // the io loop sees them in order with what the stream drew.
+    gfx_enqueue_chunk(window_id, NULL, 0, 1);
     for (;;) {
         uint8_t *buf = malloc(1u << 16);
         if (!buf) break;
@@ -358,8 +372,9 @@ gfx_connection_handler(LPVOID param) {
             free(buf);
             break;
         }
-        gfx_enqueue_chunk(window_id, buf, got);
+        gfx_enqueue_chunk(window_id, buf, got, 0);
     }
+    gfx_enqueue_chunk(window_id, NULL, 0, -1);
 done:
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);
@@ -931,10 +946,32 @@ resize_pty(ChildMonitor *self, PyObject *args) {
         }                                    \
     }
     FIND(children, self->count);
+#ifdef _WIN32
+    // A kitten drawing over the side channel owns the screen. Resizing the
+    // console now would have conhost repaint its own copy, which never held the
+    // kitten's UI, right over it. Such a kitten reads its size from the in-band
+    // notification, which it asked for, so hold the console back until its
+    // stream closes. A stream with no in-band notification, such as the ssh
+    // kitten's while ssh draws through the console, holds nothing back.
+    for (size_t i = 0; fd != -1 && i < self->count; i++) {
+        if (children[i].id != window_id) continue;
+        if (children[i].side_channel_streams && children[i].screen->modes.mINBAND_RESIZE_NOTIFICATION) {
+            children[i].held_resize.pending = true;
+            children[i].held_resize.cols = dim.ws_col;
+            children[i].held_resize.rows = dim.ws_row;
+            fd = -2;
+        } else {
+            // This size reaches the console now, so a size held back earlier,
+            // such as by a kitten that turned its notification off on exit just
+            // before its stream closed, must not be applied over it later.
+            children[i].held_resize.pending = false;
+        }
+    }
+#endif
     if (fd == -1) FIND(add_queue, add_queue_count);
-    if (fd != -1) {
+    if (fd >= 0) {
         if (!pty_resize(fd, &dim)) PyErr_SetFromErrno(PyExc_OSError);
-    } else log_error("Failed to send resize signal to child with id: %lu (children count: %u) (add queue: %zu)", window_id, self->count, add_queue_count);
+    } else if (fd == -1) log_error("Failed to send resize signal to child with id: %lu (children count: %u) (add queue: %zu)", window_id, self->count, add_queue_count);
     children_mutex(unlock);
     if (PyErr_Occurred()) return NULL;
     Py_RETURN_NONE;
@@ -1003,6 +1040,31 @@ collect_cursor_info(CursorRenderInfo *ans, Window *w, monotonic_t now, OSWindow 
     if (!rendered_scrolled_by(rd->screen)) {
         ans->multicursor_count = screen_multi_cursor_count(rd->screen);
         ans->is_visible = screen_is_cursor_visible(rd->screen);
+#ifdef _WIN32
+        // conhost hands kitty a PSReadLine repaint in two pieces about 10 ms
+        // apart, the cursor hide alone, then the text and the cursor show. A
+        // frame drawn between them had no cursor, so it flashed on every key.
+        // A hide shorter than this keeps the cursor where it was last shown,
+        // and a real hide takes effect once it has lasted this long. It counts
+        // from the hide itself, so one made while the window was not drawn
+        // never shows, and a switch to the other buffer, as a program entering
+        // the alternate screen makes, never carries the cursor across.
+        const monotonic_t brief_hide = ms_to_monotonic_t(50ll);
+        if (ans->is_visible) {
+            w->shown_cursor.x = ans->x;
+            w->shown_cursor.y = ans->y;
+            w->shown_cursor.linebuf = rd->screen->linebuf;
+            w->shown_cursor.valid = true;
+        } else if (w->shown_cursor.valid && w->shown_cursor.linebuf == rd->screen->linebuf && !screen_is_overlay_active(rd->screen)) {
+            const monotonic_t hidden_for = now - rd->screen->cursor_hidden_at;
+            if (hidden_for >= 0 && hidden_for < brief_hide) {
+                ans->is_visible = true;
+                ans->x = w->shown_cursor.x;
+                ans->y = w->shown_cursor.y;
+                set_maximum_wait(brief_hide - hidden_for);
+            }
+        }
+#endif
     }
     if (!ans->is_visible && ans->multicursor_count == 0 && !rd->screen->sgr_blink_was_used) return cursor_needs_render(w);
     monotonic_t time_since_start_blink = now - os_window->cursor_blink_zero_time;
@@ -2191,7 +2253,20 @@ drain_graphics_injections(ChildMonitor *self, bool *data_received) {
                 break;
             }
         }
-        if (screen) {
+        if (screen && local[i].stream_delta) {
+            children_mutex(lock);
+            Child *child = children + child_idx;
+            if (local[i].stream_delta > 0) child->side_channel_streams++;
+            else if (child->side_channel_streams) child->side_channel_streams--;
+            if (!child->side_channel_streams && child->held_resize.pending) {
+                // The kitten let go of the screen, so the console catches up
+                // on the last size it was held back from.
+                extern int windows_pty_resize_for(int read_fd, int cols, int rows);
+                windows_pty_resize_for(child->fd, child->held_resize.cols, child->held_resize.rows);
+                child->held_resize.pending = false;
+            }
+            children_mutex(unlock);
+        } else if (screen) {
             size_t off = 0;
             while (off < local[i].sz) {
                 size_t space = 0;

@@ -34,12 +34,15 @@ func Which(cmd string, paths ...string) string {
 		}
 		paths = strings.Split(path, string(os.PathListSeparator))
 	}
+	names := exe_file_names(cmd)
 	for _, dir := range paths {
-		q := filepath.Join(dir, cmd)
-		if Access(q, AccessExec) == nil {
-			s, err := os.Stat(q)
-			if err == nil && !s.IsDir() {
-				return q
+		for _, name := range names {
+			q := filepath.Join(dir, name)
+			if Access(q, AccessExec) == nil {
+				s, err := os.Stat(q)
+				if err == nil && !s.IsDir() {
+					return q
+				}
 			}
 		}
 

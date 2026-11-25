@@ -2234,7 +2234,12 @@ set_mode_from_const(Screen *self, unsigned int mode, bool val) {
         case DECSCLM:
         case DECNRCM: break; // we ignore these modes
         case DECCKM: self->modes.mDECCKM = val; break;
-        case DECTCEM: self->modes.mDECTCEM = val; break;
+        case DECTCEM:
+#ifdef _WIN32
+            if (!val && self->modes.mDECTCEM) self->cursor_hidden_at = self->parsing_at;
+#endif
+            self->modes.mDECTCEM = val;
+            break;
         case DECSCNM:
             // Render screen in reverse video
             if (self->modes.mDECSCNM != val) {

@@ -73,6 +73,9 @@ record_cursor_move(CursorTrail *ct, monotonic_t now) {
 static bool
 should_skip_cursor_trail_update(CursorTrail *ct, ndc_coords g, OSWindow *os_window, Window *w) {
     if (os_window->live_resize.in_progress) { return true; }
+#ifdef _WIN32
+    if (ct->geometry_changed) { return true; }
+#endif
 
     if (!WD.screen->modes.mDECTCEM && ct->opacity <= 0.0f) { return true; }
 
@@ -187,7 +190,21 @@ update_cursor_trail(CursorTrail *ct, Window *w, monotonic_t now, OSWindow *os_wi
     };
     bool had_prev_edge = ct->prev_edge_valid;
     if (!WD.screen->paused_rendering.expires_at && OPT(cursor_trail) <= now - WD.screen->cursor->position_changed_by_client_at) {
+#ifdef _WIN32
+        const id_type previous_window_id = ct->window_id;
+#endif
         update_cursor_trail_target(ct, w, g);
+#ifdef _WIN32
+        // The trail lives in NDC, which a resize rescales, so after one the
+        // cursor's own cell has new coordinates though it never moved. The live
+        // resize skip above ends before the layout settles on the new size, so
+        // without this the trail animated from where the cell used to map and
+        // the cursor flew in from the side of the window. Snap instead. A move
+        // into another window keeps its trail, which upstream always shows.
+        const float geometry[4] = {g.xstart, g.ystart, g.dx, g.dy};
+        ct->geometry_changed = previous_window_id == w->id && memcmp(ct->edge_geometry, geometry, sizeof(geometry)) != 0;
+        memcpy(ct->edge_geometry, geometry, sizeof(geometry));
+#endif
     }
     if (ct->target_updated && had_prev_edge) ct->cursor_changed_at = now;
 
