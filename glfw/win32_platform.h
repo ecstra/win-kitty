@@ -38,6 +38,9 @@ typedef struct _GLFWwindowWin32 {
     // A keypad key, or a key pressed with Alt, waiting for the WM_CHAR or
     // WM_SYSCHAR that carries its text.
     uint32_t pendingCharKey;
+    // Left ctrl and alt went out as a shortcut, so the characters Windows
+    // makes for them as AltGr are dropped until the next key goes down.
+    bool    dropChars;
 
     int     minwidth, minheight, maxwidth, maxheight;
     SIZE    sizeAtResizeStart;  // the window's size as a mouse resize began

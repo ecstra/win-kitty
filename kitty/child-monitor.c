@@ -115,7 +115,11 @@ static ChildMonitor *the_monitor = NULL;
 
 typedef struct {
     pid_t pid;
+#ifdef _WIN32
+    long long status;  // a Windows exit code uses all 32 bits, and is shifted by 8 as waitpid's
+#else
     int status;
+#endif
 } ReapedPID;
 
 static pid_t monitored_pids[256] = {0};
@@ -1571,7 +1575,11 @@ report_reaped_pids(void) {
         reaped_pids_count = 0;
     }
     children_mutex(unlock);
+#ifdef _WIN32
+    for (size_t n = 0; n < i; n++) { call_boss(on_monitored_pid_death, "lL", (long)pids[n].pid, pids[n].status); }
+#else
     for (size_t n = 0; n < i; n++) { call_boss(on_monitored_pid_death, "li", (long)pids[n].pid, pids[n].status); }
+#endif
 }
 
 static void *
@@ -2183,7 +2191,7 @@ windows_reap_children(ChildMonitor *self) {
         if (!exited) continue;
         if (reaped_pids_count < arraysz(reaped_pids)) {
             // Shifted as waitpid reports it, which os.waitstatus_to_exitcode undoes on Windows
-            reaped_pids[reaped_pids_count].status = (int)((code & 0xff) << 8);
+            reaped_pids[reaped_pids_count].status = ((long long)code) << 8;
             reaped_pids[reaped_pids_count++].pid = monitored_pids[j];
         }
         remove_i_from_array(monitored_pids, (size_t)j, monitored_pids_count);

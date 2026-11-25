@@ -32,6 +32,8 @@ Based on kitty 0.51.1.
 - With a see-through background, the space beside the tabs no longer shows as a solid dark strip.
 - Characters typed with AltGr, such as @ on a German layout, no longer arrive with an escape code in front of them.
 - Alt with a letter, such as Alt+B in a shell, no longer types the letter as well, which also left stray text like `5;4uS` behind after Shift+Alt+S.
+- Shortcuts with the left Ctrl and Alt work on layouts that have AltGr, instead of typing the AltGr character. Type those characters with AltGr, as on Linux.
+- A background process reports its real exit code, including codes above 255 and crash codes.
 
 ### Changed
 

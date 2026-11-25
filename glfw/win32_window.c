@@ -465,7 +465,7 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             int mods = getKeyMods();
             const bool functional = key >= GLFW_FKEY_FIRST;
             const int shortcutMods = mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER);
-            if (!up) window->win32.pendingCharKey = 0;
+            if (!up) { window->win32.pendingCharKey = 0; window->win32.dropChars = false; }
             if (isKeypadTextKey(key) && (!shortcutMods || (shortcutMods == GLFW_MOD_ALT && key <= GLFW_FKEY_KP_9)) &&
                     (up || shortcutMods || charFollows(hWnd))) {
                 // A keypad key that types goes out with its text from WM_CHAR,
@@ -478,16 +478,22 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             }
             if (!up && key && (!functional || isKeypadTextKey(key)) &&
                     (shortcutMods == GLFW_MOD_ALT || shortcutMods == (GLFW_MOD_CONTROL | GLFW_MOD_ALT)) && charFollows(hWnd)) {
-                // Alt, or ctrl and alt, with a key that types: the WM_SYSCHAR or
-                // WM_CHAR waiting in the queue carries the character with shift
-                // and the layout applied, and the two go out as one event from
-                // there. Sent from both, the shell got an escape code and then the
-                // character too. Ctrl and alt that type a character are AltGr, or
-                // stand for it on a layout that has one. When no character
-                // follows, the key goes out below as the shortcut it is.
-                window->win32.pendingCharKey = key;
-                if (uMsg == WM_SYSKEYDOWN) break;  // a system key, which DefWindowProc still sees
-                return 0;
+                // Alt, or AltGr, with a key that types: the WM_SYSCHAR or WM_CHAR
+                // waiting in the queue carries the character with shift and the
+                // layout applied, and the two go out as one event from there.
+                // Sent from both, the shell got an escape code and then the
+                // character too. When no character follows, the key goes out
+                // below as the shortcut it is.
+                if (shortcutMods == GLFW_MOD_ALT || (GetKeyState(VK_RMENU) & 0x8000)) {
+                    window->win32.pendingCharKey = key;
+                    if (uMsg == WM_SYSKEYDOWN) break;  // a system key, which DefWindowProc still sees
+                    return 0;
+                }
+                // Windows types with the left ctrl and alt as if they were AltGr,
+                // which would swallow shortcuts such as kitty_mod+alt+t on a
+                // layout with characters there. As on X11, where only AltGr
+                // types, they make a shortcut and the character is dropped.
+                window->win32.dropChars = true;
             }
             // A plain printable key (no ctrl/alt) is delivered as text by WM_CHAR,
             // to keep dead keys and layouts working. Forward everything else here:
@@ -518,9 +524,11 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_DEADCHAR:
             // AltGr with a dead key composes with the next key, like any dead key
             window->win32.pendingCharKey = 0;
+            if (window->win32.dropChars) return 0;
             break;
 
         case WM_CHAR: case WM_SYSCHAR: {
+            if (window->win32.dropChars) return 0;
             const uint32_t pairedKey = window->win32.pendingCharKey;
             window->win32.pendingCharKey = 0;
             int mods = getKeyMods();
