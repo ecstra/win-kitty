@@ -91,6 +91,8 @@ kitty.conf options that do nothing or only part of their job on Windows yet.
 - Custom pointer images. Every shape name maps to the nearest cursor Windows has.
 - `touch_scroll_multiplier` and `pixel_scroll`. A touchpad scrolls smoothly, by the wheel settings, but not by the pixel.
 - The `count-background` part of `confirm_os_window_close`.
+- `command_on_bell` runs only while kitty is in the background, for the same stray bells as the bell sound.
+- Remote control from a background process, `remote_control_script` and `launch --type=background --allow-remote-control`. The process runs, without a way back to kitty, and has to be something Windows starts by itself, such as an `.exe` or a `.bat`, so a Python or shell script is given with its interpreter.
 - `update_check_interval`.
 - `close_on_child_death`. A window always closes when its shell exits.
 - `forward_stdio` and `menu_map`, which have nothing on Windows to attach to yet.
