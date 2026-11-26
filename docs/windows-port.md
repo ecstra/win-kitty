@@ -43,7 +43,8 @@ Close any running kitty first. The source tree keeps its own development build a
 - Keyboard input, including the ctrl and alt shortcuts, the function keys, and the arrow keys. On a layout with AltGr, the left Ctrl and Alt together run a kitty shortcut when one is set on that key, and otherwise type the AltGr character, as in Windows Terminal. The AltGr key always types.
 - Tabs and OS windows. Closing one OS window leaves the others alone.
 - Scrollback, mouse selection, and the real Windows clipboard for copy and paste.
-- Dropping files and text onto a window, which pastes the paths or the text.
+- Dropping files and text onto a window, which pastes the paths or the text, and dragging a selection or a link out of a window into another program. A link to a file, such as one `ls --hyperlink` prints, drops as the file itself, which Explorer copies and never moves.
+- `kitty +list-fonts`, `kitty +runpy` and the other `kitty +` commands, `kitty --help` and `kitty --version`, from any terminal, cmd and pwsh alike.
 - Transparency. With `background_blur` on you get the real Windows 11 acrylic material, matched to what Windows Terminal shows, and it stays put when the window loses focus.
 - A custom title bar that matches the terminal background, with rounded corners and minimize, maximize, and close buttons.
 - Kittens, run from inside kitty. icat, hints, unicode_input, themes, ask, diff, choose-files, and the confirmation prompts all work.
@@ -55,19 +56,9 @@ Close any running kitty first. The source tree keeps its own development build a
 
 Known missing, and confirmed so.
 
-- Remote control over a Unix socket, meaning `listen_on unix:...` and nothing
-  else. Windows itself has carried AF_UNIX since build 17063, so this is not a
-  platform limit: CPython does not build the family on Windows
-  ([python/cpython#77589](https://github.com/python/cpython/issues/77589), open
-  since 2018), so `socket.socket(socket.AF_UNIX)` cannot be constructed. Passing
-  family 1 by number gets as far as a socket object and then fails on
-  `bind(): bad family`, because the address marshalling is compiled out too.
-  `listen_on unix:` now says this rather than reporting a vague parse error.
-  Remote control itself works, over `tcp:`. See below.
 - Four kittens. dnd, panel, quick-access-terminal, and desktop-ui are marked `(not supported on Windows)` in the `kitten` command list and print a clear message if you run one anyway.
-- Dragging content out of a kitty window. Dropping onto a window works, the other direction does not.
-- The `kitty +something` entry points from another terminal. They reach the window binary and print nothing. Inside kitty they work as normal. `kitty +icat` is removed on Windows, since it only forwards to `kitten icat`, which will not run outside kitty anyway.
-- The full `kitty --help` option list. From another terminal `--help` prints a short pointer to the online documentation instead, because the formatter needs a terminal size that Windows reports differently. `--version` prints normally.
+- Programs inside kitty starting drags of their own, which is the dnd kitten's side of drag and drop.
+- Abstract Unix sockets, `listen_on unix:@name`, which Windows does not have. Use a path, such as `unix:kitty.sock`.
 
 New in kitty 0.49 to 0.51 and not ported yet.
 
@@ -108,15 +99,30 @@ Not tested, so treat as unknown rather than working.
 
 ## Remote control
 
-`kitty @` works on Windows over a TCP address. Put this in kitty.conf:
+`kitty @` works on Windows over a Unix socket or a TCP address. Put this in kitty.conf:
 
     allow_remote_control yes
+    listen_on unix:kitty
+
+A relative path lands in the temp folder, with kitty's process id added when
+it comes from kitty.conf, as on Linux, and the socket file goes away when kitty
+exits. The address goes into `KITTY_LISTEN_ON` for every child, so `kitten @ ls`
+inside a kitty window needs no `--to`. From outside, pass it with
+`--to unix:PATH`. Abstract sockets, `unix:@name`, exist only on Linux.
+
+CPython does not build Unix sockets on Windows
+([python/cpython#77589](https://github.com/python/cpython/issues/77589)),
+though Windows has had them since build 17063, so kitty's C code makes the
+socket and hands it to the same accept loop the TCP one uses. As on Linux,
+kitty lets in only a client running as the same Windows user, which it learns
+from the client's process id through `SIO_AF_UNIX_GETPEERPID`.
+
+A TCP address works too:
+
     listen_on tcp:127.0.0.1:0
 
 A port of 0 asks the OS for a free one, which is what kitty does with a `tcp:`
-address from the config file anyway. The resolved address goes into
-`KITTY_LISTEN_ON` for every child, so `kitten @ ls` inside a kitty window needs
-no `--to`. From outside, pass the port kitty resolved.
+address from the config file anyway.
 
 Most of this was already in place. `parse_address_spec` and `expand_listen_on`
 have always handled `tcp:` and `tcp6:`, the client in `remote_control.py` is
@@ -139,13 +145,11 @@ four arguments in registers, which puts this one first on the stack, where four
 bytes of stale stack were read as the top half of the length. Every remote
 control command therefore arrived with a nonsense size.
 
-One difference from Unix worth knowing. A Unix socket is a filesystem object and
-carries its permissions, and kitty additionally checks the peer's uid. A loopback
-TCP port has neither: any process on the machine that can reach the port can
-drive kitty. Set `remote_control_password` if that matters for your setup. The
-Windows equivalent of a Unix socket's ACL is a named pipe, which kitty already
-uses for the graphics bypass, and that is the shape a stricter transport would
-take if one is wanted later.
+One difference worth knowing. A Unix socket is a filesystem object and carries
+its permissions, and kitty also checks that the client runs as the same user. A
+loopback TCP port has neither, so any process on the machine that can reach the
+port can drive kitty. Prefer `unix:`, or set `remote_control_password` if you
+use TCP.
 
 ## Kittens run as kitten.exe, not through Python
 

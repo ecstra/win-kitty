@@ -1396,6 +1396,27 @@ def sanitized_filename_from_url(url: str) -> str:
         return ''
 
 
+def windows_file_url(url: str) -> str:
+    '''The file URL for a file on this machine in the form Windows programs read,
+    file:///C:/path. MSYS2 and Cygwin shells name the C: drive /c and /cygdrive/c.
+    Any other URL, and a file on another machine, comes back as it was.'''
+    import socket
+    from urllib.parse import quote, unquote, urlparse
+
+    try:
+        u = urlparse(url)
+    except ValueError:
+        return url
+    if u.scheme.lower() != 'file' or u.netloc.lower() not in ('', 'localhost', socket.gethostname().lower()):
+        return url
+    path = unquote(u.path)
+    if m := re.match(r'/(?:cygdrive/)?([a-zA-Z])(/.*)?$', path):
+        path = f'/{m.group(1).upper()}:{m.group(2) or "/"}'
+    if not re.match(r'/[a-zA-Z]:(/|$)', path):
+        return url
+    return 'file://' + quote(path, safe='/:')
+
+
 def as_file_url(wd: str, *components: str) -> str:
     path = os.path.abspath(os.path.join(wd, *components))
     path = path.replace(os.sep, '/')

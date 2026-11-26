@@ -712,6 +712,9 @@ def get_boss() -> Boss:  # this can return None but we ignore that for convenien
 def safe_pipe(nonblock: bool = True) -> Tuple[int, int]:
     pass
 
+def listen_on_unix_socket(path: str) -> int:  # Windows only
+    pass
+
 def patch_global_colors(spec: Dict[str, Optional[int]], configured: bool) -> None:
     pass
 

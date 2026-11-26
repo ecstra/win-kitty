@@ -42,6 +42,9 @@ Name: "{autoprograms}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; Workin
 Name: "{autodesktop}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; WorkingDir: "{%USERPROFILE}"; Tasks: desktopicon
 
 [Registry]
+; Run (Win+R) looks here before PATH, so kitty typed there opens the window
+; directly rather than through the console shim on PATH, which shows a console
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\kitty.exe"; ValueType: string; ValueName: ""; ValueData: "{app}\kitty\launcher\kitty.exe"; Flags: uninsdeletekey
 ; Classic registry verbs. These are the whole entry on Windows 10, whose menu
 ; reads nothing else. On Windows 11 the sparse MSIX package supplies the modern
 ; menu, and these cover Show more options, which the modern menu falls back to.

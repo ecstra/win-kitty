@@ -1564,7 +1564,14 @@ class Window:
         if url.startswith('/'):
             from urllib.parse import quote
 
-            url = 'file://' + quote(os.path.abspath(url))
+            # A path a shell printed on Windows is an MSYS2 one, such as
+            # /c/Users, which abspath would turn into C:\c\Users
+            url = 'file://' + quote(url if is_windows else os.path.abspath(url))
+        if is_windows:
+            # Other programs take a dropped file only by its Windows path
+            from .utils import windows_file_url
+
+            url = windows_file_url(url)
         drag_data = {'text/uri-list': (url + '\r\n').encode()}
         try:
             start_drag_with_data(self.os_window_id, drag_data, self.drag_thumbnails(url))

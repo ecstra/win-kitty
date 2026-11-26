@@ -21,6 +21,7 @@
 
 #include "win_prelude.h"  /* uid_t/gid_t + the prototypes this file implements */
 #include "poll.h"         /* struct pollfd, nfds_t */
+#include "sys/un.h"       /* SIO_AF_UNIX_GETPEERPID */
 
 /* ---- keep _get_osfhandle from aborting on socket fds ---------------------- */
 static void
@@ -275,7 +276,48 @@ kill(pid_t pid, int sig) {
 }
 int killpg(pid_t pgrp, int sig) { return kill(pgrp, sig); }
 pid_t getpgid(pid_t pid) { return pid; }
-int getpeereid(int socket, uid_t *euid, gid_t *egid) { (void)socket; if (euid) *euid = 0; if (egid) *egid = 0; return 0; }
+/* The user a process runs as, as a SID the caller frees */
+static PSID
+user_of_process(HANDLE process) {
+    HANDLE token = NULL;
+    PSID ans = NULL;
+    if (!OpenProcessToken(process, TOKEN_QUERY, &token)) return NULL;
+    DWORD sz = 0;
+    GetTokenInformation(token, TokenUser, NULL, 0, &sz);
+    TOKEN_USER *tu = sz ? malloc(sz) : NULL;
+    if (tu && GetTokenInformation(token, TokenUser, tu, sz, &sz)) {
+        const DWORD len = GetLengthSid(tu->User.Sid);
+        if ((ans = malloc(len)) && !CopySid(len, ans, tu->User.Sid)) { free(ans); ans = NULL; }
+    }
+    free(tu);
+    CloseHandle(token);
+    return ans;
+}
+
+/* A Unix socket file on Windows lets in any user its folder lets in, so the
+ * peer's user is checked as on Linux, which kitty does for remote control and
+ * the single instance socket alike. Windows has no uids, so the one geteuid()
+ * gives, 0, stands for the user kitty runs as, and any other user gets -1. A
+ * peer whose process or user cannot be read counts as another user. */
+int getpeereid(int socket, uid_t *euid, gid_t *egid) {
+    ULONG pid = 0;
+    DWORD got = 0;
+    if (WSAIoctl((SOCKET)(intptr_t)socket, SIO_AF_UNIX_GETPEERPID, NULL, 0, &pid, sizeof pid, &got, NULL, NULL) != 0) {
+        errno = ENOTSOCK;
+        return -1;
+    }
+    BOOL same_user = FALSE;
+    HANDLE peer = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (peer) {
+        PSID them = user_of_process(peer), us = user_of_process(GetCurrentProcess());
+        same_user = them && us && EqualSid(them, us);
+        free(them); free(us);
+        CloseHandle(peer);
+    }
+    if (euid) *euid = same_user ? 0 : (uid_t)-1;
+    if (egid) *egid = 0;
+    return 0;
+}
 
 pid_t
 waitpid(pid_t pid, int *status, int options) {

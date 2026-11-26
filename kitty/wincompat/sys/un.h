@@ -22,3 +22,6 @@ struct sockaddr_un {
     char           sun_path[UNIX_PATH_MAX];
 };
 #endif
+#ifndef SIO_AF_UNIX_GETPEERPID
+#  define SIO_AF_UNIX_GETPEERPID _WSAIOR(IOC_VENDOR, 256)
+#endif

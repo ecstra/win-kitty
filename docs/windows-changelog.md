@@ -9,6 +9,9 @@ Based on kitty 0.51.1.
 ### Added
 
 - Dragging tabs. Drag one along the tab bar to move it, onto another kitty window to move it there, or out of kitty to open it in a new window where you drop it. Escape cancels.
+- Dragging selected text or a link out of kitty into other programs. A link to a file drops as the file, which Explorer copies.
+- Remote control over a Unix socket, `listen_on unix:PATH`.
+- `kitty +list-fonts` and the other `kitty +` commands, and the full `kitty --help`, print in any terminal, PowerShell included.
 
 ### Fixed
 

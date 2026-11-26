@@ -89,6 +89,14 @@ produced before this was safe only by luck.
 
 `<install>\bin` holds two small statically linked forwarders rather than the real executables. An earlier version put `<install>\kitty\launcher` on PATH directly, which also exposed the MinGW runtime DLLs sitting next to the binaries to every other process on the system. It broke unrelated MinGW toolchains, whose compilers resolve their own runtime DLLs through PATH and loaded mismatched copies, with a failure that looks nothing like a PATH problem.
 
+## The kitty shim on PATH is a console program
+
+kitty typed in a terminal runs the shim in `<install>\bin`, which used to be a GUI program so that no console would flash. PowerShell does not wait for a GUI program or read its output, so `kitty +list-fonts` printed nothing there, or printed under a prompt already drawn. A console shim is waited for and read by every shell. Run would show a console for it, so the installer registers the GUI launcher in App Paths, which Run reads before PATH, and the Start menu, the desktop shortcut and Explorer already open the GUI launcher directly.
+
+## A file dragged out of kitty is copied, never moved
+
+Dropping a link to a file on Explorer offers the file itself, and a move would take it away from where its owner keeps it, a surprise no terminal drag should cause. So a drag that carries files allows copy and link only.
+
 ## The Windows 11 Explorer entry needs a package
 
 Classic registry verbs under HKLM are enough on Windows 10, and Windows 11 shows them only under "Show more options". Its main menu reads packaged commands, so the entry there comes from a sparse MSIX carrying an IExplorerCommand implementation, signed with a certificate the build creates once and the installer trusts. This is heavier than a registry key and there is no lighter option that puts an entry in the menu users actually see.
