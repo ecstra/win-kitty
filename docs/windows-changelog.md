@@ -12,6 +12,7 @@ Based on kitty 0.51.1.
 - Dragging selected text or a link out of kitty into other programs. A link to a file drops as the file, which Explorer copies.
 - Remote control over a Unix socket, `listen_on unix:PATH`.
 - `kitty +list-fonts` and the other `kitty +` commands, and the full `kitty --help`, print in any terminal, PowerShell included.
+- The installer can install kitty for you only, with no administrator prompt, which is now the default, or for everyone as before. It follows Windows' light or dark mode, with kitty's cat on its pages.
 
 ### Fixed
 

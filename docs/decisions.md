@@ -93,6 +93,10 @@ produced before this was safe only by luck.
 
 kitty typed in a terminal runs the shim in `<install>\bin`, which used to be a GUI program so that no console would flash. PowerShell does not wait for a GUI program or read its output, so `kitty +list-fonts` printed nothing there, or printed under a prompt already drawn. A console shim is waited for and read by every shell. Run would show a console for it, so the installer registers the GUI launcher in App Paths, which Run reads before PATH, and the Start menu, the desktop shortcut and Explorer already open the GUI launcher directly.
 
+## The installer installs for the current user by default
+
+Setup asks whether to install for me only or for everyone, and picks me only, which needs no administrator rights, as VS Code's installer does. Most people install a terminal for themselves, and an admin prompt for that was a hurdle with nothing behind it. Installing for everyone stays one click away. An upgrade keeps the earlier choice, so the installs from before, which were for everyone, upgrade in place. The one thing a current user install cannot have is the main Windows 11 menu entry, whose package needs its certificate trusted for the whole machine, so it gets the classic entry under Show more options.
+
 ## A file dragged out of kitty is copied, never moved
 
 Dropping a link to a file on Explorer offers the file itself, and a move would take it away from where its owner keeps it, a surprise no terminal drag should cause. So a drag that carries files allows copy and link only.
