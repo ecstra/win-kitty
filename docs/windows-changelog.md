@@ -32,6 +32,7 @@ Based on kitty 0.51.1.
 - Keypad keys, the modifier keys on their own, and the mouse back and forward buttons can be bound. More pointer shapes show their own cursor.
 - A tab bar on the left or right starts below the title bar, and a precision touchpad scrolls smoothly instead of a line at a time.
 - `KITTY_OS` is `windows`, and kitty opens files to edit in Notepad when no other editor is found.
+- The installed kitty no longer prints "Fontconfig error: Cannot load default config file", and keeps a font cache, so it finds fonts faster.
 - Windows opened after the first one, a dragged out tab among them, no longer draw their window borders and the edges of the tab bar in random colours, often black.
 - With a see-through background, the space beside the tabs no longer shows as a solid dark strip.
 - Characters typed with AltGr, such as @ on a German layout, no longer arrive with an escape code in front of them.

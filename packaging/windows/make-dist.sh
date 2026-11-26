@@ -90,6 +90,12 @@ while [ $i -lt ${#queue[@]} ]; do
 done
 echo "    $(ls "$LAUNCHER"/*.dll 2>/dev/null | wc -l) DLLs bundled"
 
+echo "==> bundling fontconfig's configuration"
+# The fontconfig DLL reads its configuration from etc\fonts beside itself, and
+# without it prints "Cannot load default config file" and keeps no font cache.
+mkdir -p "$LAUNCHER/etc"
+cp -r "$MINGW/etc/fonts" "$LAUNCHER/etc/"
+
 echo "==> smoke test (clean PATH)"
 SMOKE_PATH="/c/Windows/System32:/c/Windows"
 if PATH="$SMOKE_PATH" "$LAUNCHER/kitten.exe" --version >/dev/null 2>&1; then
@@ -103,6 +109,11 @@ else
     echo "    WARNING: kitty-console.exe failed with clean PATH:"
     PATH="$SMOKE_PATH" "$LAUNCHER/kitty-console.exe" --version 2>&1 | head -5
     exit 1
+fi
+if PATH="$SMOKE_PATH" "$LAUNCHER/kitty-console.exe" +list-fonts </dev/null 2>&1 | grep -q 'Fontconfig error'; then
+    echo "    WARNING: fontconfig found no configuration with clean PATH"; exit 1
+else
+    echo "    fontconfig OK"
 fi
 
 VERSION=$("$PY" -c "import re; print(re.search(r'version: Version = Version\((\d+), (\d+), (\d+)\)', open('kitty/constants.py').read()).expand(r'\1.\2.\3'))" 2>/dev/null || echo 0.48.0)
