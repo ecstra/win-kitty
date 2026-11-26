@@ -110,7 +110,10 @@ else
     PATH="$SMOKE_PATH" "$LAUNCHER/kitty-console.exe" --version 2>&1 | head -5
     exit 1
 fi
-if PATH="$SMOKE_PATH" "$LAUNCHER/kitty-console.exe" +list-fonts </dev/null 2>&1 | grep -q 'Fontconfig error'; then
+# The output is read whole before it is searched, since under pipefail a grep
+# that stops at its first match makes the writer fail, and the pipeline with it
+FONTS_OUT="$(PATH="$SMOKE_PATH" "$LAUNCHER/kitty-console.exe" +list-fonts </dev/null 2>&1 || true)"
+if [[ "$FONTS_OUT" == *'Fontconfig error'* ]]; then
     echo "    WARNING: fontconfig found no configuration with clean PATH"; exit 1
 else
     echo "    fontconfig OK"

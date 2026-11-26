@@ -78,7 +78,15 @@ Root: HKA; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; Valu
 Root: HKA; Subkey: "Software\Classes\Drive\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
 
 [Code]
-{ PATH lives in the machine's environment for everyone, the user's for me only }
+const
+  MachineEnvKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+  UserEnvKey = 'Environment';
+  ReparsePoint = $400;  { FILE_ATTRIBUTE_REPARSE_POINT, a junction or a symlink }
+
+{ PATH lives in the machine's environment for everyone, the user's for me
+  only. Only Setup can tell which, since in the uninstaller IsAdminInstallMode
+  is true whenever it runs elevated, which a for me only install's uninstaller
+  also does when admin rights were around. }
 function EnvRoot(): Integer;
 begin
   if IsAdminInstallMode() then Result := HKLM else Result := HKCU;
@@ -86,10 +94,7 @@ end;
 
 function EnvKey(): string;
 begin
-  if IsAdminInstallMode() then
-    Result := 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
-  else
-    Result := 'Environment';
+  if IsAdminInstallMode() then Result := MachineEnvKey else Result := UserEnvKey;
 end;
 
 function IsWin11(): Boolean;
@@ -113,29 +118,33 @@ begin
   Result := ExpandConstant('{app}') + '\bin';
 end;
 
-procedure EnvAddPath(const Dir: string);
+{ Adds Dir as the last entry of PATH. A PATH that ended in ';' keeps ending in
+  one, so taking Dir out again with the ';' before it gives back what was there. }
+procedure EnvAddPath(Root: Integer; const Key, Dir: string);
 var
   Paths: string;
 begin
-  if not RegQueryStringValue(EnvRoot(), EnvKey(), 'Path', Paths) then
+  if not RegQueryStringValue(Root, Key, 'Path', Paths) then
     Paths := '';
   if Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Paths) + ';') > 0 then
     exit;
-  if (Paths <> '') and (Paths[Length(Paths)] <> ';') then
-    Paths := Paths + ';';
-  Paths := Paths + Dir;
-  RegWriteExpandStringValue(EnvRoot(), EnvKey(), 'Path', Paths);
+  if Paths = '' then
+    Paths := Dir
+  else if Paths[Length(Paths)] = ';' then
+    Paths := Paths + Dir + ';'
+  else
+    Paths := Paths + ';' + Dir;
+  RegWriteExpandStringValue(Root, Key, 'Path', Paths);
 end;
 
 { Takes out Dir and the ';' before it, so the rest of PATH is left exactly as
-  it was, a trailing ';' or none included. Cutting the ';' after it instead
-  left a stray one at the end when Dir was the last entry. }
-procedure EnvRemovePath(const Dir: string);
+  it was, and a PATH that held nothing else goes away, as before the install. }
+procedure EnvRemovePath(Root: Integer; const Key, Dir: string);
 var
   Paths, Wrapped: string;
   P: Integer;
 begin
-  if not RegQueryStringValue(EnvRoot(), EnvKey(), 'Path', Paths) then
+  if not RegQueryStringValue(Root, Key, 'Path', Paths) then
     exit;
   Wrapped := ';' + Paths + ';';
   P := Pos(';' + Uppercase(Dir) + ';', Uppercase(Wrapped));
@@ -144,11 +153,26 @@ begin
   Delete(Wrapped, P, Length(Dir) + 1);
   { Drop the ';' added at either end }
   Paths := Copy(Wrapped, 2, Length(Wrapped) - 2);
-  RegWriteExpandStringValue(EnvRoot(), EnvKey(), 'Path', Paths);
+  if Paths = '' then
+    RegDeleteValue(Root, Key, 'Path')
+  else
+    RegWriteExpandStringValue(Root, Key, 'Path', Paths);
+end;
+
+{ The uninstaller cannot tell which PATH the install wrote to, so it takes this
+  install's own folders out of both. Another install of kitty lives in another
+  folder, so its entry stays. The machine's PATH needs admin, which an
+  uninstall of a for everyone install has. }
+procedure EnvRemoveEverywhere(const Dir: string);
+begin
+  EnvRemovePath(HKCU, UserEnvKey, Dir);
+  EnvRemovePath(HKLM, MachineEnvKey, Dir);
 end;
 
 { kitty's Python writes its caches into the install folder as it runs, which
-  the uninstall would leave behind, and the folder with them }
+  the uninstall would leave behind, and the folder with them. Only kitty's own
+  folders are walked, and never through a junction or a symlink, since the
+  install folder may be one the user already kept other things in. }
 procedure DeletePyCaches(const Dir: string);
 var
   F: TFindRec;
@@ -156,7 +180,8 @@ begin
   if FindFirst(Dir + '\*', F) then begin
     try
       repeat
-        if ((F.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and (F.Name <> '.') and (F.Name <> '..') then begin
+        if ((F.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and ((F.Attributes and ReparsePoint) = 0) and
+            (F.Name <> '.') and (F.Name <> '..') then begin
           if CompareText(F.Name, '__pycache__') = 0 then
             DelTree(Dir + '\' + F.Name, True, True, True)
           else
@@ -204,9 +229,9 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then begin
     if WizardIsTaskSelected('addtopath') then begin
-      EnvAddPath(BinDir());
+      EnvAddPath(EnvRoot(), EnvKey(), BinDir());
       { Older installs put the DLL-laden launcher directory on PATH: remove it. }
-      EnvRemovePath(ExpandConstant('{app}') + '\kitty\launcher');
+      EnvRemovePath(EnvRoot(), EnvKey(), ExpandConstant('{app}') + '\kitty\launcher');
     end;
     if WizardIsTaskSelected('contextmenu') and CanRegisterMsix() then
       RegisterMsix();
@@ -214,13 +239,24 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  App: string;
 begin
+  App := ExpandConstant('{app}');
   if CurUninstallStep = usUninstall then begin
-    UnregisterMsix();
-    DeletePyCaches(ExpandConstant('{app}'));
+    { Only an install that registered the menu package, which copied it to
+      msix, takes it away, so a for me only copy leaves the menu of a for
+      everyone install of the same account alone }
+    if FileExists(App + '\msix\kitty-menu.msix') then
+      UnregisterMsix();
+    DelTree(App + '\__pycache__', True, True, True);
+    DeletePyCaches(App + '\kitty');
+    DeletePyCaches(App + '\kittens');
+    DeletePyCaches(App + '\shell-integration');
+    DeletePyCaches(App + '\pylib');
   end;
   if CurUninstallStep = usPostUninstall then begin
-    EnvRemovePath(BinDir());
-    EnvRemovePath(ExpandConstant('{app}') + '\kitty\launcher');
+    EnvRemoveEverywhere(BinDir());
+    EnvRemoveEverywhere(App + '\kitty\launcher');
   end;
 end;
