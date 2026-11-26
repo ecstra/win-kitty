@@ -1568,10 +1568,12 @@ class Window:
             # /c/Users, which abspath would turn into C:\c\Users
             url = 'file://' + quote(url if is_windows else os.path.abspath(url))
         if is_windows:
-            # Other programs take a dropped file only by its Windows path
-            from .utils import windows_file_url
+            # Other programs take a dropped file only by its Windows path. A
+            # path an MSYS2 or Cygwin shell printed lies under its install folder.
+            from .utils import posix_root_of, windows_file_url
 
-            url = windows_file_url(url)
+            exe = self.child.resolved_exe
+            url = windows_file_url(url, posix_root_of(exe) if exe else '')
         drag_data = {'text/uri-list': (url + '\r\n').encode()}
         try:
             start_drag_with_data(self.os_window_id, drag_data, self.drag_thumbnails(url))

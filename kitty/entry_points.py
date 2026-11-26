@@ -6,6 +6,24 @@ import os
 import sys
 
 
+def exec_kitten(args: list[str]) -> None:
+    from kitty.constants import is_windows, kitten_exe
+
+    if not is_windows:
+        os.execvp(kitten_exe(), args)
+    # exec on Windows starts the program and ends kitty at once, so a shell
+    # waiting on kitty got its prompt back before kitten printed, and lost its
+    # exit code. kitten runs as a child instead.
+    import subprocess
+
+    p = subprocess.Popen([kitten_exe()] + args[1:])
+    while True:
+        try:
+            raise SystemExit(p.wait())
+        except KeyboardInterrupt:
+            pass  # Ctrl+C reaches kitten too, which decides when it ends
+
+
 def icat(args: list[str]) -> None:
     from kitty.constants import kitten_exe
 
@@ -26,10 +44,7 @@ def runpy(args: list[str]) -> None:
 
 
 def hold(args: list[str]) -> None:
-    from kitty.constants import kitten_exe
-
-    args = ['kitten', '__hold_till_enter__'] + args[1:]
-    os.execvp(kitten_exe(), args)
+    exec_kitten(['kitten', '__hold_till_enter__'] + args[1:])
 
 
 def complete(args: list[str]) -> None:
@@ -40,10 +55,7 @@ def complete(args: list[str]) -> None:
         args[1:1] = ['fish', '_legacy_completion=fish2']
     elif len(args) >= 3 and args[1:3] == ['setup', 'fish2']:
         args[2] = 'fish'
-    from kitty.constants import kitten_exe
-
-    args = ['kitten', '__complete__'] + args[1:]
-    os.execvp(kitten_exe(), args)
+    exec_kitten(['kitten', '__complete__'] + args[1:])
 
 
 def open_urls(args: list[str]) -> None:
@@ -80,9 +92,7 @@ def launch(args: list[str]) -> None:
 
 
 def shebang(args: list[str]) -> None:
-    from kitty.constants import kitten_exe
-
-    os.execvp(kitten_exe(), ['kitten', '__shebang__', 'confirm-if-needed'] + args[1:])
+    exec_kitten(['kitten', '__shebang__', 'confirm-if-needed'] + args[1:])
 
 
 def run_kitten(args: list[str]) -> None:

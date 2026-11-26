@@ -93,6 +93,38 @@ class WindowsFeaturesTest(BaseTest):
         ):
             with self.subTest(url=url):
                 self.assertEqual(windows_file_url(url), expected)
+        for url, root, expected in (
+            (f'file://{host}/home/me/notes.txt', 'C:/msys64', 'file:///C:/msys64/home/me/notes.txt'),
+            ('file:///tmp/a%20b', 'C:\\cygwin64\\', 'file:///C:/cygwin64/tmp/a%20b'),
+            ('file:///mnt/c/Users/me/x.txt', '', 'file:///C:/Users/me/x.txt'),
+            ('file:///c/Users/me', 'C:/msys64', 'file:///C:/Users/me'),
+        ):
+            with self.subTest(url=url, root=root):
+                self.assertEqual(windows_file_url(url, root), expected)
+
+    def test_listen_on_tmp_lands_in_the_temp_folder(self):
+        from kitty.main import expand_listen_on
+        self.assertEqual(expand_listen_on('unix:/tmp/mykitty', False, {}), f'unix:{os.path.join(tempfile.gettempdir(), "mykitty")}')
+
+    def test_listen_on_a_missing_folder_says_so(self):
+        from kitty.boss import listen_on
+        with tempfile.TemporaryDirectory() as tdir:
+            path = os.path.join(tdir, 'missing', 'kitty.sock')
+            with self.assertRaises(ValueError) as cm:
+                listen_on(f'unix:{path}', FakeAtexit())  # type: ignore[arg-type]
+            self.assertIn('does not exist', str(cm.exception))
+
+    def test_plus_commands_handing_off_to_kitten_keep_its_exit_code(self):
+        exe = os.path.join(os.path.dirname(kitty_exe()), 'kitty-console.exe')
+
+        def run(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([exe] + list(args), capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+
+        p = run('+shebang', 'C:/nope/missing.py')
+        self.assertEqual(p.returncode, 1, p.stderr)
+        p = run('+kitten', 'clipboard', '--no such option')
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn('--no such option', p.stderr)
 
     def test_help_from_another_terminal_lists_every_option(self):
         exe = os.path.join(os.path.dirname(kitty_exe()), 'kitty-console.exe')

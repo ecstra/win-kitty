@@ -491,6 +491,12 @@ def expand_listen_on(listen_on: str, from_config_file: bool, env: dict[str, str]
         if not path.startswith('@'):
             if path.startswith('~'):
                 listen_on = f'unix:{os.path.expanduser(path)}'
+            elif is_windows and (path == '/tmp' or path.startswith('/tmp/')):
+                # kitty's docs and kitty.conf files shared with Linux use /tmp,
+                # which Windows would read as C:\tmp, a folder that rarely exists
+                import tempfile
+
+                listen_on = f'unix:{os.path.join(tempfile.gettempdir(), path[len("/tmp/"):])}'
             elif not os.path.isabs(path):
                 import tempfile
 

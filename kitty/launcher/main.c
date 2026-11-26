@@ -385,16 +385,86 @@ is_wrapped_kitten(const char *arg) {
     return strstr(" " WRAPPED_KITTENS " ", buf);
 }
 
+#ifdef _WIN32
+// The UTF-16 of a UTF-8 string, which the caller frees
+static wchar_t*
+wide_from_utf8(const char *s) {
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    wchar_t *ans = n > 0 ? calloc(n, sizeof(wchar_t)) : NULL;
+    if (ans) MultiByteToWideChar(CP_UTF8, 0, s, -1, ans, n);
+    return ans;
+}
+
+// argv as one command line, each argument quoted the way CommandLineToArgvW
+// reads it back, or NULL
+static wchar_t*
+quoted_command_line(int argc, char *argv[]) {
+    size_t cap = 1;
+    for (int i = 0; i < argc; i++) cap += 2 * strlen(argv[i]) + 3;  // a UTF-8 byte is at most one UTF-16 unit
+    wchar_t *ans = calloc(cap, sizeof(wchar_t)), *p = ans;
+    if (!ans) return NULL;
+    for (int i = 0; i < argc; i++) {
+        wchar_t *arg = wide_from_utf8(argv[i]);
+        if (!arg) { free(ans); return NULL; }
+        if (i) *p++ = L' ';
+        if (arg[0] && !wcspbrk(arg, L" \t\n\v\"")) { wcscpy(p, arg); p += wcslen(arg); }
+        else {
+            *p++ = L'"';
+            for (const wchar_t *c = arg; ; c++) {
+                size_t backslashes = 0;
+                while (*c == L'\\') { backslashes++; c++; }
+                if (!*c) { while (backslashes--) { *p++ = L'\\'; *p++ = L'\\'; } break; }
+                if (*c == L'"') { for (size_t k = 0; k < 2 * backslashes + 1; k++) *p++ = L'\\'; }
+                else { while (backslashes--) *p++ = L'\\'; }
+                *p++ = *c;
+            }
+            *p++ = L'"';
+        }
+        free(arg);
+    }
+    *p = 0;
+    return ans;
+}
+
+// The CRT's execv passes its arguments unquoted, so one with a space reached
+// kitten split in two, and ends this process at once, so a shell waiting on
+// kitty got its prompt back before kitten printed and lost its exit code.
+// kitten runs as a child instead, its exit code becoming kitty's.
+static void
+run_kitten_and_exit(const char *exe, int argc, char *argv[]) {
+    wchar_t *wexe = wide_from_utf8(exe), *cmdline = quoted_command_line(argc, argv);
+    STARTUPINFOW si = {.cb = sizeof(si)};
+    PROCESS_INFORMATION pi;
+    if (!wexe || !cmdline || !CreateProcessW(wexe, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+        fprintf(stderr, "Failed to execute kitten (%s) with Windows error: %lu\n", exe, GetLastError());
+        exit(1);
+    }
+    // Ctrl+C reaches kitten too, which decides when it ends
+    SetConsoleCtrlHandler(NULL, TRUE);
+    DWORD code = 1;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &code);
+    exit((int)code);
+}
+#endif
+
 static void
 exec_kitten(int argc, char *argv[], char *exe_dir) {
     char exe[PATH_MAX + 1] = {0};
+#ifdef _WIN32
+    safe_snprintf(exe, PATH_MAX, "%s\\kitten.exe", exe_dir);
+#else
     safe_snprintf(exe, PATH_MAX, "%s/kitten", exe_dir);
+#endif
     argv[0] = "kitten";
     if (being_tested) {
         printf("kitten_exe: %s\n", exe);
         output_argv("argv", argc, argv);
         exit(0);
     }
+#ifdef _WIN32
+    run_kitten_and_exit(exe, argc, argv);
+#endif
     errno = 0;
     execv(exe, argv);
     fprintf(stderr, "Failed to execute kitten (%s) with error: %s\n", exe, strerror(errno));

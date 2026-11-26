@@ -1396,10 +1396,12 @@ def sanitized_filename_from_url(url: str) -> str:
         return ''
 
 
-def windows_file_url(url: str) -> str:
+def windows_file_url(url: str, posix_root: str = '') -> str:
     '''The file URL for a file on this machine in the form Windows programs read,
-    file:///C:/path. MSYS2 and Cygwin shells name the C: drive /c and /cygdrive/c.
-    Any other URL, and a file on another machine, comes back as it was.'''
+    file:///C:/path. MSYS2 and Cygwin shells name the C: drive /c and /cygdrive/c,
+    WSL names it /mnt/c, and any other path from an MSYS2 or Cygwin shell lies
+    under its install folder, posix_root. Any other URL, a file on another
+    machine, and a WSL path outside /mnt come back as they were.'''
     import socket
     from urllib.parse import quote, unquote, urlparse
 
@@ -1410,11 +1412,24 @@ def windows_file_url(url: str) -> str:
     if u.scheme.lower() != 'file' or u.netloc.lower() not in ('', 'localhost', socket.gethostname().lower()):
         return url
     path = unquote(u.path)
-    if m := re.match(r'/(?:cygdrive/)?([a-zA-Z])(/.*)?$', path):
+    if m := re.match(r'/(?:cygdrive/|mnt/)?([a-zA-Z])(/.*)?$', path):
         path = f'/{m.group(1).upper()}:{m.group(2) or "/"}'
+    elif posix_root and path.startswith('/') and not re.match(r'/[a-zA-Z]:(/|$)', path):
+        path = '/' + posix_root.replace('\\', '/').rstrip('/') + path
     if not re.match(r'/[a-zA-Z]:(/|$)', path):
         return url
     return 'file://' + quote(path, safe='/:')
+
+
+def posix_root_of(exe: str) -> str:
+    '''The install folder of the MSYS2 or Cygwin runtime a program runs on, such
+    as C:/msys64 for C:/msys64/usr/bin/zsh.exe, or an empty string.'''
+    bin_dir = os.path.dirname(exe)
+    if any(os.path.exists(os.path.join(bin_dir, dll)) for dll in ('msys-2.0.dll', 'cygwin1.dll')):
+        root = os.path.dirname(bin_dir)
+        # MSYS2 keeps its runtime in <root>/usr/bin, Cygwin in <root>/bin
+        return os.path.dirname(root) if os.path.basename(root).lower() == 'usr' else root
+    return ''
 
 
 def as_file_url(wd: str, *components: str) -> str:

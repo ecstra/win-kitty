@@ -100,6 +100,10 @@ int wmain(void) {
     if (!CreateProcessW(exe, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) return 113;
     DWORD code = 0;
     if (wait_for_child) {
+        // Ctrl+C reaches the child too, which decides when it ends. Killed by
+        // it first, the shim gave the shell its prompt back while the child
+        // still ran and printed over it.
+        SetConsoleCtrlHandler(NULL, TRUE);
         WaitForSingleObject(pi.hProcess, INFINITE);
         GetExitCodeProcess(pi.hProcess, &code);
     }
