@@ -117,9 +117,9 @@ Windows terminals close without a prompt. The default also mattered while the co
 
 Windows has no primary selection. The port used to tell kitty it had one, and then answered every read of it with the clipboard, so a program allowed to read the primary selection over OSC 52 read the clipboard instead, and writing it did nothing. Keeping a primary selection inside kitty would make a middle click paste the last selection, which no Windows program does. So Windows takes macOS's model, where pasting the selection pastes the clipboard, which is what a middle click already did here.
 
-## Only AltGr types, the left Ctrl and Alt make a shortcut
+## The left Ctrl and Alt run a shortcut when one is set, and type otherwise
 
-Windows types with the left Ctrl and Alt held together as if they were AltGr, on any layout with characters on its AltGr level. In kitty that swallowed shortcuts. On US International, for one, kitty's own kitty_mod+alt+t typed Þ instead of opening the tab title prompt. kitty on Linux only types with AltGr, where the left keys are always a shortcut, so the port follows Linux. The cost is that someone used to typing @ with the left Ctrl and Alt on a German layout has to use AltGr in kitty.
+Windows types with the left Ctrl and Alt held together as if they were AltGr, on any layout with characters on its AltGr level. Treating that as AltGr swallowed shortcuts. On US International, for one, kitty's own kitty_mod+alt+t typed Þ instead of opening the tab title prompt. Treating the left keys as a shortcut only, as kitty on Linux does, broke the other way. Scripts and tools that type text press the plain Ctrl and Alt keys for an AltGr character, so `user@host` typed by one on a German layout lost its @. So the port does what Windows Terminal does. The left keys run a kitty shortcut when one is set on that key, and type the character when none is. The AltGr key always types, as on Linux.
 
 ## Ctrl+click opens a link, alongside upstream's Ctrl+Shift+click
 

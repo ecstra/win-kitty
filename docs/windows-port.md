@@ -40,7 +40,7 @@ Close any running kitty first. The source tree keeps its own development build a
 - Window creation, OpenGL rendering, live resizing, and per monitor DPI scaling.
 - Any Windows console program as the shell. cmd.exe, Windows PowerShell, and pwsh all run. Pick one with the `shell` option in kitty.conf.
 - MSYS2 and Cygwin shells such as zsh and bash, on a real pty, with shell integration.
-- Keyboard input, including the ctrl and alt shortcuts, the function keys, and the arrow keys. On a layout with AltGr, type its characters with the AltGr key. The left Ctrl and Alt together make a shortcut, as on Linux, rather than standing in for AltGr as they do in other Windows programs.
+- Keyboard input, including the ctrl and alt shortcuts, the function keys, and the arrow keys. On a layout with AltGr, the left Ctrl and Alt together run a kitty shortcut when one is set on that key, and otherwise type the AltGr character, as in Windows Terminal. The AltGr key always types.
 - Tabs and OS windows. Closing one OS window leaves the others alone.
 - Scrollback, mouse selection, and the real Windows clipboard for copy and paste.
 - Dropping files and text onto a window, which pastes the paths or the text.
