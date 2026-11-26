@@ -390,6 +390,9 @@ func setup_global_options(cmd *cli.Command) (err error) {
 		if err != nil {
 			return err
 		}
+		if network == "unix" {
+			address = utils.UnixSocketPath(address)
+		}
 		global_options.to_network = network
 		global_options.to_address = address
 	}

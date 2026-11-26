@@ -6,10 +6,14 @@
  * toolchains that resolve runtime DLLs via PATH). The shim forwards the
  * command line to the real binary and mirrors its exit code.
  *
- * Built statically (no runtime dependencies) as both a console shim (kitten,
- * always waits for the child) and a GUI shim (kitty, waits only for the
- * invocations that print and exit): see make-dist.sh. TARGET_RELPATH and
- * SHIM_WAIT are set on the command line.
+ * Built statically (no runtime dependencies) as two console shims, kitten,
+ * which always waits for the child, and kitty, which waits only for the
+ * invocations that print and exit: see make-dist.sh. SHIM_KITTEN is set on the
+ * command line. Both are console programs because a shell waits for one and
+ * reads what it prints, while PowerShell neither waits for a GUI program nor
+ * reads its output, so a GUI kitty shim lost the output of kitty +list-fonts.
+ * Run, the Start menu and Explorer open the GUI launcher directly, through
+ * the App Paths entry and shortcuts the installer writes, so no console shows.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -38,8 +42,8 @@ static BOOL token_is(const wchar_t *s, const wchar_t *flag) {
 }
 
 /* Whether this invocation prints to the terminal and exits, rather than opening
- * a window. Only the version and help flags qualify, and both are answered by
- * the launcher itself without starting Python.
+ * a window. The version and help flags qualify, and so do the + entry points,
+ * such as +list-fonts and +runpy, all but +open, which opens a window.
  *
  * Two things are needed for them to be seen from another terminal. The shim has
  * to wait, or it returns to the prompt first and the output lands under a
@@ -47,23 +51,20 @@ static BOOL token_is(const wchar_t *s, const wchar_t *flag) {
  * child has to be the console subsystem binary, because a GUI subsystem process
  * is not captured by every shell even once it has attached to the parent
  * console: PowerShell reads nothing from one, which is why the same command
- * worked under cmd and looked silent under pwsh.
- *
- * The + entry points are deliberately not here. They belong to kitty itself and
- * are not supported from a foreign terminal on Windows, the same call the
- * kittens make, so they go to the GUI binary like every other invocation. */
+ * worked under cmd and looked silent under pwsh. */
 static BOOL prints_and_exits(const wchar_t *tail) {
     while (*tail == L' ' || *tail == L'\t') tail++;
+    if (*tail == L'+') {
+        tail++;
+        while (*tail == L' ' || *tail == L'\t') tail++;  /* kitty + open is kitty +open */
+        return !token_is(tail, L"open");
+    }
     return token_is(tail, L"--version") || token_is(tail, L"-v")
         || token_is(tail, L"--help") || token_is(tail, L"-h");
 }
 #endif
 
-int WINAPI wWinMain(HINSTANCE h, HINSTANCE p, PWSTR args, int show) {
-    (void)h; (void)p; (void)args; (void)show;
-    // The GUI shim has no console of its own; attach the invoking terminal's
-    // so the child (and anything it prints, like kitty --version) reaches it.
-    if (GetConsoleWindow() == NULL) AttachConsole(ATTACH_PARENT_PROCESS);
+int wmain(void) {
     wchar_t exe[MAX_PATH + 64] = {0};
     if (!GetModuleFileNameW(NULL, exe, MAX_PATH)) return 112;
     wchar_t *slash = wcsrchr(exe, L'\\');
@@ -99,6 +100,10 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE p, PWSTR args, int show) {
     if (!CreateProcessW(exe, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) return 113;
     DWORD code = 0;
     if (wait_for_child) {
+        // Ctrl+C reaches the child too, which decides when it ends. Killed by
+        // it first, the shim gave the shell its prompt back while the child
+        // still ran and printed over it.
+        SetConsoleCtrlHandler(NULL, TRUE);
         WaitForSingleObject(pi.hProcess, INFINITE);
         GetExitCodeProcess(pi.hProcess, &code);
     }
@@ -106,8 +111,3 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE p, PWSTR args, int show) {
     CloseHandle(pi.hThread);
     return (int)code;
 }
-
-#ifdef SHIM_WAIT
-/* Console subsystem entry: delegate to the same logic. */
-int wmain(void) { return wWinMain(NULL, NULL, NULL, 0); }
-#endif

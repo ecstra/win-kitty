@@ -3008,8 +3008,37 @@ send_data_to_peer(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+#ifdef _WIN32
+// Windows has had Unix sockets since 1803, but CPython does not build them, so
+// listen_on unix: gets its socket here and hands it to the talk thread as the
+// tcp one is. The peer's user is checked on accept, see getpeereid.
+static PyObject *
+listen_on_unix_socket(PyObject *self UNUSED, PyObject *args) {
+    const char *path;
+    Py_ssize_t len;
+    if (!PyArg_ParseTuple(args, "s#", &path, &len)) return NULL;
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+    if ((size_t)len >= sizeof(addr.sun_path)) {
+        PyErr_Format(PyExc_ValueError, "The socket path %s is too long, a Unix socket path holds at most %zu bytes", path, sizeof(addr.sun_path) - 1);
+        return NULL;
+    }
+    memcpy(addr.sun_path, path, len + 1);
+    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) return PyErr_SetExcFromWindowsErr(PyExc_OSError, WSAGetLastError());
+    if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) != 0 || listen(s, SOMAXCONN) != 0) {
+        const int err = WSAGetLastError();
+        closesocket(s);
+        return PyErr_SetExcFromWindowsErrWithFilename(PyExc_OSError, err, path);
+    }
+    return PyLong_FromLongLong((long long)s);
+}
+#endif
+
 static PyMethodDef module_methods[] = {
     METHODB(safe_pipe, METH_VARARGS),
+#ifdef _WIN32
+    METHODB(listen_on_unix_socket, METH_VARARGS),
+#endif
     {"add_timer", (PyCFunction)add_python_timer, METH_VARARGS, ""},
     {"remove_timer", (PyCFunction)remove_python_timer, METH_VARARGS, ""},
     METHODB(monitor_pid, METH_VARARGS),

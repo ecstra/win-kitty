@@ -295,6 +295,20 @@ class Atexit:
 def listen_on(spec: str, robust_atexit: Atexit) -> tuple[int, str]:
     import socket
 
+    if is_windows and spec.startswith('unix:'):
+        # CPython cannot make a Unix socket on Windows, which has them, so
+        # kitty's C code makes it, and kitten @ dials it as on Linux
+        from .fast_data_types import listen_on_unix_socket
+
+        path = spec[len('unix:'):]
+        if path.startswith('@'):
+            raise ValueError(f'Cannot listen on {spec}: abstract Unix sockets exist only on Linux. Use a path instead, such as unix:kitty.sock')
+        # Winsock reports a missing folder as a dead network
+        if not os.path.isdir(os.path.dirname(os.path.abspath(path))):
+            raise ValueError(f'Cannot listen on {spec}: the folder {os.path.dirname(os.path.abspath(path))} does not exist')
+        fd = listen_on_unix_socket(path)
+        robust_atexit.unlink(path)
+        return fd, spec
     family, address, socket_path = parse_address_spec(spec)
     s = socket.socket(family)
     s.bind(address)

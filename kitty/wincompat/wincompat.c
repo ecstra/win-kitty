@@ -21,6 +21,7 @@
 
 #include "win_prelude.h"  /* uid_t/gid_t + the prototypes this file implements */
 #include "poll.h"         /* struct pollfd, nfds_t */
+#include "sys/un.h"       /* SIO_AF_UNIX_GETPEERPID */
 
 /* ---- keep _get_osfhandle from aborting on socket fds ---------------------- */
 static void
@@ -275,7 +276,64 @@ kill(pid_t pid, int sig) {
 }
 int killpg(pid_t pgrp, int sig) { return kill(pgrp, sig); }
 pid_t getpgid(pid_t pid) { return pid; }
-int getpeereid(int socket, uid_t *euid, gid_t *egid) { (void)socket; if (euid) *euid = 0; if (egid) *egid = 0; return 0; }
+/* Token information of one class, which the caller frees */
+static void*
+token_info(HANDLE token, TOKEN_INFORMATION_CLASS which) {
+    DWORD sz = 0;
+    GetTokenInformation(token, which, NULL, 0, &sz);
+    void *ans = sz ? malloc(sz) : NULL;
+    if (ans && !GetTokenInformation(token, which, ans, sz, &sz)) { free(ans); ans = NULL; }
+    return ans;
+}
+
+/* The user a process runs as, a SID the caller frees, and its integrity
+ * level, whose RID rises from low through medium to high for an elevated one */
+static PSID
+user_of_process(HANDLE process, DWORD *integrity) {
+    HANDLE token = NULL;
+    PSID ans = NULL;
+    if (!OpenProcessToken(process, TOKEN_QUERY, &token)) return NULL;
+    TOKEN_USER *tu = token_info(token, TokenUser);
+    TOKEN_MANDATORY_LABEL *label = token_info(token, TokenIntegrityLevel);
+    if (tu && label) {
+        PSID level = label->Label.Sid;
+        *integrity = *GetSidSubAuthority(level, *GetSidSubAuthorityCount(level) - 1);
+        const DWORD len = GetLengthSid(tu->User.Sid);
+        if ((ans = malloc(len)) && !CopySid(len, ans, tu->User.Sid)) { free(ans); ans = NULL; }
+    }
+    free(tu); free(label);
+    CloseHandle(token);
+    return ans;
+}
+
+/* A Unix socket file on Windows lets in any user its folder lets in, so the
+ * peer's user is checked as on Linux, which kitty does for remote control and
+ * the single instance socket alike. Windows has no uids, so the one geteuid()
+ * gives, 0, stands for the user kitty runs as, and any other user gets -1. An
+ * elevated kitty shares its user with every unelevated program of that user,
+ * the line Linux draws between root and the user, so a peer running at a lower
+ * integrity level than kitty counts as another user too. So does a peer whose
+ * process or user cannot be read. */
+int getpeereid(int socket, uid_t *euid, gid_t *egid) {
+    ULONG pid = 0;
+    DWORD got = 0;
+    if (WSAIoctl((SOCKET)(intptr_t)socket, SIO_AF_UNIX_GETPEERPID, NULL, 0, &pid, sizeof pid, &got, NULL, NULL) != 0) {
+        errno = ENOTSOCK;
+        return -1;
+    }
+    BOOL same_user = FALSE;
+    HANDLE peer = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (peer) {
+        DWORD their_level = 0, our_level = 0;
+        PSID them = user_of_process(peer, &their_level), us = user_of_process(GetCurrentProcess(), &our_level);
+        same_user = them && us && EqualSid(them, us) && their_level >= our_level;
+        free(them); free(us);
+        CloseHandle(peer);
+    }
+    if (euid) *euid = same_user ? 0 : (uid_t)-1;
+    if (egid) *egid = 0;
+    return 0;
+}
 
 pid_t
 waitpid(pid_t pid, int *status, int options) {
