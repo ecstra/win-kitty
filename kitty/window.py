@@ -1778,13 +1778,28 @@ class Window:
 
     def on_bell(self) -> None:
         cb = get_options().command_on_bell
-        if cb and cb != ['none']:
+        # conhost turns parts of a shell's output into stray bells, so on Windows
+        # the command waits for kitty to be in the background, as the tab mark
+        # below does, rather than running on every prompt
+        if cb and cb != ['none'] and not (is_windows and self.os_window_id == current_focused_os_window_id()):
             import shlex
             import subprocess
 
             env = self.child.foreground_environ
+            if is_windows and not env:
+                # Another process's environment cannot be read on Windows yet
+                env = self.child.final_env.copy()
             env['KITTY_CHILD_CMDLINE'] = ' '.join(map(shlex.quote, self.child.cmdline))
-            subprocess.Popen(cb, env=env, cwd=self.child.foreground_cwd, preexec_fn=clear_handled_signals)
+            if is_windows:
+                # preexec_fn raises ValueError on Windows, where there are no
+                # inherited signal handlers for it to reset. A failure must not
+                # keep the bell from marking the tab.
+                try:
+                    subprocess.Popen(cb, env=env, cwd=self.child.foreground_cwd, creationflags=subprocess.CREATE_NO_WINDOW)
+                except OSError as err:
+                    log_error(f'Failed to run command_on_bell: {err}')
+            else:
+                subprocess.Popen(cb, env=env, cwd=self.child.foreground_cwd, preexec_fn=clear_handled_signals)
         # Mark as needing attention unless the user is looking at this window,
         # which requires both that it be the active window and that its OS
         # window have keyboard focus. Attention is cleared when the window gains focus.

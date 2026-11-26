@@ -54,6 +54,8 @@ kitty draws its own title bar so the caption shares the terminal background and 
 - WM_NCCALCSIZE returns the whole window as client area, so DWM draws no frame. When maximized it insets by the frame size so nothing spills off screen.
 - WM_NCHITTEST reports the resize borders and a draggable caption strip along the top, so the borderless window still resizes and moves.
 
+Since the whole window is client area, a size or a position kitty asks for is the window's own, with no standard frame added around it. Adding one made a window grow by the frame on every restart with `remember_window_size` on. `resize_in_steps` is a WM_SIZING handler that moves the dragged edges in whole cells from the size the resize started at, as X11 window managers do with size increments.
+
 kitty/state.c reserves a strip at the top of the OS window for the title bar. The grid and any tab bar sit below it, and a border rectangle fills the strip with the background colour at the same opacity as the cells, so the title bar matches the body exactly.
 
 ## Caption buttons
@@ -66,6 +68,8 @@ kitty wants one key event per physical press, carrying either a functional key v
 
 - WM_KEYDOWN forwards the functional keys and any key pressed with ctrl, alt, or the Windows key, so shortcuts and control combinations reach kitty.
 - WM_CHAR forwards ordinary typed text and drops the control characters that the key path already handled.
+
+A keypad key that types, a digit or an operator, would need both messages, so WM_KEYDOWN only notes which keypad key it was and the WM_CHAR that follows sends one event with that key and its text, the way X11 does. TranslateMessage posts the character before the key is dispatched, so the key handler looks in the queue for it and pairs only when one is there, sending the key alone as a shortcut when none follows. A key pressed with Alt alone is paired with WM_SYSCHAR the same way, but goes out as the key with no text, since kitty sends any event with text as the bare character, and with the character shift made as its shifted key, so Alt+Shift+S encodes as ESC S as on X11. With a dead key WM_SYSDEADCHAR comes instead and the key goes out alone. AltGr with a key that types a character is paired with WM_CHAR and goes out as that character, without the ctrl and alt Windows reports for AltGr. Windows also types with the left Ctrl and Alt as if they were AltGr, and scripts that type text press the plain Ctrl and Alt keys for an AltGr character. Those are paired the same way but keep their ctrl and alt, so kitty matches its shortcuts first, kitty_mod+alt+t among them, and types the text when none is bound, since kitty sends an event with text as the bare character. AltGr is told apart by the right Alt key being down. Forwarded from both messages, these reached the shell as an escape code and then the character again. Alt with keypad digits is left to Windows, which types the character the digits name once Alt comes up. The keypad's Enter and, with NumLock off, its navigation keys share virtual keys with the main ones and are told apart by the extended key flag, as are the left and right modifiers, which now arrive as keys of their own.
 
 The keycode table maps virtual keys to kitty key values, and it has to be an `int` array rather than the stock GLFW `short`. kitty's functional key values sit above 0x7fff, so a signed short held them as negative numbers that sign extended to 0xffffXXXX on read. Those matched nothing and silently dropped Enter, Backspace, Tab, and the arrows. Widening the array to int fixed every functional key together.
 
@@ -99,7 +103,7 @@ Desktop notifications are real Windows toasts. kitty/notifications.py registers 
 
 ## Clipboard and dropped files
 
-Windows has an eager clipboard rather than the lazy selection ownership of X11 and Wayland, so kitty pulls its own data at the time of the copy and hands it over as CF_UNICODETEXT. There is no primary selection, so only GLFW_CLIPBOARD is honoured.
+Windows has an eager clipboard rather than the lazy selection ownership of X11 and Wayland, so kitty pulls its own data at the time of the copy and hands it over as CF_UNICODETEXT. There is no primary selection, so kitty treats Windows as it treats macOS, with `supports_primary_selection` off. Pasting the selection pastes the clipboard, and a program asking for the primary selection over OSC 52 gets nothing. The helper window listens for clipboard changes, and when the owner of the clipboard is no longer that window another program copied, which kitty hears as the clipboard being lost, for `clear_selection_on_clipboard_loss`.
 
 Drops arrive through OLE. Each window registers an IDropTarget, and on a drop the data is pulled out of the IDataObject synchronously and surfaced to kitty's platform independent drop API, with CF_HDROP file lists converted to `file://` URIs and CF_UNICODETEXT passed through as text.
 

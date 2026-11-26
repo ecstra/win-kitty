@@ -35,11 +35,17 @@ typedef struct _GLFWwindowWin32 {
     int     lastCursorPosY;
     // The last WM_CHAR high surrogate awaiting its low surrogate.
     WCHAR   highSurrogate;
+    // A keypad key, or a key pressed with Alt, waiting for the WM_CHAR or
+    // WM_SYSCHAR that carries its text.
+    uint32_t pendingCharKey;
 
     int     minwidth, minheight, maxwidth, maxheight;
+    SIZE    sizeAtResizeStart;  // the window's size as a mouse resize began
     int     numer, denom;     // aspect ratio
     float   opacity;
     int     blur;             // background_blur radius (0 = off)
+    unsigned int tintRGB;     // this window's caption and acrylic tint colour
+    float   tintOpacity;      // and its opacity, from kitty when its chrome changed
     bool    customFrame;      // reclaim the caption for an acrylic custom title bar
     HWND    captionButtons;   // layered overlay hosting min/max/close
     void*   dropTarget;       // IDropTarget* registered for OLE drag-and-drop (drop-in)

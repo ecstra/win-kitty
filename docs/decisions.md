@@ -113,6 +113,14 @@ Closing a maximized window used to save the full screen size, so the next launch
 
 Windows terminals close without a prompt. The default also mattered while the confirmation kitten was broken, because it left an empty config unable to close at all. The kitten works now, and the default stays 0 to match how Windows terminals behave. A user who wants a prompt can set `confirm_os_window_close`.
 
+## No primary selection, as on macOS
+
+Windows has no primary selection. The port used to tell kitty it had one, and then answered every read of it with the clipboard, so a program allowed to read the primary selection over OSC 52 read the clipboard instead, and writing it did nothing. Keeping a primary selection inside kitty would make a middle click paste the last selection, which no Windows program does. So Windows takes macOS's model, where pasting the selection pastes the clipboard, which is what a middle click already did here.
+
+## The left Ctrl and Alt run a shortcut when one is set, and type otherwise
+
+Windows types with the left Ctrl and Alt held together as if they were AltGr, on any layout with characters on its AltGr level. Treating that as AltGr swallowed shortcuts. On US International, for one, kitty's own kitty_mod+alt+t typed Þ instead of opening the tab title prompt. Treating the left keys as a shortcut only, as kitty on Linux does, broke the other way. Scripts and tools that type text press the plain Ctrl and Alt keys for an AltGr character, so `user@host` typed by one on a German layout lost its @. So the port does what Windows Terminal does. The left keys run a kitty shortcut when one is set on that key, and type the character when none is. The AltGr key always types, as on Linux.
+
 ## Ctrl+click opens a link, alongside upstream's Ctrl+Shift+click
 
 Windows Terminal and the GNOME terminals open a link on Ctrl+click, so that is the binding a Windows user tries first. Upstream binds Ctrl+Shift+click instead, which is left in place, as is the plain click. The two are added rather than swapped, because they use different triggers and nothing else was bound to Ctrl+click.

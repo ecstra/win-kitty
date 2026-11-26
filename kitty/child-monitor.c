@@ -115,7 +115,11 @@ static ChildMonitor *the_monitor = NULL;
 
 typedef struct {
     pid_t pid;
+#ifdef _WIN32
+    long long status;  // a Windows exit code uses all 32 bits, and is shifted by 8 as waitpid's
+#else
     int status;
+#endif
 } ReapedPID;
 
 static pid_t monitored_pids[256] = {0};
@@ -1571,7 +1575,11 @@ report_reaped_pids(void) {
         reaped_pids_count = 0;
     }
     children_mutex(unlock);
+#ifdef _WIN32
+    for (size_t n = 0; n < i; n++) { call_boss(on_monitored_pid_death, "lL", (long)pids[n].pid, pids[n].status); }
+#else
     for (size_t n = 0; n < i; n++) { call_boss(on_monitored_pid_death, "li", (long)pids[n].pid, pids[n].status); }
+#endif
 }
 
 static void *
@@ -2167,7 +2175,31 @@ windows_reap_children(ChildMonitor *self) {
             }
         }
     }
+    // The other monitored processes, kitty's background ones, have no pty to
+    // watch and waitpid cannot wait on any child here, so each is checked by
+    // its handle. Python wakes this loop when one exits.
+    bool reaped_any = false;
+    for (ssize_t j = (ssize_t)monitored_pids_count - 1; j >= 0; j--) {
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)monitored_pids[j]);
+        DWORD code = 0;
+        bool exited = false;
+        if (!h) exited = GetLastError() == ERROR_INVALID_PARAMETER;  // gone already
+        else {
+            if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) { GetExitCodeProcess(h, &code); exited = true; }
+            CloseHandle(h);
+        }
+        if (!exited) continue;
+        if (reaped_pids_count < arraysz(reaped_pids)) {
+            // Shifted as waitpid reports it, which os.waitstatus_to_exitcode undoes on Windows
+            reaped_pids[reaped_pids_count].status = ((long long)code) << 8;
+            reaped_pids[reaped_pids_count++].pid = monitored_pids[j];
+        }
+        remove_i_from_array(monitored_pids, (size_t)j, monitored_pids_count);
+        reaped_any = true;
+    }
     children_mutex(unlock);
+    // The main loop reports reaped processes to Python
+    if (reaped_any) wakeup_main_loop();
 }
 #endif
 

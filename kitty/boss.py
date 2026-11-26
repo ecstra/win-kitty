@@ -2557,11 +2557,6 @@ class Boss:
         q = get_options().confirm_os_window_close[0]
         num = num_active_windows if q < 0 else len(windows)
         needs_confirmation = tm is not None and q != 0 and num >= abs(q)
-        # The confirmation prompt is the 'ask' kitten, which needs the Go tool and
-        # a working kitten TUI, neither of which is available on Windows yet. Skip
-        # it so the window can always close.
-        if is_windows:
-            needs_confirmation = False
         if not needs_confirmation:
             self.mark_os_window_for_close(os_window_id)
             return
@@ -3613,10 +3608,28 @@ class Boss:
 
             def run(stdin: int | None, stdout: int | None, stderr: int | None) -> None:
                 try:
-                    p = subprocess.Popen(cmd, env=env, cwd=cwd, preexec_fn=clear_handled_signals, pass_fds=pass_fds, stdin=stdin, stdout=stdout, stderr=stderr)
+                    if is_windows:
+                        # preexec_fn and pass_fds both raise on Windows, and the
+                        # descriptors the child needs reach it as its standard handles
+                        p = subprocess.Popen(
+                            cmd, env=env, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NO_WINDOW)
+                    else:
+                        p = subprocess.Popen(
+                            cmd, env=env, cwd=cwd, preexec_fn=clear_handled_signals, pass_fds=pass_fds, stdin=stdin, stdout=stdout, stderr=stderr)
                     if notify_on_death:
                         self.background_process_death_notify_map[p.pid] = notify_on_death
                         monitor_pid(p.pid)
+                        if is_windows:
+                            # Nothing wakes the child monitor when a process that
+                            # is not a window's child exits, so a thread waits on
+                            # it and wakes the monitor, which then reaps it
+                            import threading
+
+                            def wake_when_done(proc: 'subprocess.Popen[bytes]' = p) -> None:
+                                proc.wait()
+                                self.child_monitor.wakeup()
+
+                            threading.Thread(target=wake_when_done, name='BackgroundProcessWaiter', daemon=True).start()
                 except Exception as err:
                     for fd in fds_to_close_on_launch_failure:
                         with suppress(OSError):
@@ -3642,7 +3655,8 @@ class Boss:
             finally:
                 if stdin:
                     os.close(r)
-                if allow_remote_control:
+                # On Windows no remote control socket was made, see above
+                if allow_remote_control and not is_windows:
                     remote.close()
 
         if is_wayland():

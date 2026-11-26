@@ -229,7 +229,15 @@ void _glfwPlatformSetClipboard(GLFWClipboardType t) {
 
 void _glfwPlatformGetClipboard(GLFWClipboardType clipboard_type, const char* mime_type, GLFWclipboardwritedatafun write_data, void* object) {
     (void) clipboard_type;
-    if (mime_type && strcmp(mime_type, "text/plain") != 0 && strcmp(mime_type, "text/plain;charset=utf-8") != 0) return;
+    if (!mime_type) {
+        // A request for the types on offer, answered with one name each
+        if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+            static const char *names[] = {"text/plain;charset=utf-8", "text/plain"};
+            for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) write_data(object, names[i], strlen(names[i]));
+        }
+        return;
+    }
+    if (strcmp(mime_type, "text/plain") != 0 && strcmp(mime_type, "text/plain;charset=utf-8") != 0) return;
     if (!OpenClipboard(_glfw.win32.helperWindowHandle)) return;
     HANDLE object_handle = GetClipboardData(CF_UNICODETEXT);
     if (object_handle) {

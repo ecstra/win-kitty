@@ -1347,9 +1347,10 @@ update_link_hover_for_modifiers(int old_mods, int new_mods) {
 
 void
 enter_event(int modifiers, bool cursor_moved) {
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(_WIN32)
     // On cocoa there is no way to configure the window manager to
-    // focus windows on mouse enter, so we do it ourselves
+    // focus windows on mouse enter, so we do it ourselves. Windows does not
+    // do it by default either.
     if (OPT(focus_follows_mouse).on_cross && !global_state.callback_os_window->is_focused) {
         id_type wid = global_state.callback_os_window->id;
         focus_os_window(global_state.callback_os_window, false, NULL);

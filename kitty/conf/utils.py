@@ -14,7 +14,7 @@ from typing import (
     TypeVar,
 )
 
-from ..constants import _plat, is_macos
+from ..constants import _plat, is_macos, is_windows
 from ..fast_data_types import Color
 from ..rgb import to_color as as_color
 from ..types import ConvertibleToNumbers, ParsedShortcut, run_once
@@ -179,7 +179,7 @@ class CurrentlyParsing:
 
 
 currently_parsing = CurrentlyParsing()
-OSNames = Literal['macos', 'bsd', 'linux', 'unknown']
+OSNames = Literal['macos', 'bsd', 'linux', 'windows', 'unknown']
 
 
 @run_once
@@ -190,6 +190,8 @@ def os_name() -> OSNames:
         return 'bsd'
     if 'linux' in _plat:
         return 'linux'
+    if is_windows:
+        return 'windows'
     return 'unknown'
 
 

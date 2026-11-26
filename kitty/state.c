@@ -324,6 +324,8 @@ increment_bg_image_idx(size_t idx, int delta) {
 // identical setting.
 static float
 platform_bg_alpha(float alpha) {
+    // Fully opaque stays fully opaque, as Windows Terminal's 100% does
+    if (alpha >= 1.f) return 1.f;
     const color_type bg = OPT(background);
     if (alpha < 1.f && OPT(background_blur) > 0) return 0.f;
     const float r = ((bg >> 16) & 0xFF) / 255.f, g = ((bg >> 8) & 0xFF) / 255.f, b = (bg & 0xFF) / 255.f;
@@ -356,6 +358,9 @@ add_os_window(void) {
     ans->id = ++global_state.os_window_id_counter;
     ans->tab_bar_render_data.vao_idx = create_cell_vao();
     ans->background_opacity.alpha = platform_bg_alpha(OPT(background_opacity));
+#ifdef _WIN32
+    ans->background_opacity.requested = OPT(background_opacity);
+#endif
     ans->created_at = monotonic();
     init_shader_animation_state(ans);
     END_WITH_OS_WINDOW_REFS
@@ -971,6 +976,10 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
         if (tab_bar->bottom > tab_bar->top && OPT(tab_bar_edge) == TOP_EDGE) {
             tab_bar->top += strip;
             tab_bar->bottom += strip;
+        } else if (tab_bar->bottom > tab_bar->top && (OPT(tab_bar_edge) == LEFT_EDGE || OPT(tab_bar_edge) == RIGHT_EDGE)) {
+            // A tab bar down the side starts below the strip, which would
+            // otherwise take its top tabs' clicks for the caption
+            tab_bar->top = MIN(tab_bar->top + (uint32_t)strip, tab_bar->bottom);
         }
         central->top = MIN(central->top + strip, central->bottom);
     }
@@ -1520,6 +1529,9 @@ PYWRAP1(change_background_opacity) {
     PA("Kf", &os_window_id, &opacity);
     WITH_OS_WINDOW(os_window_id)
     os_window->background_opacity.alpha = platform_bg_alpha(opacity);
+#ifdef _WIN32
+    os_window->background_opacity.requested = opacity;
+#endif
     if (!os_window->redraw_count) os_window->redraw_count++;
     set_os_window_chrome(os_window); // on macOS titlebar opacity can depend on background_opacity
     Py_RETURN_TRUE;
@@ -1787,6 +1799,9 @@ PYWRAP0(apply_options_update) {
         OSWindow *os_window = global_state.os_windows + o;
         get_platform_dependent_config_values(os_window->handle);
         os_window->background_opacity.alpha = platform_bg_alpha(OPT(background_opacity));
+#ifdef _WIN32
+        os_window->background_opacity.requested = OPT(background_opacity);
+#endif
         set_os_window_chrome(os_window);
         if (!os_window->redraw_count) os_window->redraw_count++;
         for (size_t t = 0; t < os_window->num_tabs; t++) {
@@ -1886,6 +1901,23 @@ PYWRAP1(update_tab_bar_edge_colors) {
                 right_is_default = bottom_is_default;
             }
         }
+#ifdef _WIN32
+        // The tab bar paints its empty cells with its background as an RGB
+        // colour, which reads as not default, and the band beside the tabs is
+        // then drawn in that colour opaque, a solid strip across a see-through
+        // window. While the tab bar follows the window background such a cell
+        // is the background, so the band is drawn the way the background is.
+        if (ok && !OPT(tab_bar_background)) {
+            const color_type bg = colorprofile_to_color(
+                screen->color_profile, screen->color_profile->overridden.default_bg, screen->color_profile->configured.default_bg).rgb & 0xffffff;
+            if ((os_window->tab_bar_edge_color.left & 0xffffff) == bg) left_is_default = true;
+            if ((os_window->tab_bar_edge_color.right & 0xffffff) == bg) right_is_default = true;
+        }
+        // A side tab bar starts right under the title strip, so the band above
+        // its first tab is drawn like the strip, rather than stretching the
+        // first tab's left edge, often a fade cell, across the bar's width
+        if (ok && is_vertical) left_is_default = true;
+#endif
         if (ok) { return Py_BuildValue("OO", left_is_default ? Py_True : Py_False, right_is_default ? Py_True : Py_False); }
     }
     END_WITH_OS_WINDOW
