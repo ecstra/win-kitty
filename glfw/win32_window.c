@@ -1777,13 +1777,6 @@ free_win32_drag(void) {
     win32_drag.has_files = false;
 }
 
-static int
-drag_format_index(const FORMATETC *f) {
-    if (!f || !(f->tymed & TYMED_HGLOBAL) || f->dwAspect != DVASPECT_CONTENT) return -1;
-    for (size_t i = 0; i < win32_drag.total; i++) if (win32_drag.formats[i] == f->cfFormat) return (int)i;
-    return -1;
-}
-
 typedef struct { wchar_t *p; size_t len, cap; bool failed; } WideBuf;
 
 static void
@@ -1910,31 +1903,67 @@ add_formats_for_other_programs(void) {
     free(as_text.p); free(files.p); free(link.p);
 }
 
-// The data for one format in an HGLOBAL. It is zero filled, since GlobalSize may
-// round the size up and a reader trusting it then sees the padding as data.
-static HGLOBAL
-drag_data_for(size_t idx) {
-    const size_t sz = win32_drag.sizes[idx];
-    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sz ? sz : 1);
-    if (h) {
-        void *p = GlobalLock(h);
-        if (p) { if (sz) memcpy(p, win32_drag.data[idx], sz); GlobalUnlock(h); }
-        else { GlobalFree(h); h = NULL; }
-    }
-    return h;
-}
-
 // --- IDataObject COM object, offering the drag's formats ---
 // The shell's drag helpers keep their own state in the data object through
 // SetData, the drag picture and the drop target's hints among it, so what
 // they set is held and handed back beside the drag's own formats.
+//
+// A drop target such as Explorer copies files inside its Drop call unless the
+// data object lets it work in the background, and DoDragDrop, which holds
+// kitty's main thread, waits for that call. A copy that asked whether to
+// replace a file left kitty waiting on the question with the drag picture
+// stuck to the pointer. So the object offers IDataObjectAsyncCapability, and
+// holds its own copy of the data, which Explorer reads after the drag ends.
 #define WIN32_DRAG_MAX_STORED 16
+static const IID kitty_IID_IDataObjectAsyncCapability = {0x3d8b0590, 0xf691, 0x11d2, {0x8e, 0xa9, 0x00, 0x60, 0x97, 0xdf, 0x5b, 0xd4}};
 typedef struct {
-    IDataObject iface; LONG ref;
+    IDataObject iface;
+    IDataObjectAsyncCapability async_iface;
+    LONG ref;
+    BOOL async_mode, in_async_op;
+    size_t mime_count, count;  // kitty's mime types, then the formats other programs read
+    CLIPFORMAT formats[WIN32_DRAG_MAX_FORMATS];
+    char *data[WIN32_DRAG_MAX_FORMATS];
+    size_t sizes[WIN32_DRAG_MAX_FORMATS];
     size_t stored_count;
     FORMATETC stored_formats[WIN32_DRAG_MAX_STORED];
     STGMEDIUM stored_media[WIN32_DRAG_MAX_STORED];
 } Win32DragData;
+
+static bool
+take_drag_formats(Win32DragData *self) {
+    for (size_t i = 0; i < win32_drag.total; i++) {
+        const size_t sz = win32_drag.sizes[i];
+        if (!(self->data[i] = malloc(sz ? sz : 1))) return false;
+        if (sz) memcpy(self->data[i], win32_drag.data[i], sz);
+        self->formats[i] = win32_drag.formats[i];
+        self->sizes[i] = sz;
+        self->count = i + 1;
+    }
+    self->mime_count = win32_drag.count;
+    return true;
+}
+
+static int
+drag_format_index(const Win32DragData *self, const FORMATETC *f) {
+    if (!f || !(f->tymed & TYMED_HGLOBAL) || f->dwAspect != DVASPECT_CONTENT) return -1;
+    for (size_t i = 0; i < self->count; i++) if (self->formats[i] == f->cfFormat) return (int)i;
+    return -1;
+}
+
+// The data for one format in an HGLOBAL. It is zero filled, since GlobalSize may
+// round the size up and a reader trusting it then sees the padding as data.
+static HGLOBAL
+drag_data_for(const Win32DragData *self, size_t idx) {
+    const size_t sz = self->sizes[idx];
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sz ? sz : 1);
+    if (h) {
+        void *p = GlobalLock(h);
+        if (p) { if (sz) memcpy(p, self->data[idx], sz); GlobalUnlock(h); }
+        else { GlobalFree(h); h = NULL; }
+    }
+    return h;
+}
 
 static int
 stored_format_index(const Win32DragData *self, const FORMATETC *f) {
@@ -1968,6 +1997,9 @@ static HRESULT STDMETHODCALLTYPE dd_QueryInterface(IDataObject *This, REFIID rii
     if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDataObject)) {
         *ppv = This; This->lpVtbl->AddRef(This); return S_OK;
     }
+    if (IsEqualIID(riid, &kitty_IID_IDataObjectAsyncCapability)) {
+        *ppv = &((Win32DragData*)This)->async_iface; This->lpVtbl->AddRef(This); return S_OK;
+    }
     *ppv = NULL; return E_NOINTERFACE;
 }
 static ULONG STDMETHODCALLTYPE dd_AddRef(IDataObject *This) { return InterlockedIncrement(&((Win32DragData*)This)->ref); }
@@ -1976,6 +2008,7 @@ static ULONG STDMETHODCALLTYPE dd_Release(IDataObject *This) {
     LONG r = InterlockedDecrement(&self->ref);
     if (r == 0) {
         for (size_t i = 0; i < self->stored_count; i++) ReleaseStgMedium(self->stored_media + i);
+        for (size_t i = 0; i < self->count; i++) free(self->data[i]);
         free(self);
     }
     return r;
@@ -1985,16 +2018,17 @@ static HRESULT STDMETHODCALLTYPE dd_GetData(IDataObject *This, FORMATETC *f, STG
     if (!m) return E_POINTER;
     const int stored = stored_format_index(self, f);
     if (stored >= 0) return copy_stored_medium(f->cfFormat, self->stored_media + stored, m) ? S_OK : E_OUTOFMEMORY;
-    int idx = drag_format_index(f);
+    int idx = drag_format_index(self, f);
     if (idx < 0) return DV_E_FORMATETC;
-    HGLOBAL h = drag_data_for((size_t)idx);
+    HGLOBAL h = drag_data_for(self, (size_t)idx);
     if (!h) return E_OUTOFMEMORY;
     m->tymed = TYMED_HGLOBAL; m->hGlobal = h; m->pUnkForRelease = NULL;
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dd_GetDataHere(IDataObject *This, FORMATETC *f, STGMEDIUM *m) { (void)This; (void)f; (void)m; return E_NOTIMPL; }
 static HRESULT STDMETHODCALLTYPE dd_QueryGetData(IDataObject *This, FORMATETC *f) {
-    return (stored_format_index((Win32DragData*)This, f) < 0 && drag_format_index(f) < 0) ? DV_E_FORMATETC : S_OK;
+    const Win32DragData *self = (Win32DragData*)This;
+    return (stored_format_index(self, f) < 0 && drag_format_index(self, f) < 0) ? DV_E_FORMATETC : S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dd_GetCanonicalFormatEtc(IDataObject *This, FORMATETC *in, FORMATETC *out) {
     (void)This; (void)in;
@@ -2022,8 +2056,8 @@ static HRESULT STDMETHODCALLTYPE dd_EnumFormatEtc(IDataObject *This, DWORD direc
     FORMATETC f[WIN32_DRAG_MAX_FORMATS + WIN32_DRAG_MAX_STORED];
     size_t n = 0;
     // The formats other programs read first, since some take the first they know
-    for (size_t i = win32_drag.count; i < win32_drag.total; i++) f[n++] = (FORMATETC){win32_drag.formats[i], NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-    for (size_t i = 0; i < win32_drag.count; i++) f[n++] = (FORMATETC){win32_drag.formats[i], NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    for (size_t i = self->mime_count; i < self->count; i++) f[n++] = (FORMATETC){self->formats[i], NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    for (size_t i = 0; i < self->mime_count; i++) f[n++] = (FORMATETC){self->formats[i], NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
     for (size_t i = 0; i < self->stored_count; i++) f[n++] = self->stored_formats[i];
     return SHCreateStdEnumFmtEtc((UINT)n, f, out);
 }
@@ -2037,6 +2071,34 @@ static HRESULT STDMETHODCALLTYPE dd_EnumDAdvise(IDataObject *This, IEnumSTATDATA
 static IDataObjectVtbl win32_drag_data_vtbl = {
     dd_QueryInterface, dd_AddRef, dd_Release, dd_GetData, dd_GetDataHere, dd_QueryGetData,
     dd_GetCanonicalFormatEtc, dd_SetData, dd_EnumFormatEtc, dd_DAdvise, dd_DUnadvise, dd_EnumDAdvise
+};
+
+#define async_self(This) ((Win32DragData*)((char*)(This) - offsetof(Win32DragData, async_iface)))
+static HRESULT STDMETHODCALLTYPE da_QueryInterface(IDataObjectAsyncCapability *This, REFIID riid, void **ppv) {
+    return dd_QueryInterface(&async_self(This)->iface, riid, ppv);
+}
+static ULONG STDMETHODCALLTYPE da_AddRef(IDataObjectAsyncCapability *This) { return dd_AddRef(&async_self(This)->iface); }
+static ULONG STDMETHODCALLTYPE da_Release(IDataObjectAsyncCapability *This) { return dd_Release(&async_self(This)->iface); }
+static HRESULT STDMETHODCALLTYPE da_SetAsyncMode(IDataObjectAsyncCapability *This, WINBOOL on) { async_self(This)->async_mode = on; return S_OK; }
+static HRESULT STDMETHODCALLTYPE da_GetAsyncMode(IDataObjectAsyncCapability *This, WINBOOL *on) {
+    if (!on) return E_INVALIDARG;
+    *on = async_self(This)->async_mode; return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE da_StartOperation(IDataObjectAsyncCapability *This, IBindCtx *ctx) {
+    (void)ctx; async_self(This)->in_async_op = TRUE; return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE da_InOperation(IDataObjectAsyncCapability *This, WINBOOL *in) {
+    if (!in) return E_INVALIDARG;
+    *in = async_self(This)->in_async_op; return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE da_EndOperation(IDataObjectAsyncCapability *This, HRESULT result, IBindCtx *ctx, DWORD effects) {
+    (void)result; (void)ctx; (void)effects;
+    async_self(This)->in_async_op = FALSE; return S_OK;
+}
+#undef async_self
+
+static IDataObjectAsyncCapabilityVtbl win32_drag_async_vtbl = {
+    da_QueryInterface, da_AddRef, da_Release, da_SetAsyncMode, da_GetAsyncMode, da_StartOperation, da_InOperation, da_EndOperation
 };
 
 bool _glfwWin32DragInProgress(void) { return win32_drag.active; }
@@ -2197,11 +2259,14 @@ static ULONG STDMETHODCALLTYPE ds_Release(IDropSource *This) {
 // how kitty learns a tab was dropped outside every kitty window.
 static HRESULT STDMETHODCALLTYPE ds_QueryContinueDrag(IDropSource *This, BOOL escape, DWORD keys) {
     (void)This;
-    if (escape) { win32_drag.escape_pressed = true; return DRAGDROP_S_CANCEL; }
-    if (win32_drag.cancel_requested) return DRAGDROP_S_CANCEL;
+    // The picture goes as the drag ends, since a drop target can take its time
+    // over the drop, and the picture would sit on the pointer meanwhile
+    if (escape) { win32_drag.escape_pressed = true; post_drag_image(false, NULL); return DRAGDROP_S_CANCEL; }
+    if (win32_drag.cancel_requested) { post_drag_image(false, NULL); return DRAGDROP_S_CANCEL; }
     if (!(keys & MK_LBUTTON)) {
         win32_drag.button_released = true;
         GetCursorPos(&win32_drag.released_at);
+        post_drag_image(false, NULL);
         return DRAGDROP_S_DROP;
     }
     return S_OK;
@@ -2256,9 +2321,12 @@ runPendingDrag(void) {
     GLFWDragEvent ev = {.type = GLFW_DRAG_CANCELLED};
     Win32DragData *data = calloc(1, sizeof *data);
     Win32DropSource *source = calloc(1, sizeof *source);
-    if (data) { data->iface.lpVtbl = &win32_drag_data_vtbl; data->ref = 1; }
+    if (data) {
+        data->iface.lpVtbl = &win32_drag_data_vtbl; data->async_iface.lpVtbl = &win32_drag_async_vtbl;
+        data->ref = 1; data->async_mode = TRUE;
+    }
     if (source) { source->iface.lpVtbl = &win32_drop_source_vtbl; source->ref = 1; }
-    if (window && data && source && win32_drag.count && !win32_drag.cancel_requested) {
+    if (window && data && source && win32_drag.count && !win32_drag.cancel_requested && take_drag_formats(data)) {
         blank_shell_drag_image(&data->iface);
         win32_drag.active = true;
         if (win32_drag.has_image) post_drag_image(true, NULL);
