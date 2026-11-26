@@ -20,6 +20,13 @@ NETWORK_AND_DEVICE_PATHS = (
     r'\??\UNC\attacker\share\x.png',
     '/??/UNC/attacker/share/x.png',
     r'\\attacker\share\tty-graphics-protocol-x.png',
+    'COM1',
+    'com1:',
+    'LPT1',
+    'PRN',
+    'AUX',
+    'CON',
+    'CONIN$',
 )
 
 
@@ -36,6 +43,20 @@ class WindowsSecurityTest(BaseTest):
             with self.subTest(path=path), patch('os.path.realpath', touches_the_filesystem), patch('os.stat', touches_the_filesystem):
                 self.assertFalse(is_ok_to_read_image_path(path))
                 self.assertFalse(is_path_in_temp_dir(path))
+
+    def test_temporary_image_cleanup_deletes_nothing_but_its_own_files(self):
+        from kitty.utils import may_delete_temp_graphics_file
+        temp = tempfile.gettempdir()
+        drive = os.path.splitdrive(temp)[0] or 'C:'
+        for path in (
+            os.path.join(temp, 'tty-graphics-protocol', '..', 'report.docx'),
+            os.path.join(temp, 'missing', '..', '..', 'tty-graphics-protocol-x.png'),
+            drive + r'\tmp-projects\tty-graphics-protocol-x.png',
+            temp + '-other' + r'\tty-graphics-protocol-x.png',
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(may_delete_temp_graphics_file(path))
+        self.assertTrue(may_delete_temp_graphics_file(os.path.join(temp, 'sub', 'tty-graphics-protocol-x.png')))
 
     def test_local_image_paths_are_still_read(self):
         from kitty.utils import is_ok_to_read_image_path, is_path_in_temp_dir

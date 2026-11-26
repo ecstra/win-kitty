@@ -181,6 +181,9 @@ func transmit_file(imgd *image_data, frame_num int, frame *image_frame) (err err
 		if err != nil {
 			return fmt.Errorf("Failed to convert image data output file: %s to absolute path with error: %w", frame.filename, err)
 		}
+		if on_another_machine(fname) {
+			return transmit_stream(imgd, frame_num, frame)
+		}
 		frame.filename = "" // so it isn't deleted in cleanup
 	} else {
 		is_temp = true

@@ -177,10 +177,10 @@ from .utils import (
     get_new_os_window_size,
     is_ok_to_read_image_file,
     is_ok_to_read_image_path,
-    is_path_in_temp_dir,
     less_version,
     log_error,
     macos_version,
+    may_delete_temp_graphics_file,
     open_url,
     parse_address_spec,
     parse_os_window_state,
@@ -3981,7 +3981,7 @@ class Boss:
         clear_caches()
 
     def safe_delete_temp_file(self, path: str) -> None:
-        if is_path_in_temp_dir(path):
+        if may_delete_temp_graphics_file(path):
             with suppress(FileNotFoundError):
                 os.remove(path)
 

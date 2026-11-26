@@ -271,6 +271,8 @@ wakeup_io_loop(ChildMonitor *self, bool in_signal_handler) {
 }
 
 #ifdef _WIN32
+#include <sddl.h>    // the graphics pipe's permissions
+#include <aclapi.h>  // and their check
 /* Called from child.c's process-exit thread-pool callback (the Windows stand-in
  * for SIGCHLD). Wake the io_loop so it reaps exited children. */
 void
@@ -385,19 +387,67 @@ done:
     return 0;
 }
 
+// Token information of one class, which the caller frees
+static void*
+own_token_info(TOKEN_INFORMATION_CLASS which) {
+    HANDLE token;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return NULL;
+    DWORD sz = 0;
+    GetTokenInformation(token, which, NULL, 0, &sz);
+    void *ans = sz ? malloc(sz) : NULL;
+    if (ans && !GetTokenInformation(token, which, ans, sz, &sz)) { free(ans); ans = NULL; }
+    CloseHandle(token);
+    return ans;
+}
+
+// Whether the pipe a new instance joined is kitty's own, its owner being the
+// one kitty's own objects get
+static bool
+pipe_is_ours(HANDLE pipe, PSID owner_of_ours) {
+    PSID owner = NULL;
+    PSECURITY_DESCRIPTOR sd = NULL;
+    const bool ans = GetSecurityInfo(pipe, SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION, &owner, NULL, NULL, NULL, &sd) == ERROR_SUCCESS &&
+                     owner && EqualSid(owner, owner_of_ours);
+    if (sd) LocalFree(sd);
+    return ans;
+}
+
 static DWORD WINAPI
 graphics_pipe_waiter(LPVOID param) {
     (void)param;
     char name[64];
     snprintf(name, sizeof(name), "\\\\.\\pipe\\kitty-gfx-%lu", (unsigned long)GetCurrentProcessId());
-    while (true) {
+    // The name can be predicted from kitty's pid, so another user on the
+    // machine could create the pipe first and have kitty's instances join it,
+    // under that user's permissions, then write into kitty's windows. So the
+    // first instance must be the first of its name, every instance must be on
+    // kitty's own pipe, and only the user kitty runs as and SYSTEM may use it.
+    TOKEN_USER *user = own_token_info(TokenUser);
+    TOKEN_OWNER *owner = own_token_info(TokenOwner);
+    char *user_sid = NULL, sddl[256];
+    SECURITY_ATTRIBUTES sa = {.nLength = sizeof(sa)};
+    if (!user || !owner || !ConvertSidToStringSidA(user->User.Sid, &user_sid) ||
+        snprintf(sddl, sizeof(sddl), "D:P(A;;GA;;;%s)(A;;GA;;;SY)", user_sid) >= (int)sizeof(sddl) ||
+        !ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl, SDDL_REVISION_1, &sa.lpSecurityDescriptor, NULL)) {
+        log_error("Not starting the graphics pipe, as its permissions could not be set up");
+        goto end;
+    }
+    for (DWORD first = FILE_FLAG_FIRST_PIPE_INSTANCE; ; first = 0) {
         // Named pipes take clients over SMB too, so another machine signed in
         // as the user or an administrator could write into any kitty window.
         // The pipe is for programs on this machine only.
         HANDLE pipe = CreateNamedPipeA(
-            name, PIPE_ACCESS_INBOUND, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, PIPE_UNLIMITED_INSTANCES, 0,
-            1u << 16, 0, NULL);
-        if (pipe == INVALID_HANDLE_VALUE) return 0;
+            name, PIPE_ACCESS_INBOUND | first, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_UNLIMITED_INSTANCES, 0, 1u << 16, 0, &sa);
+        if (pipe == INVALID_HANDLE_VALUE) {
+            if (first) log_error("Not starting the graphics pipe, as %s already exists, made by another program", name);
+            break;
+        }
+        if (!pipe_is_ours(pipe, owner->Owner)) {
+            log_error("Stopping the graphics pipe, as %s now belongs to another program", name);
+            CloseHandle(pipe);
+            break;
+        }
         if (!ConnectNamedPipe(pipe, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
             CloseHandle(pipe);
             continue;
@@ -409,6 +459,10 @@ graphics_pipe_waiter(LPVOID param) {
             CloseHandle(pipe);
         }
     }
+end:
+    if (sa.lpSecurityDescriptor) LocalFree(sa.lpSecurityDescriptor);
+    if (user_sid) LocalFree(user_sid);
+    free(user); free(owner);
     return 0;
 }
 
