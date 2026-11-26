@@ -421,13 +421,17 @@ graphics_pipe_waiter(LPVOID param) {
     // machine could create the pipe first and have kitty's instances join it,
     // under that user's permissions, then write into kitty's windows. So the
     // first instance must be the first of its name, every instance must be on
-    // kitty's own pipe, and only the user kitty runs as and SYSTEM may use it.
-    TOKEN_USER *user = own_token_info(TokenUser);
+    // kitty's own pipe, and only kitty's own kind of process may use it. That
+    // is the owner kitty's objects get, the user for an ordinary kitty and
+    // Administrators for an elevated one, as Windows' own default grants, and
+    // SYSTEM, behind a no write up label at kitty's integrity level, so an
+    // elevated kitty takes no writes from the user's unelevated programs.
     TOKEN_OWNER *owner = own_token_info(TokenOwner);
-    char *user_sid = NULL, sddl[256];
+    TOKEN_MANDATORY_LABEL *level = own_token_info(TokenIntegrityLevel);
+    char *owner_sid = NULL, *level_sid = NULL, sddl[384];
     SECURITY_ATTRIBUTES sa = {.nLength = sizeof(sa)};
-    if (!user || !owner || !ConvertSidToStringSidA(user->User.Sid, &user_sid) ||
-        snprintf(sddl, sizeof(sddl), "D:P(A;;GA;;;%s)(A;;GA;;;SY)", user_sid) >= (int)sizeof(sddl) ||
+    if (!owner || !level || !ConvertSidToStringSidA(owner->Owner, &owner_sid) || !ConvertSidToStringSidA(level->Label.Sid, &level_sid) ||
+        snprintf(sddl, sizeof(sddl), "D:P(A;;GA;;;%s)(A;;GA;;;SY)S:(ML;;NW;;;%s)", owner_sid, level_sid) >= (int)sizeof(sddl) ||
         !ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl, SDDL_REVISION_1, &sa.lpSecurityDescriptor, NULL)) {
         log_error("Not starting the graphics pipe, as its permissions could not be set up");
         goto end;
@@ -461,8 +465,9 @@ graphics_pipe_waiter(LPVOID param) {
     }
 end:
     if (sa.lpSecurityDescriptor) LocalFree(sa.lpSecurityDescriptor);
-    if (user_sid) LocalFree(user_sid);
-    free(user); free(owner);
+    if (owner_sid) LocalFree(owner_sid);
+    if (level_sid) LocalFree(level_sid);
+    free(owner); free(level);
     return 0;
 }
 
