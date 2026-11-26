@@ -52,14 +52,20 @@ func query_pixel_size() (width, height uint16) {
 			}
 		}
 	}
-	s := string(buf)
+	return parse_pixel_size_reply(string(buf))
+}
+
+// parse_pixel_size_reply reads the CSI 4 ; height ; width t reply, or 0, 0
+// when there is none. A size that does not fit in 16 bits is ignored rather
+// than wrapped into a wrong one.
+func parse_pixel_size_reply(s string) (width, height uint16) {
 	if i := strings.Index(s, "\x1b[4;"); i >= 0 {
 		s = s[i+len("\x1b[4;"):]
 		if j := strings.IndexByte(s, 't'); j >= 0 {
 			if parts := strings.Split(s[:j], ";"); len(parts) == 2 {
-				h, _ := strconv.Atoi(parts[0])
-				w, _ := strconv.Atoi(parts[1])
-				if w > 0 && h > 0 {
+				h, herr := strconv.ParseUint(parts[0], 10, 16)
+				w, werr := strconv.ParseUint(parts[1], 10, 16)
+				if herr == nil && werr == nil && w > 0 && h > 0 {
 					return uint16(w), uint16(h)
 				}
 			}

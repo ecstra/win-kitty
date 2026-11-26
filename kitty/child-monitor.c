@@ -391,8 +391,12 @@ graphics_pipe_waiter(LPVOID param) {
     char name[64];
     snprintf(name, sizeof(name), "\\\\.\\pipe\\kitty-gfx-%lu", (unsigned long)GetCurrentProcessId());
     while (true) {
-        HANDLE pipe =
-            CreateNamedPipeA(name, PIPE_ACCESS_INBOUND, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, 0, 1u << 16, 0, NULL);
+        // Named pipes take clients over SMB too, so another machine signed in
+        // as the user or an administrator could write into any kitty window.
+        // The pipe is for programs on this machine only.
+        HANDLE pipe = CreateNamedPipeA(
+            name, PIPE_ACCESS_INBOUND, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, PIPE_UNLIMITED_INSTANCES, 0,
+            1u << 16, 0, NULL);
         if (pipe == INVALID_HANDLE_VALUE) return 0;
         if (!ConnectNamedPipe(pipe, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
             CloseHandle(pipe);
