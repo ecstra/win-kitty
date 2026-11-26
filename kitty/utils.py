@@ -1396,6 +1396,17 @@ def sanitized_filename_from_url(url: str) -> str:
         return ''
 
 
+def windows_socket_tmp_dir() -> str:
+    '''Where unix:/tmp/... lies on Windows, the user's own temp folder, which
+    kitten finds the same way. TMP and TEMP are not read, since an MSYS2 shell
+    points them at its own tmp folder, and kitty and kitten would disagree.'''
+    if local := os.environ.get('LOCALAPPDATA'):
+        return os.path.join(local, 'Temp')
+    import tempfile
+
+    return tempfile.gettempdir()
+
+
 def windows_file_url(url: str, windows_path_of: Callable[[str], str] | None = None) -> str:
     '''The file URL for a file on this machine in the form Windows programs read,
     file:///C:/path. MSYS2 and Cygwin shells name the C: drive /c and /cygdrive/c,
@@ -1429,8 +1440,10 @@ def posix_path_converter(exe: str) -> Callable[[str], str] | None:
     import subprocess
 
     exe_dir = os.path.dirname(exe)
-    # The runtime sits beside the program, or in usr\bin for Git Bash's bin\bash.exe
-    for bin_dir in (exe_dir, os.path.join(os.path.dirname(exe_dir), 'usr', 'bin')):
+    # The runtime sits beside the program, in usr\bin above it for Git Bash's
+    # bin\bash.exe, or below it for a shell started through msys2_shell.cmd in
+    # the MSYS2 folder or Cygwin.bat in the Cygwin one
+    for bin_dir in (exe_dir, os.path.join(os.path.dirname(exe_dir), 'usr', 'bin'), os.path.join(exe_dir, 'usr', 'bin'), os.path.join(exe_dir, 'bin')):
         cygpath = os.path.join(bin_dir, 'cygpath.exe')
         if os.path.exists(cygpath) and any(os.path.exists(os.path.join(bin_dir, dll)) for dll in ('msys-2.0.dll', 'cygwin1.dll')):
             break

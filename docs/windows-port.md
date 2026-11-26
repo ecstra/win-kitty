@@ -105,8 +105,10 @@ Not tested, so treat as unknown rather than working.
     listen_on unix:kitty
 
 A relative path lands in the temp folder, with kitty's process id added when
-it comes from kitty.conf, as on Linux, and so does a path under `/tmp`, such as
-`unix:/tmp/mykitty` from kitty's own docs. The socket file goes away when kitty
+it comes from kitty.conf, as on Linux. A path under `/tmp`, such as
+`unix:/tmp/mykitty` from kitty's own docs, lands in your own temp folder,
+`AppData\Local\Temp`, for kitty and `kitten @` alike, whatever temp folder an
+MSYS2 shell sets. The socket file goes away when kitty
 exits. The address goes into `KITTY_LISTEN_ON` for every child, so `kitten @ ls`
 inside a kitty window needs no `--to`. From outside, pass it with
 `--to unix:PATH`. Abstract sockets, `unix:@name`, exist only on Linux.

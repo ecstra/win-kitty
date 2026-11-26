@@ -124,10 +124,17 @@ class WindowsFeaturesTest(BaseTest):
         root = os.path.dirname(os.path.dirname(os.path.dirname(bash)))
         self.assertEqual(os.path.normcase(convert('/usr/bin')), os.path.normcase(os.path.join(root, 'usr', 'bin')))
         self.assertIn(os.path.normcase(convert('/tmp')), (os.path.normcase(os.path.join(root, 'tmp')), os.path.normcase(tempfile.gettempdir())))
+        # A shell started through msys2_shell.cmd, in the MSYS2 folder itself
+        through_script = posix_path_converter(os.path.join(root, 'msys2_shell.cmd'))
+        self.assertIsNotNone(through_script)
+        assert through_script is not None
+        self.assertEqual(os.path.normcase(through_script('/usr/bin')), os.path.normcase(os.path.join(root, 'usr', 'bin')))
 
     def test_listen_on_tmp_lands_in_the_temp_folder(self):
         from kitty.main import expand_listen_on
-        self.assertEqual(expand_listen_on('unix:/tmp/mykitty', False, {}), f'unix:{os.path.join(tempfile.gettempdir(), "mykitty")}')
+        # The user's own temp folder, whatever TMP an MSYS2 shell set, as kitten takes it
+        with tempfile.TemporaryDirectory() as tdir, patch.dict(os.environ, {'LOCALAPPDATA': tdir, 'TMP': os.path.join(tdir, 'msys64', 'tmp')}):
+            self.assertEqual(expand_listen_on('unix:/tmp/mykitty', False, {}), f'unix:{os.path.join(tdir, "Temp", "mykitty")}')
 
     def test_listen_on_a_missing_folder_says_so(self):
         from kitty.boss import listen_on
