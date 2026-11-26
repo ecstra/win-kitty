@@ -271,6 +271,8 @@ wakeup_io_loop(ChildMonitor *self, bool in_signal_handler) {
 }
 
 #ifdef _WIN32
+#include <sddl.h>    // the graphics pipe's permissions
+#include <aclapi.h>  // and their check
 /* Called from child.c's process-exit thread-pool callback (the Windows stand-in
  * for SIGCHLD). Wake the io_loop so it reaps exited children. */
 void
@@ -385,26 +387,108 @@ done:
     return 0;
 }
 
+// Token information of one class, which the caller frees
+static void*
+own_token_info(TOKEN_INFORMATION_CLASS which) {
+    HANDLE token;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return NULL;
+    DWORD sz = 0;
+    GetTokenInformation(token, which, NULL, 0, &sz);
+    void *ans = sz ? malloc(sz) : NULL;
+    if (ans && !GetTokenInformation(token, which, ans, sz, &sz)) { free(ans); ans = NULL; }
+    CloseHandle(token);
+    return ans;
+}
+
+// Whether the pipe a new instance joined is kitty's own, its owner being the
+// one kitty's own objects get
+static bool
+pipe_is_ours(HANDLE pipe, PSID owner_of_ours) {
+    PSID owner = NULL;
+    PSECURITY_DESCRIPTOR sd = NULL;
+    const bool ans = GetSecurityInfo(pipe, SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION, &owner, NULL, NULL, NULL, &sd) == ERROR_SUCCESS &&
+                     owner && EqualSid(owner, owner_of_ours);
+    if (sd) LocalFree(sd);
+    return ans;
+}
+
+// One instance of the graphics pipe, or NULL once it cannot be kitty's own
+static HANDLE
+new_gfx_pipe_instance(const char *name, SECURITY_ATTRIBUTES *sa, PSID owner, bool first) {
+    // Named pipes take clients over SMB too, so another machine signed in as
+    // the user or an administrator could write into any kitty window. The
+    // pipe is for programs on this machine only.
+    HANDLE pipe = CreateNamedPipeA(
+        name, PIPE_ACCESS_INBOUND | (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0),
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, PIPE_UNLIMITED_INSTANCES, 0, 1u << 16, 0, sa);
+    if (pipe == INVALID_HANDLE_VALUE) {
+        if (first) log_error("Not starting the graphics pipe, as %s already exists, made by another program", name);
+        else log_error("Stopping the graphics pipe, as another instance of %s could not be made, Windows error %lu", name, GetLastError());
+        return NULL;
+    }
+    if (!pipe_is_ours(pipe, owner)) {
+        log_error("Stopping the graphics pipe, as %s now belongs to another program", name);
+        CloseHandle(pipe);
+        return NULL;
+    }
+    return pipe;
+}
+
 static DWORD WINAPI
 graphics_pipe_waiter(LPVOID param) {
     (void)param;
     char name[64];
     snprintf(name, sizeof(name), "\\\\.\\pipe\\kitty-gfx-%lu", (unsigned long)GetCurrentProcessId());
-    while (true) {
-        HANDLE pipe =
-            CreateNamedPipeA(name, PIPE_ACCESS_INBOUND, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, 0, 1u << 16, 0, NULL);
-        if (pipe == INVALID_HANDLE_VALUE) return 0;
-        if (!ConnectNamedPipe(pipe, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
-            CloseHandle(pipe);
-            continue;
+    // The name can be predicted from kitty's pid, so another user on the
+    // machine could create the pipe first and have kitty's instances join it,
+    // under that user's permissions, then write into kitty's windows. So the
+    // first instance must be the first of its name, every instance must be on
+    // kitty's own pipe, and only kitty's own kind of process may use it. That
+    // is the owner kitty's objects get, the user for an ordinary kitty and
+    // Administrators for an elevated one, as Windows' own default grants, and
+    // SYSTEM, behind a no write up label at kitty's integrity level, so an
+    // elevated kitty takes no writes from the user's unelevated programs.
+    TOKEN_OWNER *owner = own_token_info(TokenOwner);
+    TOKEN_MANDATORY_LABEL *level = own_token_info(TokenIntegrityLevel);
+    char *owner_sid = NULL, *level_sid = NULL, sddl[384];
+    SECURITY_ATTRIBUTES sa = {.nLength = sizeof(sa)};
+    if (!owner || !level || !ConvertSidToStringSidA(owner->Owner, &owner_sid) || !ConvertSidToStringSidA(level->Label.Sid, &level_sid) ||
+        snprintf(sddl, sizeof(sddl), "D:P(A;;GA;;;%s)(A;;GA;;;SY)S:(ML;;NW;;;%s)", owner_sid, level_sid) >= (int)sizeof(sddl) ||
+        !ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl, SDDL_REVISION_1, &sa.lpSecurityDescriptor, NULL)) {
+        log_error("Not starting the graphics pipe, as its permissions could not be set up");
+        goto end;
+    }
+    HANDLE pipe = new_gfx_pipe_instance(name, &sa, owner->Owner, true);
+    while (pipe) {
+        if (!ConnectNamedPipe(pipe, NULL)) {
+            const DWORD err = GetLastError();
+            if (err == ERROR_NO_DATA) {
+                // The client left before it was taken, so this instance waits for the next one
+                DisconnectNamedPipe(pipe);
+                continue;
+            }
+            if (err != ERROR_PIPE_CONNECTED) {
+                log_error("Stopping the graphics pipe, as waiting for a client failed with Windows error %lu", err);
+                CloseHandle(pipe);
+                break;
+            }
         }
+        // The next instance exists before this one can close, so the pipe's
+        // name is never free for another program to take while kitty runs
+        HANDLE next = new_gfx_pipe_instance(name, &sa, owner->Owner, false);
         HANDLE t = CreateThread(NULL, 0, gfx_connection_handler, pipe, 0, NULL);
         if (t) CloseHandle(t);
         else {
             DisconnectNamedPipe(pipe);
             CloseHandle(pipe);
         }
+        pipe = next;
     }
+end:
+    if (sa.lpSecurityDescriptor) LocalFree(sa.lpSecurityDescriptor);
+    if (owner_sid) LocalFree(owner_sid);
+    if (level_sid) LocalFree(level_sid);
+    free(owner); free(level);
     return 0;
 }
 

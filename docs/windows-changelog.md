@@ -31,6 +31,8 @@ Based on kitty 0.51.1.
 - Keypad keys, the modifier keys on their own, and the mouse back and forward buttons can be bound. More pointer shapes show their own cursor.
 - A tab bar on the left or right starts below the title bar, and a precision touchpad scrolls smoothly instead of a line at a time.
 - `KITTY_OS` is `windows`, and kitty opens files to edit in Notepad when no other editor is found.
+- A program can no longer make kitty send your Windows login hash to another machine by naming an image file on a network share. Such paths are refused before kitty touches them.
+- The pipe kittens use to draw no longer accepts connections from other machines.
 - Windows opened after the first one, a dragged out tab among them, no longer draw their window borders and the edges of the tab bar in random colours, often black.
 - With a see-through background, the space beside the tabs no longer shows as a solid dark strip.
 - Characters typed with AltGr, such as @ on a German layout, no longer arrive with an escape code in front of them.

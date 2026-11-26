@@ -691,8 +691,24 @@ def edit_file(path: str = '') -> NoReturn:
     os.execlp(editor[0], *editor)
 
 
+def reaches_another_machine_or_a_device(path: str) -> bool:
+    '''Whether opening path on Windows, or even resolving it, could contact
+    another machine or open a device. A UNC path such as \\\\host\\share, and the
+    \\\\?\\, \\\\.\\ and \\??\\ forms, make Windows sign in to the host with the user's
+    login hash, so a program in a kitty window naming one in an image escape
+    code would send that hash wherever it liked. Names such as COM1 and PRN
+    open a device, which for a serial port resets the board on it.'''
+    if not is_windows:
+        return False
+    if path.replace('/', '\\').startswith('\\??\\'):
+        return True
+    # abspath is GetFullPathNameW, which works on the text alone and turns a
+    # device name into \\.\COM1 exactly as opening it would
+    return os.path.abspath(path).replace('/', '\\').startswith('\\\\')
+
+
 def is_path_in_temp_dir(path: str) -> bool:
-    if not path:
+    if not path or reaches_another_machine_or_a_device(path):
         return False
 
     def abspath(x: str | None) -> str:
@@ -704,10 +720,30 @@ def is_path_in_temp_dir(path: str) -> bool:
 
     path = abspath(path)
     candidates = frozenset(map(abspath, ('/tmp', '/dev/shm', os.environ.get('TMPDIR', None), tempfile.gettempdir())))
+    if is_windows:
+        # A folder boundary, or C:\tmp would also match C:\tmp-projects
+        def norm(x: str) -> str:
+            return os.path.normcase(x).replace('/', '\\').rstrip('\\')
+
+        p = norm(path)
+        return any(q and (p == norm(q) or p.startswith(norm(q) + '\\')) for q in candidates)
     for q in candidates:
         if q and path.startswith(q):
             return True
     return False
+
+
+def may_delete_temp_graphics_file(path: str) -> bool:
+    '''Whether the cleanup of a temporary file a graphics command sent may
+    delete path. kitty deletes such a file only when its name carries
+    tty-graphics-protocol. Windows resolves .. by text, through folders that
+    need not exist, so %TEMP%\\tty-graphics-protocol\\..\\report.docx carries
+    the name yet means report.docx, and there the resolved file itself must.'''
+    if not is_path_in_temp_dir(path):
+        return False
+    if is_windows:
+        return 'tty-graphics-protocol' in os.path.basename(os.path.realpath(path))
+    return True
 
 
 def is_ok_to_read_image_path(path: str) -> bool:
@@ -717,7 +753,7 @@ def is_ok_to_read_image_path(path: str) -> bool:
     can have side effects and the success or failure of the open leaks the
     existence of the file to the, possibly remote or sandboxed, client.
     """
-    if not path:
+    if not path or reaches_another_machine_or_a_device(path):
         return False
     path = os.path.abspath(os.path.realpath(path))
     parts = path.split(os.sep)[1:]
