@@ -412,6 +412,28 @@ pipe_is_ours(HANDLE pipe, PSID owner_of_ours) {
     return ans;
 }
 
+// One instance of the graphics pipe, or NULL once it cannot be kitty's own
+static HANDLE
+new_gfx_pipe_instance(const char *name, SECURITY_ATTRIBUTES *sa, PSID owner, bool first) {
+    // Named pipes take clients over SMB too, so another machine signed in as
+    // the user or an administrator could write into any kitty window. The
+    // pipe is for programs on this machine only.
+    HANDLE pipe = CreateNamedPipeA(
+        name, PIPE_ACCESS_INBOUND | (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0),
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, PIPE_UNLIMITED_INSTANCES, 0, 1u << 16, 0, sa);
+    if (pipe == INVALID_HANDLE_VALUE) {
+        if (first) log_error("Not starting the graphics pipe, as %s already exists, made by another program", name);
+        else log_error("Stopping the graphics pipe, as another instance of %s could not be made, Windows error %lu", name, GetLastError());
+        return NULL;
+    }
+    if (!pipe_is_ours(pipe, owner)) {
+        log_error("Stopping the graphics pipe, as %s now belongs to another program", name);
+        CloseHandle(pipe);
+        return NULL;
+    }
+    return pipe;
+}
+
 static DWORD WINAPI
 graphics_pipe_waiter(LPVOID param) {
     (void)param;
@@ -436,32 +458,31 @@ graphics_pipe_waiter(LPVOID param) {
         log_error("Not starting the graphics pipe, as its permissions could not be set up");
         goto end;
     }
-    for (DWORD first = FILE_FLAG_FIRST_PIPE_INSTANCE; ; first = 0) {
-        // Named pipes take clients over SMB too, so another machine signed in
-        // as the user or an administrator could write into any kitty window.
-        // The pipe is for programs on this machine only.
-        HANDLE pipe = CreateNamedPipeA(
-            name, PIPE_ACCESS_INBOUND | first, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            PIPE_UNLIMITED_INSTANCES, 0, 1u << 16, 0, &sa);
-        if (pipe == INVALID_HANDLE_VALUE) {
-            if (first) log_error("Not starting the graphics pipe, as %s already exists, made by another program", name);
-            break;
+    HANDLE pipe = new_gfx_pipe_instance(name, &sa, owner->Owner, true);
+    while (pipe) {
+        if (!ConnectNamedPipe(pipe, NULL)) {
+            const DWORD err = GetLastError();
+            if (err == ERROR_NO_DATA) {
+                // The client left before it was taken, so this instance waits for the next one
+                DisconnectNamedPipe(pipe);
+                continue;
+            }
+            if (err != ERROR_PIPE_CONNECTED) {
+                log_error("Stopping the graphics pipe, as waiting for a client failed with Windows error %lu", err);
+                CloseHandle(pipe);
+                break;
+            }
         }
-        if (!pipe_is_ours(pipe, owner->Owner)) {
-            log_error("Stopping the graphics pipe, as %s now belongs to another program", name);
-            CloseHandle(pipe);
-            break;
-        }
-        if (!ConnectNamedPipe(pipe, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
-            CloseHandle(pipe);
-            continue;
-        }
+        // The next instance exists before this one can close, so the pipe's
+        // name is never free for another program to take while kitty runs
+        HANDLE next = new_gfx_pipe_instance(name, &sa, owner->Owner, false);
         HANDLE t = CreateThread(NULL, 0, gfx_connection_handler, pipe, 0, NULL);
         if (t) CloseHandle(t);
         else {
             DisconnectNamedPipe(pipe);
             CloseHandle(pipe);
         }
+        pipe = next;
     }
 end:
     if (sa.lpSecurityDescriptor) LocalFree(sa.lpSecurityDescriptor);
