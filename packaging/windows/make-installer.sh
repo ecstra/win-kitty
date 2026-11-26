@@ -7,6 +7,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 
 "$HERE/make-dist.sh"
 "$HERE/make-shellext.sh"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$HERE/make-installer-art.ps1")"
 
 ISCC=""
 for c in "$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe" \

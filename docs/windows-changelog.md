@@ -12,6 +12,7 @@ Based on kitty 0.51.1.
 - Dragging selected text or a link out of kitty into other programs. A link to a file drops as the file, which Explorer copies.
 - Remote control over a Unix socket, `listen_on unix:PATH`.
 - `kitty +list-fonts` and the other `kitty +` commands, and the full `kitty --help`, print in any terminal, PowerShell included.
+- The installer can install kitty for you only, with no administrator prompt, which is now the default, or for everyone as before. It follows Windows' light or dark mode, with kitty's cat on its pages.
 
 ### Fixed
 
@@ -33,6 +34,7 @@ Based on kitty 0.51.1.
 - `KITTY_OS` is `windows`, and kitty opens files to edit in Notepad when no other editor is found.
 - A program can no longer make kitty send your Windows login hash to another machine by naming an image file on a network share. Such paths are refused before kitty touches them.
 - The pipe kittens use to draw no longer accepts connections from other machines.
+- The installed kitty no longer prints "Fontconfig error: Cannot load default config file", and keeps a font cache, so it finds fonts faster.
 - Windows opened after the first one, a dragged out tab among them, no longer draw their window borders and the edges of the tab bar in random colours, often black.
 - With a see-through background, the space beside the tabs no longer shows as a solid dark strip.
 - Characters typed with AltGr, such as @ on a German layout, no longer arrive with an escape code in front of them.

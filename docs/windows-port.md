@@ -19,18 +19,23 @@ Bug reports for the Windows build belong on the fork at https://github.com/ecstr
 
 ## Installing
 
-Run `dist/kitty-setup.exe`. It asks for administrator rights, because it installs for all users and writes to `C:\Program Files\kitty`.
+Run `dist/kitty-setup.exe`. It first asks whether to install for you only or for everyone.
+
+- For me only, the default, needs no administrator rights. kitty goes into `%LOCALAPPDATA%\Programs\kitty`, and its Start menu entry, PATH entry, Run entry and Explorer menu are yours alone.
+- For everyone asks for administrator rights and installs into `C:\Program Files\kitty` for every user of the machine.
+
+An upgrade keeps the choice the earlier install made. The installer follows Windows' light or dark mode.
 
 The installer offers three optional tasks.
 
-- Add kitty to your PATH: puts `<install>\bin` on the system PATH so `kitty` and `kitten` work in any terminal.
-- Add "Open in kitty" to the Explorer right click menu: appears in the main Windows 11 menu, and under "Show more options" as well. Both are installed because Windows 11 reads the two from different places, see [windows-internals.md](windows-internals.md).
+- Add kitty to your PATH: puts `<install>\bin` on your PATH, or the machine's for everyone, so `kitty` and `kitten` work in any terminal.
+- Add "Open in kitty" to the Explorer right click menu: appears under "Show more options", and for everyone in the main Windows 11 menu as well. The main menu needs a package whose certificate is trusted for the whole machine, which takes administrator rights, see [windows-internals.md](windows-internals.md).
 - Create a desktop shortcut: off by default.
 
-A Start menu entry is always created. To install without any prompts, run it with the silent flags.
+A Start menu entry is always created. To install without any prompts, run it with the silent flags, and `/CURRENTUSER` or `/ALLUSERS` to pick the install.
 
 ```
-dist\kitty-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+dist\kitty-setup.exe /CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 Close any running kitty first. The source tree keeps its own development build at `kitty\launcher\kitty.exe`, which the installer never touches.
@@ -274,7 +279,7 @@ build crashes on an older CPU with an illegal instruction and no message.
 
 ## Building the installer
 
-One command does everything. It builds kitty including the `.pyd` copy, builds both launchers and the Go `kitten` binary, assembles the self contained tree at `dist/kitty` with the Python standard library and every MinGW DLL the binaries need, smoke tests that tree with a clean PATH, builds and signs the Explorer shell extension, and compiles `dist/kitty-setup.exe` with Inno Setup.
+One command does everything. It builds kitty including the `.pyd` copy, builds both launchers and the Go `kitten` binary, assembles the self contained tree at `dist/kitty` with the Python standard library and every MinGW DLL the binaries need, smoke tests that tree with a clean PATH, builds and signs the Explorer shell extension, draws the installer's art, and compiles `dist/kitty-setup.exe` with Inno Setup 6.7 or newer.
 
 ```
 ./packaging/windows/make-installer.sh
