@@ -127,6 +127,10 @@ Both shims are console programs, since a shell waits for a console program and r
 
 The full `kitty --help` comes from Python, which on Windows prints it straight to the console rather than through a pager, since Windows has no pager kitty can count on.
 
+Some of these hand off to kitten, `kitty +kitten` with a kitten written in Go and `kitty @` in the launcher, `+complete`, `+hold` and `+shebang` in kitty/entry_points.py. On Unix they exec it. The CRT's exec on Windows starts the new program and ends the old one at once, with exit code 0 and its arguments unquoted, so a shell got its prompt back before kitten printed, lost its exit code, and saw an argument with a space as two. On Windows they start kitten as a child instead, with each argument quoted the way CommandLineToArgvW reads it, wait for it, and exit with its code. They and the shims ignore Ctrl+C while they wait, since it reaches the child too, which decides when it ends.
+
+A file link from an MSYS2 or Cygwin shell names a path such as `/home/me` that only that shell's runtime can place, since its mounts decide it, and Git Bash and some MSYS2 installs mount `/tmp` on the Windows temp folder. So a drag looks for the runtime beside the window's shell, or in `usr\bin` under it as for Git Bash's `bin\bash.exe`, in `posix_path_converter`, and asks its `cygpath` for the Windows path. WSL's `/mnt/c` is the C: drive, and a WSL path outside `/mnt` stays a link, since kitty cannot tell which distribution printed it.
+
 ## Packaging
 
 packaging/windows/make-dist.sh assembles a relocatable tree at `dist/kitty`. It builds kitty and both launchers, copies the `.so` files to `.pyd`, mirrors the source layout because the launcher resolves everything relative to itself, bundles the Python standard library under `pylib`, walks the import table of every binary with objdump to copy in the MinGW DLL closure, and then smoke tests the result with a cleaned PATH so a missing DLL fails the build rather than the user.

@@ -93,14 +93,37 @@ class WindowsFeaturesTest(BaseTest):
         ):
             with self.subTest(url=url):
                 self.assertEqual(windows_file_url(url), expected)
-        for url, root, expected in (
-            (f'file://{host}/home/me/notes.txt', 'C:/msys64', 'file:///C:/msys64/home/me/notes.txt'),
-            ('file:///tmp/a%20b', 'C:\\cygwin64\\', 'file:///C:/cygwin64/tmp/a%20b'),
-            ('file:///mnt/c/Users/me/x.txt', '', 'file:///C:/Users/me/x.txt'),
-            ('file:///c/Users/me', 'C:/msys64', 'file:///C:/Users/me'),
+        # A shell's runtime knows where its own paths lie, /tmp on the temp
+        # folder for Git Bash among them, so the mapping is the runtime's
+        mounts = {'/home/me/notes.txt': 'C:\\msys64\\home\\me\\notes.txt', '/tmp/a b': 'C:\\Users\\me\\AppData\\Local\\Temp\\a b'}
+
+        def windows_path_of(path: str) -> str:
+            return mounts.get(path, '')
+
+        for url, expected in (
+            (f'file://{host}/home/me/notes.txt', 'file:///C:/msys64/home/me/notes.txt'),
+            ('file:///tmp/a%20b', 'file:///C:/Users/me/AppData/Local/Temp/a%20b'),
+            ('file:///etc/unknown', 'file:///etc/unknown'),
+            ('file:///mnt/c/Users/me/x.txt', 'file:///C:/Users/me/x.txt'),
+            ('file:///c/Users/me', 'file:///C:/Users/me'),
         ):
-            with self.subTest(url=url, root=root):
-                self.assertEqual(windows_file_url(url, root), expected)
+            with self.subTest(url=url):
+                self.assertEqual(windows_file_url(url, windows_path_of), expected)
+
+    def test_posix_paths_come_from_the_shells_own_runtime(self):
+        import shutil
+        import tempfile
+
+        from kitty.utils import posix_path_converter
+        python = shutil.which('python')
+        bash = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(python))), 'usr', 'bin', 'bash.exe') if python else ''
+        convert = posix_path_converter(bash) if bash and os.path.exists(bash) else None
+        if convert is None:
+            self.skipTest('no MSYS2 bash beside the Python running the tests')
+        self.assertIsNone(posix_path_converter(os.path.join(os.environ['SystemRoot'], 'System32', 'cmd.exe')))
+        root = os.path.dirname(os.path.dirname(os.path.dirname(bash)))
+        self.assertEqual(os.path.normcase(convert('/usr/bin')), os.path.normcase(os.path.join(root, 'usr', 'bin')))
+        self.assertIn(os.path.normcase(convert('/tmp')), (os.path.normcase(os.path.join(root, 'tmp')), os.path.normcase(tempfile.gettempdir())))
 
     def test_listen_on_tmp_lands_in_the_temp_folder(self):
         from kitty.main import expand_listen_on
@@ -125,6 +148,16 @@ class WindowsFeaturesTest(BaseTest):
         p = run('+kitten', 'clipboard', '--no such option')
         self.assertEqual(p.returncode, 1, p.stderr)
         self.assertIn('--no such option', p.stderr)
+
+    def test_plus_commands_handing_off_to_kitten_keep_accented_letters(self):
+        try:
+            'é'.encode('mbcs')
+        except UnicodeEncodeError:
+            self.skipTest('the ANSI code page here has no é')
+        exe = os.path.join(os.path.dirname(kitty_exe()), 'kitty-console.exe')
+        p = subprocess.run([exe, '+kitten', 'clipboard', '--Café'], capture_output=True, encoding='utf-8', errors='replace',
+                           timeout=60, stdin=subprocess.DEVNULL)
+        self.assertIn('--Café', p.stderr)
 
     def test_help_from_another_terminal_lists_every_option(self):
         exe = os.path.join(os.path.dirname(kitty_exe()), 'kitty-console.exe')

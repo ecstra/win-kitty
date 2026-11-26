@@ -386,25 +386,26 @@ is_wrapped_kitten(const char *arg) {
 }
 
 #ifdef _WIN32
-// The UTF-16 of a UTF-8 string, which the caller frees
+// The UTF-16 of a string in the given code page, which the caller frees
 static wchar_t*
-wide_from_utf8(const char *s) {
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+wide_from(UINT code_page, const char *s) {
+    const int n = MultiByteToWideChar(code_page, 0, s, -1, NULL, 0);
     wchar_t *ans = n > 0 ? calloc(n, sizeof(wchar_t)) : NULL;
-    if (ans) MultiByteToWideChar(CP_UTF8, 0, s, -1, ans, n);
+    if (ans) MultiByteToWideChar(code_page, 0, s, -1, ans, n);
     return ans;
 }
 
 // argv as one command line, each argument quoted the way CommandLineToArgvW
-// reads it back, or NULL
+// reads it back, or NULL. The CRT hands main its arguments in the ANSI code
+// page, as execv passed them on before.
 static wchar_t*
 quoted_command_line(int argc, char *argv[]) {
     size_t cap = 1;
-    for (int i = 0; i < argc; i++) cap += 2 * strlen(argv[i]) + 3;  // a UTF-8 byte is at most one UTF-16 unit
+    for (int i = 0; i < argc; i++) cap += 2 * strlen(argv[i]) + 3;  // a byte is at most one UTF-16 unit
     wchar_t *ans = calloc(cap, sizeof(wchar_t)), *p = ans;
     if (!ans) return NULL;
     for (int i = 0; i < argc; i++) {
-        wchar_t *arg = wide_from_utf8(argv[i]);
+        wchar_t *arg = wide_from(CP_ACP, argv[i]);
         if (!arg) { free(ans); return NULL; }
         if (i) *p++ = L' ';
         if (arg[0] && !wcspbrk(arg, L" \t\n\v\"")) { wcscpy(p, arg); p += wcslen(arg); }
@@ -432,7 +433,7 @@ quoted_command_line(int argc, char *argv[]) {
 // kitten runs as a child instead, its exit code becoming kitty's.
 static void
 run_kitten_and_exit(const char *exe, int argc, char *argv[]) {
-    wchar_t *wexe = wide_from_utf8(exe), *cmdline = quoted_command_line(argc, argv);
+    wchar_t *wexe = wide_from(CP_UTF8, exe), *cmdline = quoted_command_line(argc, argv);  // read_exe_path writes UTF-8
     STARTUPINFOW si = {.cb = sizeof(si)};
     PROCESS_INFORMATION pi;
     if (!wexe || !cmdline || !CreateProcessW(wexe, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {

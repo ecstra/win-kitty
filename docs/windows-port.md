@@ -43,7 +43,7 @@ Close any running kitty first. The source tree keeps its own development build a
 - Keyboard input, including the ctrl and alt shortcuts, the function keys, and the arrow keys. On a layout with AltGr, the left Ctrl and Alt together run a kitty shortcut when one is set on that key, and otherwise type the AltGr character, as in Windows Terminal. The AltGr key always types.
 - Tabs and OS windows. Closing one OS window leaves the others alone.
 - Scrollback, mouse selection, and the real Windows clipboard for copy and paste.
-- Dropping files and text onto a window, which pastes the paths or the text, and dragging a selection or a link out of a window into another program. A link to a file, such as one `ls --hyperlink` prints, drops as the file itself, which Explorer copies and never moves.
+- Dropping files and text onto a window, which pastes the paths or the text, and dragging a selection or a link out of a window into another program. A link to a file, such as one `ls --hyperlink` prints, drops as the file itself, which Explorer copies and never moves. That holds for the paths MSYS2, Cygwin and WSL shells print too, such as `/home/me` or `/mnt/c/Users`, but not for a WSL path outside `/mnt`, which drops as a link.
 - `kitty +list-fonts`, `kitty +runpy` and the other `kitty +` commands, `kitty --help` and `kitty --version`, from any terminal, cmd and pwsh alike.
 - Transparency. With `background_blur` on you get the real Windows 11 acrylic material, matched to what Windows Terminal shows, and it stays put when the window loses focus.
 - A custom title bar that matches the terminal background, with rounded corners and minimize, maximize, and close buttons.
@@ -105,7 +105,8 @@ Not tested, so treat as unknown rather than working.
     listen_on unix:kitty
 
 A relative path lands in the temp folder, with kitty's process id added when
-it comes from kitty.conf, as on Linux, and the socket file goes away when kitty
+it comes from kitty.conf, as on Linux, and so does a path under `/tmp`, such as
+`unix:/tmp/mykitty` from kitty's own docs. The socket file goes away when kitty
 exits. The address goes into `KITTY_LISTEN_ON` for every child, so `kitten @ ls`
 inside a kitty window needs no `--to`. From outside, pass it with
 `--to unix:PATH`. Abstract sockets, `unix:@name`, exist only on Linux.
@@ -115,7 +116,9 @@ CPython does not build Unix sockets on Windows
 though Windows has had them since build 17063, so kitty's C code makes the
 socket and hands it to the same accept loop the TCP one uses. As on Linux,
 kitty lets in only a client running as the same Windows user, which it learns
-from the client's process id through `SIO_AF_UNIX_GETPEERPID`.
+from the client's process id through `SIO_AF_UNIX_GETPEERPID`. A kitty run as
+administrator also turns away that user's ordinary, unelevated programs, the
+line Linux draws between root and the user.
 
 A TCP address works too:
 

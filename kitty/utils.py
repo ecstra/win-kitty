@@ -1396,12 +1396,12 @@ def sanitized_filename_from_url(url: str) -> str:
         return ''
 
 
-def windows_file_url(url: str, posix_root: str = '') -> str:
+def windows_file_url(url: str, windows_path_of: Callable[[str], str] | None = None) -> str:
     '''The file URL for a file on this machine in the form Windows programs read,
     file:///C:/path. MSYS2 and Cygwin shells name the C: drive /c and /cygdrive/c,
-    WSL names it /mnt/c, and any other path from an MSYS2 or Cygwin shell lies
-    under its install folder, posix_root. Any other URL, a file on another
-    machine, and a WSL path outside /mnt come back as they were.'''
+    and WSL names it /mnt/c. windows_path_of turns any other path from an MSYS2
+    or Cygwin shell into its Windows path, or an empty string. Any other URL, a
+    file on another machine, and a WSL path outside /mnt come back as they were.'''
     import socket
     from urllib.parse import quote, unquote, urlparse
 
@@ -1414,22 +1414,38 @@ def windows_file_url(url: str, posix_root: str = '') -> str:
     path = unquote(u.path)
     if m := re.match(r'/(?:cygdrive/|mnt/)?([a-zA-Z])(/.*)?$', path):
         path = f'/{m.group(1).upper()}:{m.group(2) or "/"}'
-    elif posix_root and path.startswith('/') and not re.match(r'/[a-zA-Z]:(/|$)', path):
-        path = '/' + posix_root.replace('\\', '/').rstrip('/') + path
+    elif windows_path_of and path.startswith('/') and not re.match(r'/[a-zA-Z]:(/|$)', path):
+        path = '/' + windows_path_of(path).replace('\\', '/')
     if not re.match(r'/[a-zA-Z]:(/|$)', path):
         return url
     return 'file://' + quote(path, safe='/:')
 
 
-def posix_root_of(exe: str) -> str:
-    '''The install folder of the MSYS2 or Cygwin runtime a program runs on, such
-    as C:/msys64 for C:/msys64/usr/bin/zsh.exe, or an empty string.'''
-    bin_dir = os.path.dirname(exe)
-    if any(os.path.exists(os.path.join(bin_dir, dll)) for dll in ('msys-2.0.dll', 'cygwin1.dll')):
-        root = os.path.dirname(bin_dir)
-        # MSYS2 keeps its runtime in <root>/usr/bin, Cygwin in <root>/bin
-        return os.path.dirname(root) if os.path.basename(root).lower() == 'usr' else root
-    return ''
+def posix_path_converter(exe: str) -> Callable[[str], str] | None:
+    '''A function that turns a path an MSYS2 or Cygwin program prints into its
+    Windows path, through that runtime's own cygpath, since only it knows the
+    runtime's mounts, /tmp on the temp folder among them. None when exe does
+    not run on such a runtime.'''
+    import subprocess
+
+    exe_dir = os.path.dirname(exe)
+    # The runtime sits beside the program, or in usr\bin for Git Bash's bin\bash.exe
+    for bin_dir in (exe_dir, os.path.join(os.path.dirname(exe_dir), 'usr', 'bin')):
+        cygpath = os.path.join(bin_dir, 'cygpath.exe')
+        if os.path.exists(cygpath) and any(os.path.exists(os.path.join(bin_dir, dll)) for dll in ('msys-2.0.dll', 'cygwin1.dll')):
+            break
+    else:
+        return None
+
+    def windows_path_of(path: str) -> str:
+        try:
+            return subprocess.run(
+                [cygpath, '-w', path], capture_output=True, encoding='utf-8', errors='replace', timeout=5,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ''
+
+    return windows_path_of
 
 
 def as_file_url(wd: str, *components: str) -> str:
