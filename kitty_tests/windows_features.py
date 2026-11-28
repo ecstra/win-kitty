@@ -282,6 +282,20 @@ class WindowsFeaturesTest(BaseTest):
             self.ae(program_name(path), name)
         self.assertTrue(is_kitten_cmdline([r'C:\kitty\bin\kitten.exe', 'ssh', 'host']))
 
+    def test_kittens_on_this_machine_count_as_local(self):
+        # A kitten proves it runs on kitty's machine by an id made from
+        # Windows' MachineGuid, see tools/utils/machine_id/windows.go
+        import hashlib
+        import hmac
+        import winreg
+
+        from kitty.machine_id import machine_id
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Cryptography', 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as k:
+            guid = winreg.QueryValueEx(k, 'MachineGuid')[0].strip()
+        salt = 'tty-dnd-protocol-machine-id'
+        self.ae(machine_id(salt), hmac.new(salt.encode(), guid.encode(), hashlib.sha256).hexdigest())
+
     def test_the_quick_access_hotkey_parses(self):
         from kittens.panel.main import hotkey_from_spec
         from kitty.fast_data_types import GLFW_FKEY_F12, GLFW_MOD_ALT, GLFW_MOD_CONTROL, GLFW_MOD_SUPER
