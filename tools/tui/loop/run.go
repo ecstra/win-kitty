@@ -332,6 +332,9 @@ func (self *Loop) handle_dcs(raw []byte) error {
 }
 
 func (self *Loop) handle_apc(raw []byte) error {
+	if osc, ok := unwrap_osc(raw); ok {
+		return self.handle_osc(osc)
+	}
 	if self.OnEscapeCode != nil {
 		return self.OnEscapeCode(APC, raw)
 	}

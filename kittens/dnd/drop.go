@@ -378,7 +378,7 @@ func find_overwrites(src_dir *os.File, dest_dir *os.File, move_sources []os.File
 				if err != nil {
 					return err
 				}
-				dest_is_dir, is_symlink := d.IsDir(), d.Mode()&fs.ModeSymlink != 0
+				dest_is_dir, is_symlink := d.IsDir(), is_link(dd, x.Name(), d.Mode())
 				if is_symlink {
 					if dest_is_dir, err = is_dir_at(dd, x.Name()); err != nil {
 						return err
@@ -591,7 +591,7 @@ func parse_uri_list(src string) (ans []parsed_uri, err error) {
 			if err != nil {
 				return nil, err
 			}
-			ans = append(ans, parsed_uri{kind: parsed_uri_file, path: filepath.Clean(p.Path)})
+			ans = append(ans, parsed_uri{kind: parsed_uri_file, path: path_from_file_url(p.Path)})
 		} else if strings.HasPrefix(line, "data:") {
 			m, d, derr := parse_data_uri(line)
 			if derr != nil {
@@ -821,18 +821,6 @@ func (dnd *dnd) new_tdir() (dir_file *os.File, err error) {
 	return utils.CreateDirAt(dnd.base_tempdir, name, 0o700)
 }
 
-func same_file(a, b os.FileInfo) (bool, error) {
-	adev, aino, err := file_identity(a)
-	if err != nil {
-		return false, err
-	}
-	bdev, bino, err := file_identity(b)
-	if err != nil {
-		return false, err
-	}
-	return adev == bdev && aino == bino, nil
-}
-
 func matches_any(info os.FileInfo, candidates []os.FileInfo) (bool, error) {
 	for _, c := range candidates {
 		if same, err := same_file(info, c); err != nil || same {
@@ -946,7 +934,7 @@ func (dnd *dnd) all_mime_data_dropped() (err error) {
 			if drop_status.move_sources == nil {
 				drop_status.move_sources = make(map[int]move_source, len(drop_status.uri_list))
 			}
-			drop_status.move_sources[i] = move_source{info: source_info, birth: birth_time(u.path, source_info)}
+			drop_status.move_sources[i] = move_source{info: with_identity(source_info), birth: birth_time(u.path, source_info)}
 		}
 	}
 	f, err := dnd.new_tdir()

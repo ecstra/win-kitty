@@ -9,17 +9,42 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/windows"
 )
 
 // Windows has no openat/mkdirat family, so the *At operations are emulated with
-// full paths built from the parent directory's name plus the child name. This
+// full paths built from the parent directory's real path plus the child name. This
 // loses the fd-relative atomicity of the Unix versions but is functionally
 // equivalent for the uses in kitty (mainly the dnd kitten).
 
-func join(dir *os.File, name string) string { return filepath.Join(dir.Name(), name) }
+func join(dir *os.File, name string) string { return filepath.Join(real_dir_path(dir), name) }
+
+// The real path of an open folder, through any subst drive or junction on the
+// way, so that ".." from it reaches its real parent, as the fd relative POSIX
+// calls do. Joined to the path it was opened by, a move of a folder could miss
+// that the destination sits inside it. The path it was opened by where Windows
+// cannot say.
+func real_dir_path(dir *os.File) string {
+	buf := make([]uint16, 512)
+	// 0 asks for the normalized path with a drive letter. A path too long for
+	// the buffer comes back as the size it needs.
+	n, err := windows.GetFinalPathNameByHandle(windows.Handle(dir.Fd()), &buf[0], uint32(len(buf)), 0)
+	if err == nil && int(n) >= len(buf) && n <= windows.MAX_LONG_PATH {
+		buf = make([]uint16, n+1)
+		n, err = windows.GetFinalPathNameByHandle(windows.Handle(dir.Fd()), &buf[0], uint32(len(buf)), 0)
+	}
+	if err != nil || n == 0 || int(n) >= len(buf) {
+		return dir.Name()
+	}
+	p := windows.UTF16ToString(buf[:n])
+	if rest, ok := strings.CutPrefix(p, `\\?\UNC\`); ok {
+		return `\\` + rest
+	}
+	return strings.TrimPrefix(p, `\\?\`)
+}
 
 func MkdirAt(parentDir *os.File, name string, perm os.FileMode) error {
 	if err := os.Mkdir(join(parentDir, name), perm); err != nil {

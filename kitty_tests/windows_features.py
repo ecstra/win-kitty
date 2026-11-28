@@ -281,3 +281,64 @@ class WindowsFeaturesTest(BaseTest):
         ):
             self.ae(program_name(path), name)
         self.assertTrue(is_kitten_cmdline([r'C:\kitty\bin\kitten.exe', 'ssh', 'host']))
+
+    def test_kittens_on_this_machine_count_as_local(self):
+        # A kitten proves it runs on kitty's machine by an id made from
+        # Windows' MachineGuid, see tools/utils/machine_id/windows.go
+        import hashlib
+        import hmac
+        import winreg
+
+        from kitty.machine_id import machine_id
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Cryptography', 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as k:
+            guid = winreg.QueryValueEx(k, 'MachineGuid')[0].strip()
+        salt = 'tty-dnd-protocol-machine-id'
+        self.ae(machine_id(salt), hmac.new(salt.encode(), guid.encode(), hashlib.sha256).hexdigest())
+
+    def test_the_quick_access_hotkey_parses(self):
+        from kittens.panel.main import hotkey_from_spec
+        from kitty.fast_data_types import GLFW_FKEY_F12, GLFW_MOD_ALT, GLFW_MOD_CONTROL, GLFW_MOD_SUPER
+
+        self.ae(hotkey_from_spec('ctrl+alt+grave'), (ord('`'), GLFW_MOD_CONTROL | GLFW_MOD_ALT))
+        self.ae(hotkey_from_spec('super+f12'), (GLFW_FKEY_F12, GLFW_MOD_SUPER))
+        self.ae(hotkey_from_spec('ctrl+alt+q'), (ord('q'), GLFW_MOD_CONTROL | GLFW_MOD_ALT))
+        for off in ('', 'none'):
+            self.assertIsNone(hotkey_from_spec(off))
+        for bad in ('ctrl+', 'hyperspace+x'):
+            with self.assertRaises(ValueError):
+                hotkey_from_spec(bad)
+
+    def test_a_hotkey_needs_modifiers_windows_has(self):
+        from kittens.panel.main import hotkey_from_spec
+
+        # Dropping the modifier would grab the bare key from every program
+        for spec in ('kitty_mod+grave', 'hyper+x', 'meta+x'):
+            with self.assertRaises(ValueError, msg=spec):
+                hotkey_from_spec(spec)
+
+    def test_kittens_refuse_to_start_in_other_terminals(self):
+        # A console of its own, hidden, stands in for Windows Terminal's
+        from kitty.constants import kitten_exe
+
+        env = {k: v for k, v in os.environ.items() if k not in ('KITTY_WINDOW_ID', 'KITTY_PID', 'KITTY_LISTEN_ON')}
+        p = subprocess.Popen(
+            [kitten_exe(), 'unicode_input'], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            _, err = p.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            _, err = p.communicate()
+        self.assertEqual(p.returncode, 1)
+        self.assertIn(b'needs to run inside the kitty terminal', err)
+
+    def test_the_quick_access_terminal_has_no_hotkey_unless_set(self):
+        from kittens.panel.main import hotkey_from_spec, parse_panel_args
+        from kittens.quick_access_terminal.main import definition
+
+        self.assertIsNone(hotkey_from_spec(definition.option_map['hotkey'].defval_as_string))
+        args, _ = parse_panel_args(['--hotkey=ctrl+alt+grave'])
+        self.ae(args.hotkey, 'ctrl+alt+grave')
+        args, _ = parse_panel_args([])
+        self.assertIsNone(hotkey_from_spec(args.hotkey))

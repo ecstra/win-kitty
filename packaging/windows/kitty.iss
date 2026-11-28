@@ -44,6 +44,7 @@ WizardSmallImageFile=
 Name: "addtopath"; Description: "Add kitty to your PATH (so 'kitty' and 'kitten' work in any terminal)"
 Name: "contextmenu"; Description: "Add 'Open in kitty' to the Explorer right-click menu"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
+Name: "quickaccess"; Description: "Start the quick access terminal hidden when you sign in, so a hotkey you set for it works"; Flags: unchecked
 
 [Files]
 Source: "..\..\dist\kitty\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
@@ -60,6 +61,9 @@ Name: "{autodesktop}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; Working
 ; Run (Win+R) looks here before PATH, so kitty typed there opens the window
 ; directly rather than through the console shim on PATH, which shows a console
 Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\kitty.exe"; ValueType: string; ValueName: ""; ValueData: "{app}\kitty\launcher\kitty.exe"; Flags: uninsdeletekey
+; The quick access terminal registers its hotkey once it runs, so it starts
+; hidden at sign in. Through kitty.exe, which has no console to flash.
+Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "kitty quick access terminal"; ValueData: """{app}\kitty\launcher\kitty.exe"" +kitten quick-access-terminal -o start_as_hidden=yes"; Tasks: quickaccess; Flags: uninsdeletevalue
 ; Classic registry verbs. These are the whole entry on Windows 10, whose menu
 ; reads nothing else. On Windows 11 the sparse MSIX package supplies the modern
 ; menu, and these cover Show more options, which the modern menu falls back to.

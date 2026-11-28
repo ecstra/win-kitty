@@ -326,6 +326,12 @@ static void
 window_close_callback(GLFWwindow *window) {
     if (!set_callback_window(window)) return;
     global_state.callback_os_window->close_request = CONFIRMABLE_CLOSE_REQUESTED;
+#ifdef _WIN32
+    // kitty asks in the window itself, so one that does not show closes without
+    // a question, such as a panel on the desktop Explorer took along when it
+    // restarted
+    if (!glfwGetWindowAttrib(window, GLFW_VISIBLE)) global_state.callback_os_window->close_request = IMPERATIVE_CLOSE_REQUESTED;
+#endif
     global_state.has_pending_closes = true;
     request_tick_callback();
     glfwSetWindowShouldClose(window, false);
@@ -3951,6 +3957,76 @@ get_clipboard_mime(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+#ifdef _WIN32
+// A panel's global hotkey, which Windows delivers to a window of kitty's own.
+// The key that arrives also lets the panel take the foreground when shown.
+static LRESULT CALLBACK
+hotkey_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    if (msg == WM_HOTKEY) {
+        call_boss(quick_access_terminal_invoked, NULL);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+static UINT
+virtual_key_for(int glfw_key) {
+    if (glfw_key >= GLFW_FKEY_F1 && glfw_key <= GLFW_FKEY_F24) return VK_F1 + (UINT)(glfw_key - GLFW_FKEY_F1);
+    switch (glfw_key) {
+        case GLFW_FKEY_ESCAPE: return VK_ESCAPE;
+        case GLFW_FKEY_ENTER: return VK_RETURN;
+        case GLFW_FKEY_TAB: return VK_TAB;
+        case GLFW_FKEY_BACKSPACE: return VK_BACK;
+        case GLFW_FKEY_INSERT: return VK_INSERT;
+        case GLFW_FKEY_DELETE: return VK_DELETE;
+        case GLFW_FKEY_HOME: return VK_HOME;
+        case GLFW_FKEY_END: return VK_END;
+        case GLFW_FKEY_PAGE_UP: return VK_PRIOR;
+        case GLFW_FKEY_PAGE_DOWN: return VK_NEXT;
+        case GLFW_FKEY_LEFT: return VK_LEFT;
+        case GLFW_FKEY_RIGHT: return VK_RIGHT;
+        case GLFW_FKEY_UP: return VK_UP;
+        case GLFW_FKEY_DOWN: return VK_DOWN;
+        case GLFW_FKEY_PAUSE: return VK_PAUSE;
+        case ' ': return VK_SPACE;
+    }
+    if (glfw_key <= 0 || glfw_key > 0xffff || (glfw_key >= GLFW_FKEY_FIRST && glfw_key <= GLFW_FKEY_LAST)) return 0;
+    // The key that types the character on the layout in use
+    const SHORT vk = VkKeyScanW((WCHAR)glfw_key);
+    return vk == -1 ? 0 : LOBYTE(vk);
+}
+
+static PyObject *
+register_global_hotkey(PyObject *self UNUSED, PyObject *args) {
+    int glfw_key, glfw_mods;
+    if (!PyArg_ParseTuple(args, "ii", &glfw_key, &glfw_mods)) return NULL;
+    static HWND window = NULL;
+    if (!glfw_key) {
+        if (window) UnregisterHotKey(window, 1);
+        Py_RETURN_NONE;
+    }
+    const UINT vk = virtual_key_for(glfw_key);
+    if (!vk) {
+        PyErr_SetString(PyExc_ValueError, "The hotkey's key is not on this keyboard layout");
+        return NULL;
+    }
+    UINT mods = MOD_NOREPEAT;
+    if (glfw_mods & GLFW_MOD_CONTROL) mods |= MOD_CONTROL;
+    if (glfw_mods & GLFW_MOD_ALT) mods |= MOD_ALT;
+    if (glfw_mods & GLFW_MOD_SHIFT) mods |= MOD_SHIFT;
+    if (glfw_mods & GLFW_MOD_SUPER) mods |= MOD_WIN;
+    if (!window) {
+        WNDCLASSEXW wc = {.cbSize = sizeof(wc), .lpfnWndProc = hotkey_window_proc, .hInstance = GetModuleHandleW(NULL), .lpszClassName = L"kitty-hotkey"};
+        RegisterClassExW(&wc);
+        window = CreateWindowExW(0, L"kitty-hotkey", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandleW(NULL), NULL);
+        if (!window) return PyErr_SetFromWindowsErr(0);
+    }
+    UnregisterHotKey(window, 1);
+    if (!RegisterHotKey(window, 1, mods, vk)) return PyErr_SetFromWindowsErr(0);
+    Py_RETURN_NONE;
+}
+#endif
+
 static PyObject *
 is_layer_shell_supported(PyObject *self UNUSED, PyObject *args UNUSED) {
     return Py_NewRef(glfwIsLayerShellSupported() ? Py_True : Py_False);
@@ -4253,6 +4329,9 @@ static PyMethodDef module_methods[] = {
     METHODB(get_click_interval, METH_NOARGS),
     METHODB(glfw_get_keyboard_repeat_interval, METH_NOARGS),
     METHODB(is_layer_shell_supported, METH_NOARGS),
+#ifdef _WIN32
+    METHODB(register_global_hotkey, METH_VARARGS),
+#endif
     METHODB(x11_window_id, METH_O),
     METHODB(strip_csi, METH_O),
 #ifndef __APPLE__

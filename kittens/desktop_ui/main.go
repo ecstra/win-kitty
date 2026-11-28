@@ -48,7 +48,7 @@ func run_server(opts *ServerOptions) (err error) {
 
 func specialize_command(parent *cli.Command) {
 	parent.Run = func(cmd *cli.Command, args []string) (int, error) {
-		if err := cli.NotImplementedOnWindows("desktop-ui"); err != nil {
+		if err := cli.LinuxOnly("desktop-ui", "it is a backend for the desktop portals of Linux"); err != nil {
 			return 1, err
 		}
 		cmd.ShowHelp()

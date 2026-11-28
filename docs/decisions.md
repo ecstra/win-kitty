@@ -56,9 +56,19 @@ A kitten is a VT program talking to kitty, so there is nothing for a pseudoconso
 
 ## Kittens refuse to run outside kitty on Windows
 
-A kitten started from another terminal exits with a message instead of trying. On Windows it depends on kitty's own input and output path, and without it the failures are strange rather than obvious, such as a mouse that emits junk on movement or a full screen kitten that draws nothing. Making each of those work in a foreign console is a large amount of work for something nobody asked for, and a clear refusal is more useful than a partial success.
+A kitten started from another terminal exits with a message instead of trying. On Windows it depends on kitty's own input and output path, and without it the failures are strange rather than obvious, such as a mouse that emits junk on movement or a full screen kitten that draws nothing. Making each of those work in a foreign console is a large amount of work, and a clear refusal is more useful than a partial success. Running them in Windows Terminal was tried in November 2026, and I chose to keep the refusal.
 
 It exits rather than returning an error because several kittens use the loop before checking the error they were handed, so returning one surfaced as a nil dereference inside the kitten.
+
+## Panels are Windows app bars
+
+A panel on a screen edge registers as an app bar, the one supported way on Windows to keep maximised windows off a strip of the screen, as an exclusive zone does on Wayland and a strut on X11. The background layer uses the WorkerW window behind the desktop icons that live wallpaper programs draw into. That is an undocumented trick, which Windows 11 24H2 already moved, so the panel falls back to a window kept at the very bottom when the trick fails, rather than not opening at all.
+
+## kitty registers the quick access terminal's hotkey itself
+
+On Linux the desktop's own shortcut settings run the quick access terminal, and on macOS a service does. On Windows a Start menu shortcut can carry a key, but only Ctrl+Alt with another key, and it starts a program rather than shows one. So the panel registers a global hotkey with RegisterHotKey, the one quick-access-terminal.conf names. A hotkey also lets the window it shows take the foreground, which Windows otherwise refuses a program in the background. None is registered unless one is set, since a global hotkey takes its keys from every other program, and Ctrl+Alt+`, the first default, opened the quick access terminal by surprise.
+
+The hotkey takes only the modifiers RegisterHotKey knows, Ctrl, Alt, Shift and the Windows key. Any other, kitty_mod, hyper or meta, makes it an invalid hotkey rather than being left out, since a hotkey without it would take the bare key from every program.
 
 ## Asking for a 1 ms timer resolution in both processes
 
@@ -101,6 +111,10 @@ Setup asks whether to install for me only or for everyone, and picks me only, wh
 
 Dropping a link to a file on Explorer offers the file itself, and a move would take it away from where its owner keeps it, a surprise no terminal drag should cause. So a drag that carries files allows copy and link only.
 
+## The dnd kitten leaves junctions out of a copy
+
+Go reads a junction as neither a folder nor a symlink, so a move could merge dropped files into a junction in the destination that leads back into the folder being moved, and then delete them with it. Reading junctions as symlinks in all of kitten, as Go did before 1.23, was tried and closed that, but it also made the copy of a dropped folder remake each junction inside it as a symlink, which Windows refuses without Developer Mode or administrator rights, so the whole drop failed. So kitten reads junctions as Go does, a copy leaves them out as it leaves out other special files, and only the check of what a move merges into follows a junction, when Windows can follow it. A WSL or Cygwin symlink reads the same way and leads nowhere Windows can follow, so a drop replaces it like any file.
+
 ## The Windows 11 Explorer entry needs a package
 
 Classic registry verbs under HKLM are enough on Windows 10, and Windows 11 shows them only under "Show more options". Its main menu reads packaged commands, so the entry there comes from a sparse MSIX carrying an IExplorerCommand implementation, signed with a certificate the build creates once and the installer trusts. This is heavier than a registry key and there is no lighter option that puts an entry in the menu users actually see.
@@ -124,6 +138,8 @@ Closing a maximized window used to save the full screen size, so the next launch
 ## No close confirmation by default
 
 Windows terminals close without a prompt. The default also mattered while the confirmation kitten was broken, because it left an empty config unable to close at all. The kitten works now, and the default stays 0 to match how Windows terminals behave. A user who wants a prompt can set `confirm_os_window_close`.
+
+A window that does not show closes without the prompt even when the option is set. kitty asks inside the window itself, so a hidden quick access terminal, or a background panel Explorer took along when it restarted, would otherwise wait on a question no one can see, and the panel's process stayed behind with no window.
 
 ## No primary selection, as on macOS
 

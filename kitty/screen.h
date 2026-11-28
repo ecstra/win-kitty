@@ -260,6 +260,8 @@ typedef struct {
 #ifdef _WIN32
     // When the program last hid the cursor, see collect_cursor_info()
     monotonic_t cursor_hidden_at;
+    // A kitten asked for kitty's OSC replies wrapped in APC, see wrap_osc_replies()
+    bool wrap_osc_replies;
 #endif
 } Screen;
 

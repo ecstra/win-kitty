@@ -219,6 +219,8 @@ static void placeAtDropPoint(int width, int height, int* x, int* y);  // fwd
 #define WM_APP_RESIZE_TICK (WM_APP + 1)
 // Starts a drag kitty asked for, see _glfwPlatformStartDrag
 #define WM_APP_START_DRAG (WM_APP + 2)
+// What Windows tells a panel's app bar, see placeLayerWindow
+#define WM_APP_APPBAR (WM_APP + 3)
 #ifndef TIME_PERIODIC
 #define TIME_PERIODIC 0x0001
 #endif
@@ -391,6 +393,20 @@ sessionEnding(HWND hWnd, LPARAM lParam) {
 // ---------------------------------------------------------------------------
 
 static void fitToMonitor(_GLFWwindow* window); // fwd
+static HMONITOR layerMonitorFor(const GLFWLayerShellConfig* c);
+static void applyLayerStyles(_GLFWwindow* window);
+static void placeLayerWindow(_GLFWwindow* window, bool holdStrip);
+static void releaseAppBar(_GLFWwindow* window);
+
+// A window Windows destroyed under kitty asks to close once it is gone, when it
+// shows no more, so kitty asks no question no one could see
+static void
+close_lost_window(unsigned long long timer_id, void *data) {
+    (void)timer_id;
+    _GLFWwindow *window = _glfwWindowForId(*(GLFWid*)data);
+    if (window) _glfwInputWindowCloseRequest(window);
+}
+static void free_lost_window(unsigned long long timer_id, void *data) { (void)timer_id; free(data); }
 
 static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     // A drag runs from the helper window, which no kitty window closing during
@@ -413,6 +429,15 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     }
     _GLFWwindow* window = GetPropW(hWnd, L"GLFW");
     if (!window) return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+
+    // Explorer, restarted, forgets the app bars and says so to every window
+    static UINT taskbar_created = 0;
+    if (!taskbar_created) taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
+    if (uMsg == taskbar_created && taskbar_created && window->win32.layer.active) {
+        window->win32.layer.appbar = false;
+        if (IsWindowVisible(hWnd)) placeLayerWindow(window, true);
+        return 0;
+    }
 
     switch (uMsg) {
         case WM_NCCALCSIZE: {
@@ -460,6 +485,45 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_WINDOWPOSCHANGED:
             positionCaptionButtons(window);
             break;  // let DefWindowProc run too
+
+        // A panel in the panel or background layer stays under other windows,
+        // even once clicked, as Wayland's bottom and background layers do
+        case WM_WINDOWPOSCHANGING: {
+            WINDOWPOS* wp = (WINDOWPOS*) lParam;
+            const GLFWLayerShellType t = window->win32.layer.config.type;
+            if (window->win32.layer.active && !window->win32.layer.inDesktop && !(wp->flags & SWP_NOZORDER) &&
+                    (t == GLFW_LAYER_SHELL_PANEL || t == GLFW_LAYER_SHELL_BACKGROUND))
+                wp->hwndInsertAfter = HWND_BOTTOM;
+            break;
+        }
+
+        case WM_MOUSEACTIVATE:
+            if (window->win32.layer.active && window->win32.layer.config.focus_policy == GLFW_FOCUS_NOT_ALLOWED) return MA_NOACTIVATE;
+            break;
+
+        case WM_APP_APPBAR:
+            if (!window->win32.layer.active) return 0;
+            if (wParam == ABN_POSCHANGED && IsWindowVisible(hWnd)) placeLayerWindow(window, true);
+            else if (wParam == ABN_FULLSCREENAPP && window->win32.layer.config.type == GLFW_LAYER_SHELL_TOP) {
+                // The top layer goes under a full screen program and comes back
+                // over the rest once it leaves, as on Wayland
+                SetWindowPos(hWnd, lParam ? HWND_BOTTOM : HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+            return 0;
+
+        case WM_DISPLAYCHANGE:
+            if (window->win32.layer.active) placeLayerWindow(window, IsWindowVisible(hWnd));
+            break;
+
+        case WM_DESTROY:
+            // The desktop window a background panel sits in goes when Explorer
+            // restarts and takes the panel with it, so kitty closes it
+            if (window->win32.layer.inDesktop && window->win32.handle == hWnd) {
+                window->win32.layer.inDesktop = false;
+                GLFWid *id = malloc(sizeof(GLFWid));
+                if (id) { *id = window->id; _glfwPlatformAddTimer(0, false, close_lost_window, id, free_lost_window); }
+            }
+            break;
 
         case WM_CLOSE:
             _glfwInputWindowCloseRequest(window);
@@ -783,6 +847,11 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             const float xscale = HIWORD(wParam) / 96.0f;
             const float yscale = LOWORD(wParam) / 96.0f;
             _glfwInputWindowContentScale(window, xscale, yscale);
+            // A panel keeps its size in cells, at the new scale
+            if (window->win32.layer.active) {
+                placeLayerWindow(window, IsWindowVisible(hWnd));
+                return 0;
+            }
             // A window kitty moves to its place before showing it keeps the size
             // it was made at, which kitty works out at that place's scale or
             // saved for that place. Scaled on the way from the main screen to
@@ -799,6 +868,11 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_SETTINGCHANGE:
             if (lParam && wcscmp((LPCWSTR) lParam, L"ImmersiveColorSet") == 0)
                 _glfwWin32SystemColorThemeMayHaveChanged();
+            // A panel placed in the work area follows the taskbar. One that
+            // holds a strip hears of it from its app bar instead, and changes
+            // the work area itself, which would loop back here.
+            if (wParam == SPI_SETWORKAREA && window->win32.layer.active && !window->win32.layer.appbar && IsWindowVisible(hWnd))
+                placeLayerWindow(window, false);
             break;
 
         case WM_QUERYENDSESSION:
@@ -850,7 +924,7 @@ void _glfwUnregisterWindowClassWin32(void) {
 
 static DWORD windowStyle(const _GLFWwindow* window) {
     DWORD style = WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
-    if (window->monitor) style |= WS_POPUP;
+    if (window->monitor || window->win32.layer.active) style |= WS_POPUP;
     else if (window->decorated) {
         style |= WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         if (window->resizable) style |= WS_MAXIMIZEBOX | WS_THICKFRAME;
@@ -1141,9 +1215,11 @@ static void styleTitlebar(_GLFWwindow* window) {
     if (!hwnd || !_glfw.win32.dwmapi.SetWindowAttribute) return;
     BOOL dark = TRUE;
     _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
-    DWORD round = 2 /* DWMWCP_ROUND */;
+    // A panel is square and borderless, as panels are on other platforms
+    const bool panel = window->win32.layer.active;
+    DWORD round = panel ? 1 /* DWMWCP_DONOTROUND */ : 2 /* DWMWCP_ROUND */;
     _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &round, sizeof(round));
-    COLORREF border = 0x00000000 /* thin black edge, like a normal window */;
+    COLORREF border = panel ? 0xFFFFFFFE /* DWMWA_COLOR_NONE */ : 0x00000000 /* thin black edge, like a normal window */;
     _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, &border, sizeof(border));
     // Repaint the custom caption buttons so their glyph colour tracks a caption
     // colour change (e.g. a live theme preview restyles via set_os_window_chrome),
@@ -1224,7 +1300,13 @@ static void updateWindowComposition(_GLFWwindow* window) {
 int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconfig,
                               const _GLFWctxconfig* ctxconfig, const _GLFWfbconfig* fbconfig,
                               const GLFWLayerShellConfig* lsc) {
-    (void) lsc;
+    if (lsc) {
+        window->win32.layer.active = true;
+        window->win32.layer.config = *lsc;
+        window->win32.layer.monitor = layerMonitorFor(lsc);
+        window->resizable = false;
+        window->decorated = false;
+    }
     window->win32.transparent = fbconfig->transparent;
     window->win32.scaleToMonitor = wndconfig->scaleToMonitor;
     window->win32.opacity = 1.f;
@@ -1260,6 +1342,10 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
     }
     SetPropW(window->win32.handle, L"GLFW", window);
     _glfwWin32RegisterDropTarget(window);
+    if (window->win32.layer.active) {
+        applyLayerStyles(window);
+        placeLayerWindow(window, false);
+    }
 
     if (ctxconfig->client != GLFW_NO_API) {
         if (!_glfwCreateContextWGL(window, ctxconfig, fbconfig)) return false;
@@ -1311,6 +1397,7 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window) {
         window->win32.captionButtons = NULL;
     }
     if (window->win32.handle) {
+        releaseAppBar(window);
         _glfwWin32RevokeDropTarget(window);
         RemovePropW(window->win32.handle, L"GLFW");
         DestroyWindow(window->win32.handle);
@@ -1471,9 +1558,33 @@ void _glfwPlatformSetWindowSizeIncrements(_GLFWwindow* window, int widthincr, in
 void _glfwPlatformIconifyWindow(_GLFWwindow* window) { ShowWindow(window->win32.handle, SW_MINIMIZE); }
 void _glfwPlatformRestoreWindow(_GLFWwindow* window) { ShowWindow(window->win32.handle, SW_RESTORE); }
 void _glfwPlatformMaximizeWindow(_GLFWwindow* window) { ShowWindow(window->win32.handle, SW_MAXIMIZE); }
-void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen) { (void) move_to_active_screen; ShowWindow(window->win32.handle, SW_SHOWNA); }
-void _glfwPlatformHideWindow(_GLFWwindow* window) { ShowWindow(window->win32.handle, SW_HIDE); }
-void _glfwPlatformFocusWindow(_GLFWwindow* window) { SetForegroundWindow(window->win32.handle); SetFocus(window->win32.handle); }
+void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen) {
+    if (!window->win32.layer.active) { ShowWindow(window->win32.handle, SW_SHOWNA); return; }
+    const GLFWLayerShellConfig* c = &window->win32.layer.config;
+    if (move_to_active_screen) {
+        POINT cursor;
+        if (GetCursorPos(&cursor)) window->win32.layer.monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
+    }
+    placeLayerWindow(window, true);
+    // Only the top and overlay layers take the keyboard when they appear, as
+    // with an exclusive focus policy on Wayland
+    const bool takesFocus = c->focus_policy == GLFW_FOCUS_EXCLUSIVE && (c->type == GLFW_LAYER_SHELL_TOP || c->type == GLFW_LAYER_SHELL_OVERLAY);
+    ShowWindow(window->win32.handle, takesFocus ? SW_SHOW : SW_SHOWNA);
+    if (takesFocus) {
+        SetForegroundWindow(window->win32.handle);
+        SetFocus(window->win32.handle);
+    }
+}
+void _glfwPlatformHideWindow(_GLFWwindow* window) {
+    ShowWindow(window->win32.handle, SW_HIDE);
+    releaseAppBar(window);
+}
+void _glfwPlatformFocusWindow(_GLFWwindow* window) {
+    // glfwShowWindow focuses every window it shows, and WS_EX_NOACTIVATE does
+    // not stop SetForegroundWindow, so a panel that takes no focus says no here
+    if (window->win32.layer.active && window->win32.layer.config.focus_policy == GLFW_FOCUS_NOT_ALLOWED) return;
+    SetForegroundWindow(window->win32.handle); SetFocus(window->win32.handle);
+}
 void _glfwPlatformSetWindowAttention(_GLFWwindow* window, bool requested) {
     // Deliberately a no-op on Windows, for requests and cancels alike, since no
     // flash is ever started to cancel. FlashWindowEx flashes the taskbar button.
@@ -1538,9 +1649,199 @@ void _glfwPlatformGetKeyboardRepeatDelay(monotonic_t* delay, monotonic_t* interv
     if (interval) *interval = ms_to_monotonic_t(33);
 }
 
-// Layer shell is Wayland-only.
-bool _glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig* value) { (void) window; (void) value; return false; }
-const GLFWLayerShellConfig* _glfwPlatformGetLayerShellConfig(_GLFWwindow* window) { (void) window; return NULL; }
+// ---------------------------------------------------------------------------
+// Panels, kitty's layer shell windows. A panel on a screen edge holds its strip
+// of the screen as an app bar, the one supported way to keep maximised windows
+// off part of a screen. The top and overlay layers are topmost, the panel layer
+// stays at the bottom as Wayland's bottom layer does, and the background layer
+// sits behind the desktop icons where Windows lets it.
+// ---------------------------------------------------------------------------
+
+static HMONITOR layerMonitorFor(const GLFWLayerShellConfig* c) {
+    if (c->output_name[0]) {
+        for (int i = 0; i < _glfw.monitorCount; i++) {
+            if (strcmp(_glfw.monitors[i]->name, c->output_name) == 0) return _glfw.monitors[i]->win32.handle;
+        }
+    }
+    return MonitorFromPoint((POINT){0, 0}, MONITOR_DEFAULTTOPRIMARY);
+}
+
+static bool layerOnEdge(GLFWEdge edge) {
+    return edge == GLFW_EDGE_TOP || edge == GLFW_EDGE_BOTTOM || edge == GLFW_EDGE_LEFT || edge == GLFW_EDGE_RIGHT;
+}
+
+typedef struct LayerPlace {
+    RECT window, strip;  // in screen pixels, strip empty when the panel holds none
+    UINT stripEdge;      // ABE_TOP and friends
+} LayerPlace;
+
+// Where a panel goes on a screen and the strip it holds, as kitty places panels
+// on X11 and Wayland. Margins, a size in pixels and an exclusive zone are in
+// logical pixels, as on Wayland and macOS.
+static LayerPlace layerPlace(_GLFWwindow* window, const MONITORINFO* mi, float scale) {
+    const GLFWLayerShellConfig* c = &window->win32.layer.config;
+    const int ml = (int) lround(c->requested_left_margin * scale), mr = (int) lround(c->requested_right_margin * scale);
+    const int mt = (int) lround(c->requested_top_margin * scale), mb = (int) lround(c->requested_bottom_margin * scale);
+    LayerPlace p = {0};
+    if (c->type == GLFW_LAYER_SHELL_BACKGROUND) {
+        const RECT m = mi->rcMonitor;
+        p.window = (RECT){m.left + ml, m.top + mt, m.right - mr, m.bottom - mb};
+        return p;
+    }
+    unsigned cw = 0, ch = 0;
+    double ls = 0, ts = 0, rs = 0, bs = 0;
+    c->size_callback((GLFWwindow*) window, scale, scale, &cw, &ch, &ls, &ts, &rs, &bs);
+    const int w = (int) (1. + ls + rs + (c->x_size_in_pixels ? c->x_size_in_pixels * scale : (double) cw * c->x_size_in_cells));
+    const int h = (int) (1. + ts + bs + (c->y_size_in_pixels ? c->y_size_in_pixels * scale : (double) ch * c->y_size_in_cells));
+    const bool horizontal = c->edge == GLFW_EDGE_TOP || c->edge == GLFW_EDGE_BOTTOM;
+    int zone = 0;
+    if (layerOnEdge(c->edge)) zone = c->override_exclusive_zone ? (int) lround(MAX(0, c->requested_exclusive_zone) * scale) : (horizontal ? h : w);
+    // The work area leaves out the taskbar and other app bars. A panel that
+    // holds a strip of its own is placed against them by Windows instead.
+    RECT b = zone > 0 ? mi->rcMonitor : mi->rcWork;
+    if (zone > 0) {
+        APPBARDATA abd = {sizeof(abd)};
+        abd.hWnd = window->win32.handle;
+        p.strip = b;
+        switch (c->edge) {
+            case GLFW_EDGE_TOP: p.stripEdge = ABE_TOP; p.strip.bottom = p.strip.top + mt + zone; break;
+            case GLFW_EDGE_BOTTOM: p.stripEdge = ABE_BOTTOM; p.strip.top = p.strip.bottom - mb - zone; break;
+            case GLFW_EDGE_LEFT: p.stripEdge = ABE_LEFT; p.strip.right = p.strip.left + ml + zone; break;
+            default: p.stripEdge = ABE_RIGHT; p.strip.left = p.strip.right - mr - zone; break;
+        }
+        if (window->win32.layer.appbar) {
+            // Windows moves the strip clear of the taskbar and the other app
+            // bars on that edge, and the strip keeps its depth
+            abd.uEdge = p.stripEdge;
+            abd.rc = p.strip;
+            SHAppBarMessage(ABM_QUERYPOS, &abd);
+            p.strip = abd.rc;
+            switch (c->edge) {
+                case GLFW_EDGE_TOP: p.strip.bottom = p.strip.top + mt + zone; break;
+                case GLFW_EDGE_BOTTOM: p.strip.top = p.strip.bottom - mb - zone; break;
+                case GLFW_EDGE_LEFT: p.strip.right = p.strip.left + ml + zone; break;
+                default: p.strip.left = p.strip.right - mr - zone; break;
+            }
+        }
+        b = p.strip;
+    }
+    switch (c->edge) {
+        case GLFW_EDGE_TOP: p.window = (RECT){b.left + ml, b.top + mt, b.right - mr, b.top + mt + h}; break;
+        case GLFW_EDGE_BOTTOM: p.window = (RECT){b.left + ml, b.bottom - mb - h, b.right - mr, b.bottom - mb}; break;
+        case GLFW_EDGE_LEFT: p.window = (RECT){b.left + ml, b.top + mt, b.left + ml + w, b.bottom - mb}; break;
+        case GLFW_EDGE_RIGHT: p.window = (RECT){b.right - mr - w, b.top + mt, b.right - mr, b.bottom - mb}; break;
+        case GLFW_EDGE_NONE: p.window = (RECT){b.left + ml, b.top + mt, b.left + ml + w, b.top + mt + h}; break;
+        case GLFW_EDGE_CENTER_SIZED: {
+            const int x = b.left + (b.right - b.left - w) / 2, y = b.top + (b.bottom - b.top - h) / 2;
+            p.window = (RECT){x, y, x + w, y + h};
+            break;
+        }
+        default: p.window = (RECT){b.left + ml, b.top + mt, b.right - mr, b.bottom - mb}; break;
+    }
+    return p;
+}
+
+static void releaseAppBar(_GLFWwindow* window) {
+    if (!window->win32.layer.appbar) return;
+    APPBARDATA abd = {sizeof(abd)};
+    abd.hWnd = window->win32.handle;
+    SHAppBarMessage(ABM_REMOVE, &abd);
+    window->win32.layer.appbar = false;
+}
+
+static BOOL CALLBACK findDesktopWorkerW(HWND top, LPARAM out) {
+    if (FindWindowExW(top, NULL, L"SHELLDLL_DefView", NULL)) {
+        *(HWND*) out = FindWindowExW(NULL, top, L"WorkerW", NULL);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// The window between the desktop icons and the wallpaper, which live wallpaper
+// programs draw into. Windows has no API for it, Progman makes it on an
+// undocumented message, and its place moved in Windows 11 24H2, so a panel
+// falls back to the bottom of the stack when it is not found.
+static HWND desktopWorkerW(void) {
+    HWND progman = FindWindowW(L"Progman", NULL);
+    if (!progman) return NULL;
+    DWORD_PTR result;
+    SendMessageTimeoutW(progman, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, &result);
+    SendMessageTimeoutW(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &result);
+    HWND worker = FindWindowExW(progman, NULL, L"WorkerW", NULL);
+    if (!worker) EnumWindows(findDesktopWorkerW, (LPARAM) &worker);
+    return worker;
+}
+
+// The extended styles a panel's config asks for
+static void applyLayerStyles(_GLFWwindow* window) {
+    const GLFWLayerShellConfig* c = &window->win32.layer.config;
+    HWND hwnd = window->win32.handle;
+    LONG ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    ex = (ex & ~(WS_EX_APPWINDOW | WS_EX_NOACTIVATE)) | WS_EX_TOOLWINDOW;
+    if (c->focus_policy == GLFW_FOCUS_NOT_ALLOWED) ex |= WS_EX_NOACTIVATE;
+    SetWindowLongW(hwnd, GWL_EXSTYLE, ex);
+    if (c->type == GLFW_LAYER_SHELL_BACKGROUND && !window->win32.layer.inDesktop) {
+        HWND worker = desktopWorkerW();
+        if (worker && SetParent(hwnd, worker)) window->win32.layer.inDesktop = true;
+    } else if (c->type != GLFW_LAYER_SHELL_BACKGROUND && window->win32.layer.inDesktop) {
+        SetParent(hwnd, NULL);
+        window->win32.layer.inDesktop = false;
+    }
+}
+
+// Puts a panel in its place, holding its strip of the screen while it shows
+static void placeLayerWindow(_GLFWwindow* window, bool holdStrip) {
+    HWND hwnd = window->win32.handle;
+    const GLFWLayerShellConfig* c = &window->win32.layer.config;
+    MONITORINFO mi = {sizeof(mi)};
+    if (!window->win32.layer.monitor || !GetMonitorInfoW(window->win32.layer.monitor, &mi)) {
+        // Its screen was unplugged
+        window->win32.layer.monitor = layerMonitorFor(c);
+        if (!GetMonitorInfoW(window->win32.layer.monitor, &mi)) return;
+    }
+    const float scale = _glfwWin32MonitorDpi(window->win32.layer.monitor) / 96.f;
+    LayerPlace p = layerPlace(window, &mi, scale);
+    if (holdStrip && !IsRectEmpty(&p.strip)) {
+        APPBARDATA abd = {sizeof(abd)};
+        abd.hWnd = hwnd;
+        abd.uCallbackMessage = WM_APP_APPBAR;
+        if (!window->win32.layer.appbar && SHAppBarMessage(ABM_NEW, &abd)) {
+            window->win32.layer.appbar = true;
+            p = layerPlace(window, &mi, scale);
+        }
+        if (window->win32.layer.appbar) {
+            abd.uEdge = p.stripEdge;
+            abd.rc = p.strip;
+            SHAppBarMessage(ABM_SETPOS, &abd);
+        }
+    } else releaseAppBar(window);
+    RECT r = p.window;
+    HWND after = HWND_TOP;
+    UINT flags = SWP_NOACTIVATE;
+    if (window->win32.layer.inDesktop) {
+        MapWindowPoints(HWND_DESKTOP, GetAncestor(hwnd, GA_PARENT), (POINT*) &r, 2);
+        flags |= SWP_NOZORDER;
+    } else if (c->type == GLFW_LAYER_SHELL_TOP || c->type == GLFW_LAYER_SHELL_OVERLAY) after = HWND_TOPMOST;
+    else after = HWND_BOTTOM;
+    if (after == HWND_BOTTOM) SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(hwnd, after, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
+}
+
+bool _glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig* value) {
+    if (!window->win32.layer.active) return false;
+    if (value) {
+        const bool monitorChanged = strcmp(value->output_name, window->win32.layer.config.output_name) != 0;
+        window->win32.layer.config = *value;
+        if (monitorChanged) window->win32.layer.monitor = layerMonitorFor(value);
+    }
+    applyLayerStyles(window);
+    placeLayerWindow(window, IsWindowVisible(window->win32.handle));
+    return true;
+}
+
+const GLFWLayerShellConfig* _glfwPlatformGetLayerShellConfig(_GLFWwindow* window) {
+    return window->win32.layer.active ? &window->win32.layer.config : NULL;
+}
 
 static void fitToMonitor(_GLFWwindow* window) { (void) window; }
 
@@ -1633,7 +1934,9 @@ void _glfwPlatformWaitEventsTimeout(monotonic_t timeout) {
 // drop we pull the data out of the IDataObject synchronously. We surface it to
 // kitty's platform-agnostic drop API as text/uri-list (CF_HDROP file lists, as
 // file:// URIs) and text/plain;charset=utf-8 (CF_UNICODETEXT), which kitty then
-// pastes into the window (see glfw.c drop_dest_callback and window.py on_drop).
+// pastes into the window (see glfw.c drop_dest_callback and window.py on_drop),
+// and under every mime type the drag names a format after, for programs in the
+// window that take drops themselves, see collect_drop_offers.
 // kitty's own drags, of tabs and windows, are the drag source further below,
 // and a drop of one of those onto a kitty window is handed to kitty as its own.
 
@@ -1643,13 +1946,24 @@ void _glfwPlatformWaitEventsTimeout(monotonic_t timeout) {
 
 typedef struct { char *mime; char *data; size_t size, offset; } Win32DropItem;
 
+// A mime type a drag offers and the clipboard format it comes from: a format
+// named after the mime type, as kitty and other programs that know mime types
+// name theirs, or files and text, which kitty reads as a uri-list and UTF-8
+enum { DROP_FROM_NAMED, DROP_FROM_FILES, DROP_FROM_TEXT };
+typedef struct { char *mime; CLIPFORMAT cf; int from; } Win32DropOffer;
+#define WIN32_DROP_MAX 16
+
 // Only one drag is ever in flight, so a single global holds its state.
 static struct {
-    Win32DropItem items[2];   // data extracted at drop time
+    Win32DropItem items[WIN32_DROP_MAX];   // data extracted at drop time
     size_t count;
-    const char *offered[2];   // mimes the active drag offers (enter..leave)
+    Win32DropOffer offered[WIN32_DROP_MAX];  // what the active drag offers (enter..leave)
     size_t offered_count;
     _GLFWwindow *window;
+    POINTL last_pt;            // where the last move kitty heard of was
+    DWORD last_keys, last_allowed;
+    monotonic_t last_move_at;  // and when
+    bool ended;                // kitty ended the drop, see dt_Drop
 } win32_drop;
 
 // A drag kitty started, of a tab or a window. Its mime types and data are
@@ -1662,13 +1976,16 @@ static struct {
     bool active;             // inside DoDragDrop
     bool escape_pressed, button_released, cancel_requested;
     bool has_files;          // a file list is offered, which other programs must never move
+    bool on_demand;          // a program supplies some of the data once a drop target asks
+    bool data_ready;         // kitty has more of the data asked for
     GLFWid window_id;
     size_t count;            // kitty's mime types, the first entries
     size_t total;            // those and the formats other programs read, whose mime is NULL
     CLIPFORMAT formats[WIN32_DRAG_MAX_FORMATS];
     char *mimes[WIN32_DRAG_MAX_FORMATS];
-    char *data[WIN32_DRAG_MAX_FORMATS];
+    char *data[WIN32_DRAG_MAX_FORMATS];  // NULL for data a program supplies on demand
     size_t sizes[WIN32_DRAG_MAX_FORMATS];
+    int derived[WIN32_DRAG_MAX_FORMATS]; // which OTHER_FORMAT a format made from data on demand is
     bool has_image;          // a picture is set, which a thread of its own shows
     POINT released_at;       // where the button came up, in screen pixels
 } win32_drag;
@@ -1788,14 +2105,93 @@ win32_get_format(IDataObject *pdo, CLIPFORMAT cf, size_t *out_len) {
     return result;
 }
 
-static size_t
-collect_drop_mimes(IDataObject *pdo, const char **mimes) {
-    size_t n = 0;
+// The bytes of a format as they are, for a mime type a program reads itself.
+// GlobalSize may round up, so a format zero filled by its writer may carry a
+// few NULs at its end.
+static char*
+win32_get_raw_format(IDataObject *pdo, CLIPFORMAT cf, size_t *out_len) {
+    FORMATETC fmt = { cf, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+    STGMEDIUM stg;
+    if (FAILED(pdo->lpVtbl->GetData(pdo, &fmt, &stg))) return NULL;
+    char *result = NULL;
+    const size_t sz = stg.tymed == TYMED_HGLOBAL ? GlobalSize(stg.hGlobal) : 0;
+    void *p = sz ? GlobalLock(stg.hGlobal) : NULL;
+    if (p) {
+        if ((result = malloc(sz))) { memcpy(result, p, sz); *out_len = sz; }
+        GlobalUnlock(stg.hGlobal);
+    }
+    ReleaseStgMedium(&stg);
+    return result;
+}
+
+static void
+free_drop_offers(void) {
+    for (size_t i = 0; i < win32_drop.offered_count; i++) free(win32_drop.offered[i].mime);
+    win32_drop.offered_count = 0;
+}
+
+static void
+add_drop_offer(const char *mime, CLIPFORMAT cf, int from) {
+    if (win32_drop.offered_count >= WIN32_DROP_MAX) return;
+    for (size_t i = 0; i < win32_drop.offered_count; i++) if (strcmp(win32_drop.offered[i].mime, mime) == 0) return;
+    char *m = _glfw_strdup(mime);
+    if (m) win32_drop.offered[win32_drop.offered_count++] = (Win32DropOffer){m, cf, from};
+}
+
+// Every mime type the drag offers, for programs that read them, the dnd kitten
+// among them: the formats named after mime types, PNG images, and the files and
+// text every Windows program offers
+static void
+collect_drop_offers(IDataObject *pdo) {
+    free_drop_offers();
+    IEnumFORMATETC *e = NULL;
+    if (SUCCEEDED(pdo->lpVtbl->EnumFormatEtc(pdo, DATADIR_GET, &e)) && e) {
+        FORMATETC f;
+        while (e->lpVtbl->Next(e, 1, &f, NULL) == S_OK) {
+            if (f.ptd) CoTaskMemFree(f.ptd);
+            if (f.cfFormat < 0xC000 || !(f.tymed & TYMED_HGLOBAL)) continue;  // only registered formats have names
+            char name[256];
+            if (!GetClipboardFormatNameA(f.cfFormat, name, sizeof(name))) continue;
+            if (strcmp(name, "PNG") == 0) add_drop_offer("image/png", f.cfFormat, DROP_FROM_NAMED);
+            else if (strchr(name, '/') && !strchr(name, ' ')) add_drop_offer(name, f.cfFormat, DROP_FROM_NAMED);
+        }
+        e->lpVtbl->Release(e);
+    }
     FORMATETC f = { CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
-    if (pdo->lpVtbl->QueryGetData(pdo, &f) == S_OK) mimes[n++] = DND_MIME_URI_LIST;
+    if (pdo->lpVtbl->QueryGetData(pdo, &f) == S_OK) add_drop_offer(DND_MIME_URI_LIST, CF_HDROP, DROP_FROM_FILES);
     f.cfFormat = CF_UNICODETEXT;
-    if (pdo->lpVtbl->QueryGetData(pdo, &f) == S_OK) mimes[n++] = DND_MIME_TEXT;
-    return n;
+    if (pdo->lpVtbl->QueryGetData(pdo, &f) == S_OK) add_drop_offer(DND_MIME_TEXT, CF_UNICODETEXT, DROP_FROM_TEXT);
+}
+
+static size_t
+offered_mimes(const char **m) {
+    for (size_t i = 0; i < win32_drop.offered_count; i++) m[i] = win32_drop.offered[i].mime;
+    return win32_drop.offered_count;
+}
+
+// What the dragging program allows, which kitty hands a program in the window
+// that takes drops. Without it kitty told the dnd kitten nothing was allowed,
+// and the kitten took no drop at all.
+static void
+set_drop_source_actions(_GLFWwindow *window, DWORD effects) {
+    int actions = 0;
+    if (effects & DROPEFFECT_COPY) actions |= GLFW_DRAG_OPERATION_COPY;
+    if (effects & DROPEFFECT_MOVE) actions |= GLFW_DRAG_OPERATION_MOVE;
+    // A drag that only links, as from a browser, can still be read as a copy
+    if (!actions && (effects & DROPEFFECT_LINK)) actions = GLFW_DRAG_OPERATION_COPY;
+    window->drop_operation.source_actions = actions;
+}
+
+// The pointer kitty's choice shows: a move only where the program in the window
+// takes the drop as a move alone, since kitty's own paste allows both and
+// moves nothing
+static DWORD
+chosen_drop_effect(_GLFWwindow *window, size_t accepted, DWORD allowed) {
+    if (!accepted) return DROPEFFECT_NONE;
+    const int ops = window->drop_operation.allowed;
+    if (ops == GLFW_DRAG_OPERATION_MOVE && (allowed & DROPEFFECT_MOVE)) return DROPEFFECT_MOVE;
+    if (allowed & DROPEFFECT_COPY) return DROPEFFECT_COPY;
+    return allowed & (DROPEFFECT_MOVE | DROPEFFECT_LINK) ? (allowed & DROPEFFECT_LINK ? DROPEFFECT_LINK : DROPEFFECT_MOVE) : DROPEFFECT_NONE;
 }
 
 static void
@@ -1827,6 +2223,8 @@ static ULONG STDMETHODCALLTYPE dt_Release(IDropTarget *This) {
 // A drag of kitty's own reaches a kitty window here. kitty already holds what it
 // dragged, so it only needs the mime types, to tell a tab from a window, and to
 // know the drag is its own, which makes it use that data rather than read any.
+static void add_own_drag_items(IDataObject *pdo);
+
 static size_t
 self_drag_event(_GLFWwindow *window, GLFWDropEventType type, POINTL pt) {
     double x, y; drop_point_to_client(window, pt, &x, &y);
@@ -1846,44 +2244,66 @@ self_drag_effect(size_t accepted, DWORD allowed) {
 // A drag holds its own reference to the target under the pointer, so the
 // target can outlive its window, which leaves the window NULL behind it.
 static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pdo, DWORD keys, POINTL pt, DWORD *effect) {
-    (void)keys;
     Win32DropTarget *self = (Win32DropTarget*)This;
     if (!self->window) { *effect = DROPEFFECT_NONE; return S_OK; }
     win32_drop.window = self->window;
     if (win32_drag.active) {
-        win32_drop.offered_count = 0;
+        free_drop_offers();
+        set_drop_source_actions(self->window, *effect);
         *effect = self_drag_effect(self_drag_event(self->window, GLFW_DROP_ENTER, pt), *effect);
         return S_OK;
     }
-    win32_drop.offered_count = collect_drop_mimes(pdo, win32_drop.offered);
+    collect_drop_offers(pdo);
+    set_drop_source_actions(self->window, *effect);
+    win32_drop.last_pt = pt; win32_drop.last_keys = keys; win32_drop.last_allowed = *effect;
+    win32_drop.last_move_at = monotonic();
     double x, y; drop_point_to_client(self->window, pt, &x, &y);
+    size_t accepted = 0;
     if (win32_drop.offered_count) {
-        const char *m[2]; for (size_t i = 0; i < win32_drop.offered_count; i++) m[i] = win32_drop.offered[i];
-        _glfwInputDropEvent(self->window, GLFW_DROP_ENTER, x, y, m, win32_drop.offered_count, false);
+        const char *m[WIN32_DROP_MAX];
+        accepted = _glfwInputDropEvent(self->window, GLFW_DROP_ENTER, x, y, m, offered_mimes(m), false);
     }
-    *effect = win32_drop.offered_count ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+    *effect = chosen_drop_effect(self->window, accepted, *effect);
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POINTL pt, DWORD *effect) {
-    (void)keys;
     Win32DropTarget *self = (Win32DropTarget*)This;
     if (!self->window) { *effect = DROPEFFECT_NONE; return S_OK; }
     if (win32_drag.active) {
+        set_drop_source_actions(self->window, *effect);
         *effect = self_drag_effect(self_drag_event(self->window, GLFW_DROP_MOVE, pt), *effect);
         return S_OK;
     }
+    set_drop_source_actions(self->window, *effect);
     double x, y; drop_point_to_client(self->window, pt, &x, &y);
+    size_t accepted = 0;
     if (win32_drop.offered_count) {
-        const char *m[2]; for (size_t i = 0; i < win32_drop.offered_count; i++) m[i] = win32_drop.offered[i];
-        _glfwInputDropEvent(self->window, GLFW_DROP_MOVE, x, y, m, win32_drop.offered_count, false);
+        const char *m[WIN32_DROP_MAX];
+        // Windows asks about 15 times a second while the mouse is still, and
+        // as often as the mouse reports while it moves, a thousand times a
+        // second for some. A program in the window took longer to answer each
+        // move than that, and its answers fell seconds behind the pointer. So
+        // it hears of a move at most once a frame, the last one too once the
+        // mouse stops, and a change of keys at once, much as X11 sends the
+        // next position only once the last one was answered. In between,
+        // kitty answers from what the program said last.
+        const bool keys_changed = keys != win32_drop.last_keys || *effect != win32_drop.last_allowed;
+        const bool pt_changed = pt.x != win32_drop.last_pt.x || pt.y != win32_drop.last_pt.y;
+        const monotonic_t now = monotonic();
+        const bool moved = keys_changed || (pt_changed && now - win32_drop.last_move_at >= ms_to_monotonic_t(16));
+        if (moved) {
+            win32_drop.last_pt = pt; win32_drop.last_keys = keys; win32_drop.last_allowed = *effect;
+            win32_drop.last_move_at = now;
+        }
+        accepted = _glfwInputDropEvent(self->window, moved ? GLFW_DROP_MOVE : GLFW_DROP_STATUS_UPDATE, x, y, m, offered_mimes(m), false);
     }
-    *effect = win32_drop.offered_count ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+    *effect = chosen_drop_effect(self->window, accepted, *effect);
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dt_DragLeave(IDropTarget *This) {
     Win32DropTarget *self = (Win32DropTarget*)This;
     if (self->window) _glfwInputDropEvent(self->window, GLFW_DROP_LEAVE, 0, 0, NULL, 0, win32_drag.active);
-    win32_drop.offered_count = 0;
+    free_drop_offers();
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dt_Drop(IDropTarget *This, IDataObject *pdo, DWORD keys, POINTL pt, DWORD *effect) {
@@ -1892,19 +2312,50 @@ static HRESULT STDMETHODCALLTYPE dt_Drop(IDropTarget *This, IDataObject *pdo, DW
     if (!self->window) { *effect = DROPEFFECT_NONE; return S_OK; }
     free_win32_drop_items();
     win32_drop.window = self->window;
-    win32_drop.offered_count = 0;
     if (win32_drag.active) {
-        *effect = self_drag_effect(self_drag_event(self->window, GLFW_DROP_DROP, pt), *effect);
+        free_drop_offers();
+        // kitty takes a tab, a window or text it dragged itself from what it
+        // holds, and ends the drop at once. A drag a program in kitty started,
+        // such as the dnd kitten's, goes to the window under the pointer as any
+        // drop does, which reads its data, so that data is made ready first.
+        add_own_drag_items(pdo);
+        set_drop_source_actions(self->window, *effect);
+        const char *m[WIN32_DROP_MAX]; for (size_t i = 0; i < win32_drop.count; i++) m[i] = win32_drop.items[i].mime;
+        double x, y; drop_point_to_client(self->window, pt, &x, &y);
+        win32_drop.ended = false;
+        const size_t accepted = _glfwInputDropEvent(self->window, GLFW_DROP_DROP, x, y, m, win32_drop.count, true);
+        if (win32_drop.ended) *effect = self_drag_effect(accepted, *effect);
+        else {
+            for (size_t i = 0; i < accepted; i++) _glfwPlatformRequestDropData(self->window, m[i]);
+            *effect = win32_drop.count ? DROPEFFECT_COPY : DROPEFFECT_NONE;  // a copy, as below
+        }
         return S_OK;
     }
-    size_t u8len; char *u8;
-    if ((u8 = win32_get_format(pdo, CF_HDROP, &u8len))) add_win32_drop_item(DND_MIME_URI_LIST, u8, u8len);
-    if ((u8 = win32_get_format(pdo, CF_UNICODETEXT, &u8len))) add_win32_drop_item(DND_MIME_TEXT, u8, u8len);
+    collect_drop_offers(pdo);
+    if (win32_drop.offered_count && (pt.x != win32_drop.last_pt.x || pt.y != win32_drop.last_pt.y)) {
+        // DragOver may have held the last move back, and the drop goes where
+        // kitty last heard the pointer was
+        const char *m[WIN32_DROP_MAX];
+        double x, y; drop_point_to_client(self->window, pt, &x, &y);
+        win32_drop.last_pt = pt;
+        _glfwInputDropEvent(self->window, GLFW_DROP_MOVE, x, y, m, offered_mimes(m), false);
+    }
+    for (size_t i = 0; i < win32_drop.offered_count; i++) {
+        const Win32DropOffer *o = win32_drop.offered + i;
+        size_t len = 0;
+        char *data = o->from == DROP_FROM_NAMED ? win32_get_raw_format(pdo, o->cf, &len) : win32_get_format(pdo, o->cf, &len);
+        add_win32_drop_item(o->mime, data, len);
+    }
+    free_drop_offers();
+    set_drop_source_actions(self->window, *effect);
     if (win32_drop.count) {
-        const char *m[2]; for (size_t i = 0; i < win32_drop.count; i++) m[i] = win32_drop.items[i].mime;
+        const char *m[WIN32_DROP_MAX]; for (size_t i = 0; i < win32_drop.count; i++) m[i] = win32_drop.items[i].mime;
         double x, y; drop_point_to_client(self->window, pt, &x, &y);
         size_t accepted = _glfwInputDropEvent(self->window, GLFW_DROP_DROP, x, y, m, win32_drop.count, false);
         for (size_t i = 0; i < accepted; i++) _glfwPlatformRequestDropData(self->window, m[i]);
+        // Always a copy, so the dragging program removes nothing: the dnd
+        // kitten removes the sources of a move itself, once it has them, and
+        // kitty's own paste never moves anything
         *effect = DROPEFFECT_COPY;
     } else *effect = DROPEFFECT_NONE;
     return S_OK;
@@ -1933,7 +2384,7 @@ _glfwWin32RevokeDropTarget(_GLFWwindow *window) {
         ((Win32DropTarget*)dt)->window = NULL;
         dt->lpVtbl->Release(dt);
         window->win32.dropTarget = NULL;
-        if (win32_drop.window == window) { free_win32_drop_items(); win32_drop.window = NULL; win32_drop.offered_count = 0; }
+        if (win32_drop.window == window) { free_win32_drop_items(); win32_drop.window = NULL; free_drop_offers(); }
     }
 }
 
@@ -1970,7 +2421,7 @@ ssize_t _glfwPlatformReadAvailableDropData(GLFWwindow* w, GLFWDropEvent* ev, cha
     return -ENOENT;
 }
 
-void _glfwPlatformEndDrop(GLFWwindow* w, GLFWDragOperationType op) { (void) w; (void) op; free_win32_drop_items(); }
+void _glfwPlatformEndDrop(GLFWwindow* w, GLFWDragOperationType op) { (void) w; (void) op; free_win32_drop_items(); win32_drop.ended = true; }
 
 int _glfwPlatformRequestDropData(_GLFWwindow* window, const char* mime) {
     for (size_t i = 0; i < win32_drop.count; i++) {
@@ -1984,21 +2435,21 @@ int _glfwPlatformRequestDropData(_GLFWwindow* window, const char* mime) {
     return EINVAL;
 }
 // ---------------------------------------------------------------------------
-// Drag and drop -- drag source (kitty's own drags of tabs and windows)
+// Drag and drop -- drag source (kitty's own drags, and those of programs in it)
 // ---------------------------------------------------------------------------
 // Each mime type travels as a clipboard format registered under its own name,
 // which only kitty reads, so text, links and files go out under the formats
 // other programs read as well. DoDragDrop runs a modal loop, so the drag starts
 // from a posted message rather than inside the call that asked for it, which
 // comes from kitty's Python, and the repaint timer the live resize uses keeps
-// kitty drawing during the loop. Drags that programs in a window start, the dnd
-// kitten's side, need the client drag protocol and are not done here.
+// kitty drawing during the loop. A program in a window, such as the dnd kitten,
+// supplies its data once a drop target asks for it.
 
 static void
 free_win32_drag(void) {
-    for (size_t i = 0; i < win32_drag.total; i++) { free(win32_drag.mimes[i]); free(win32_drag.data[i]); }
+    for (size_t i = 0; i < win32_drag.total; i++) { free(win32_drag.mimes[i]); free(win32_drag.data[i]); win32_drag.derived[i] = 0; }
     win32_drag.count = win32_drag.total = 0;
-    win32_drag.has_files = false;
+    win32_drag.has_files = win32_drag.on_demand = false;
 }
 
 typedef struct { wchar_t *p; size_t len, cap; bool failed; } WideBuf;
@@ -2056,9 +2507,10 @@ path_from_file_url(const char *url, size_t n) {
     return path;
 }
 
+// A format for other programs, its data NULL when it is made on demand
 static void
 add_drag_format(CLIPFORMAT cf, void *data, size_t sz) {
-    if (!cf || !data || win32_drag.total >= WIN32_DRAG_MAX_FORMATS) { free(data); return; }
+    if (!cf || (!data && !win32_drag.on_demand) || win32_drag.total >= WIN32_DRAG_MAX_FORMATS) { free(data); return; }
     const size_t n = win32_drag.total++;
     win32_drag.formats[n] = cf;
     win32_drag.mimes[n] = NULL;
@@ -2074,17 +2526,35 @@ wide_text_data(const WideBuf *b, size_t *sz) {
     return ans;
 }
 
+enum { OTHER_FORMAT_NONE, OTHER_FORMAT_TEXT, OTHER_FORMAT_LINK, OTHER_FORMAT_FILES, OTHER_FORMAT_COUNT };
+typedef struct { void *data[OTHER_FORMAT_COUNT]; size_t sizes[OTHER_FORMAT_COUNT]; } OtherFormats;
+
+static CLIPFORMAT
+other_format_clipformat(int which) {
+    switch (which) {
+        case OTHER_FORMAT_TEXT: return CF_UNICODETEXT;
+        case OTHER_FORMAT_LINK: return (CLIPFORMAT)RegisterClipboardFormatW(L"UniformResourceLocatorW");
+        case OTHER_FORMAT_FILES: return CF_HDROP;
+    }
+    return 0;
+}
+
+// The indices of the text and the uri-list among kitty's mime types, or -1
+static void
+text_and_uri_list(char *const *mimes, size_t count, int *text, int *uris) {
+    *text = *uris = -1;
+    for (size_t i = 0; i < count; i++) {
+        const char *m = mimes[i];
+        if (strcmp(m, "text/plain;charset=utf-8") == 0 || (*text < 0 && strcmp(m, "text/plain") == 0)) *text = (int)i;
+        else if (strcmp(m, "text/uri-list") == 0) *uris = (int)i;
+    }
+}
+
 // Text as CF_UNICODETEXT, the links of a text/uri-list as a link and as text,
 // and the files among them as CF_HDROP, which Explorer copies and editors open
-static void
-add_formats_for_other_programs(void) {
-    const char *text = NULL, *uris = NULL;
-    size_t text_sz = 0, uris_sz = 0;
-    for (size_t i = 0; i < win32_drag.count; i++) {
-        const char *m = win32_drag.mimes[i];
-        if (strcmp(m, "text/plain;charset=utf-8") == 0 || (!text && strcmp(m, "text/plain") == 0)) { text = win32_drag.data[i]; text_sz = win32_drag.sizes[i]; }
-        else if (strcmp(m, "text/uri-list") == 0) { uris = win32_drag.data[i]; uris_sz = win32_drag.sizes[i]; }
-    }
+static OtherFormats
+other_formats_from(const char *text, size_t text_sz, const char *uris, size_t uris_sz) {
+    OtherFormats ans = {0};
     WideBuf as_text = {0}, files = {0}, link = {0};
     size_t num_files = 0;
     if (text) wide_append_utf8(&as_text, text, text_sz);
@@ -2108,23 +2578,50 @@ add_formats_for_other_programs(void) {
         }
         p = eol ? eol + 1 : end;
     }
-    size_t sz;
-    if (as_text.len && !as_text.failed) add_drag_format(CF_UNICODETEXT, wide_text_data(&as_text, &sz), sz);
-    if (link.len && !link.failed) add_drag_format((CLIPFORMAT)RegisterClipboardFormatW(L"UniformResourceLocatorW"), wide_text_data(&link, &sz), sz);
+    if (as_text.len && !as_text.failed) ans.data[OTHER_FORMAT_TEXT] = wide_text_data(&as_text, &ans.sizes[OTHER_FORMAT_TEXT]);
+    if (link.len && !link.failed) ans.data[OTHER_FORMAT_LINK] = wide_text_data(&link, &ans.sizes[OTHER_FORMAT_LINK]);
     if (num_files && !files.failed) {
         // DROPFILES, then the paths, each ending in a NUL, and a NUL after the last
-        sz = sizeof(DROPFILES) + (files.len + 1) * sizeof(wchar_t);
+        const size_t sz = sizeof(DROPFILES) + (files.len + 1) * sizeof(wchar_t);
         DROPFILES *df = calloc(1, sz);
         if (df) {
             df->pFiles = sizeof(DROPFILES);
             df->fWide = TRUE;
             memcpy((char*)df + sizeof(DROPFILES), files.p, files.len * sizeof(wchar_t));
-            const size_t before = win32_drag.total;
-            add_drag_format(CF_HDROP, df, sz);
-            win32_drag.has_files = win32_drag.total > before;
+            ans.data[OTHER_FORMAT_FILES] = df;
+            ans.sizes[OTHER_FORMAT_FILES] = sz;
         }
     }
     free(as_text.p); free(files.p); free(link.p);
+    return ans;
+}
+
+static void
+add_formats_for_other_programs(void) {
+    int text, uris;
+    text_and_uri_list(win32_drag.mimes, win32_drag.count, &text, &uris);
+    if ((text >= 0 && !win32_drag.data[text]) || (uris >= 0 && !win32_drag.data[uris])) {
+        // A program supplies the text or the links once a drop target asks, so
+        // these are made then, and a uri-list may well hold files
+        if (text >= 0 || uris >= 0) add_drag_format(CF_UNICODETEXT, NULL, 0);
+        if (uris >= 0) {
+            add_drag_format(other_format_clipformat(OTHER_FORMAT_LINK), NULL, 0);
+            add_drag_format(CF_HDROP, NULL, 0);
+            win32_drag.has_files = true;
+        }
+        for (size_t i = win32_drag.count; i < win32_drag.total; i++)
+            win32_drag.derived[i] = win32_drag.formats[i] == CF_UNICODETEXT ? OTHER_FORMAT_TEXT : win32_drag.formats[i] == CF_HDROP ? OTHER_FORMAT_FILES : OTHER_FORMAT_LINK;
+        return;
+    }
+    OtherFormats o = other_formats_from(
+        text >= 0 ? win32_drag.data[text] : NULL, text >= 0 ? win32_drag.sizes[text] : 0,
+        uris >= 0 ? win32_drag.data[uris] : NULL, uris >= 0 ? win32_drag.sizes[uris] : 0);
+    for (int which = OTHER_FORMAT_TEXT; which < OTHER_FORMAT_COUNT; which++) {
+        if (!o.data[which]) continue;
+        const size_t before = win32_drag.total;
+        add_drag_format(other_format_clipformat(which), o.data[which], o.sizes[which]);
+        if (which == OTHER_FORMAT_FILES) win32_drag.has_files = win32_drag.total > before;
+    }
 }
 
 // --- IDataObject COM object, offering the drag's formats ---
@@ -2147,8 +2644,11 @@ typedef struct {
     BOOL async_mode, in_async_op;
     size_t mime_count, count;  // kitty's mime types, then the formats other programs read
     CLIPFORMAT formats[WIN32_DRAG_MAX_FORMATS];
+    char *mimes[WIN32_DRAG_MAX_FORMATS];
     char *data[WIN32_DRAG_MAX_FORMATS];
     size_t sizes[WIN32_DRAG_MAX_FORMATS];
+    int derived[WIN32_DRAG_MAX_FORMATS];
+    bool fetched[WIN32_DRAG_MAX_FORMATS];  // asked for once, whatever came of it
     size_t stored_count;
     FORMATETC stored_formats[WIN32_DRAG_MAX_STORED];
     STGMEDIUM stored_media[WIN32_DRAG_MAX_STORED];
@@ -2158,14 +2658,87 @@ static bool
 take_drag_formats(Win32DragData *self) {
     for (size_t i = 0; i < win32_drag.total; i++) {
         const size_t sz = win32_drag.sizes[i];
+        self->formats[i] = win32_drag.formats[i];
+        self->derived[i] = win32_drag.derived[i];
+        self->count = i + 1;
+        if (win32_drag.mimes[i] && !(self->mimes[i] = _glfw_strdup(win32_drag.mimes[i]))) return false;
+        if (!win32_drag.data[i]) continue;  // supplied on demand
         if (!(self->data[i] = malloc(sz ? sz : 1))) return false;
         if (sz) memcpy(self->data[i], win32_drag.data[i], sz);
-        self->formats[i] = win32_drag.formats[i];
         self->sizes[i] = sz;
-        self->count = i + 1;
     }
     self->mime_count = win32_drag.count;
     return true;
+}
+
+// Data a program in a kitty window supplies, asked for when a drop target
+// reads it. kitty streams it in pieces through its loop, which the drag's
+// repaint timer runs, so this waits on messages until each piece is in, as the
+// X11 backend waits to answer a selection request.
+static bool
+fetch_drag_data(Win32DragData *self, size_t idx) {
+    if (self->fetched[idx]) return self->data[idx] != NULL;
+    self->fetched[idx] = true;
+    _GLFWwindow *window = _glfwWindowForId(win32_drag.window_id);
+    if (!window || !self->mimes[idx]) return false;
+    const char *mime = self->mimes[idx];
+    char *buf = NULL;
+    size_t len = 0;
+    int err = 0;
+    // A remote program's files are copied to this machine first, so the wait is
+    // for a lack of progress, not for the whole of it
+    const monotonic_t patience = s_to_monotonic_t(60);
+    monotonic_t deadline = monotonic() + patience;
+    while (true) {
+        win32_drag.data_ready = false;
+        GLFWDragEvent ev = {.type = GLFW_DRAG_DATA_REQUEST, .mime_type = mime};
+        _glfwInputDragSourceRequest(window, &ev);
+        err = ev.err_num;
+        if (ev.data && ev.data_sz) {
+            char *p = realloc(buf, len + ev.data_sz);
+            if (p) { memcpy(p + len, ev.data, ev.data_sz); buf = p; len += ev.data_sz; }
+            // Handing the piece back lets kitty free it
+            GLFWDragEvent done = {.type = GLFW_DRAG_DATA_REQUEST, .mime_type = mime, .data = ev.data, .data_sz = ev.data_sz};
+            _glfwInputDragSourceRequest(window, &done);
+            if (!p) { err = ENOMEM; break; }
+            deadline = monotonic() + patience;
+            continue;
+        }
+        if (err != EAGAIN) break;
+        while (!win32_drag.data_ready && monotonic() < deadline) {
+            MsgWaitForMultipleObjects(0, NULL, FALSE, 50, QS_ALLINPUT);
+            MSG msg;
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+        }
+        if (!win32_drag.data_ready) { err = ETIMEDOUT; break; }
+        deadline = monotonic() + patience;
+    }
+    if (err) { free(buf); return false; }
+    self->data[idx] = buf ? buf : malloc(1);
+    self->sizes[idx] = len;
+    return self->data[idx] != NULL;
+}
+
+// A format other programs read, made from data a program supplies on demand
+static bool
+make_other_format(Win32DragData *self, size_t idx) {
+    int text, uris;
+    text_and_uri_list(self->mimes, self->mime_count, &text, &uris);
+    if (text >= 0) fetch_drag_data(self, (size_t)text);
+    if (uris >= 0) fetch_drag_data(self, (size_t)uris);
+    OtherFormats o = other_formats_from(
+        text >= 0 ? self->data[text] : NULL, text >= 0 ? self->sizes[text] : 0,
+        uris >= 0 ? self->data[uris] : NULL, uris >= 0 ? self->sizes[uris] : 0);
+    for (size_t i = self->mime_count; i < self->count; i++) {
+        const int which = self->derived[i];
+        if (!which || self->data[i] || !o.data[which]) continue;
+        self->data[i] = o.data[which];
+        self->sizes[i] = o.sizes[which];
+        o.data[which] = NULL;
+    }
+    for (int which = 0; which < OTHER_FORMAT_COUNT; which++) free(o.data[which]);
+    self->fetched[idx] = true;
+    return self->data[idx] != NULL;
 }
 
 static int
@@ -2232,7 +2805,7 @@ static ULONG STDMETHODCALLTYPE dd_Release(IDataObject *This) {
     LONG r = InterlockedDecrement(&self->ref);
     if (r == 0) {
         for (size_t i = 0; i < self->stored_count; i++) ReleaseStgMedium(self->stored_media + i);
-        for (size_t i = 0; i < self->count; i++) free(self->data[i]);
+        for (size_t i = 0; i < self->count; i++) { free(self->data[i]); free(self->mimes[i]); }
         free(self);
     }
     return r;
@@ -2244,6 +2817,10 @@ static HRESULT STDMETHODCALLTYPE dd_GetData(IDataObject *This, FORMATETC *f, STG
     if (stored >= 0) return copy_stored_medium(f->cfFormat, self->stored_media + stored, m) ? S_OK : E_OUTOFMEMORY;
     int idx = drag_format_index(self, f);
     if (idx < 0) return DV_E_FORMATETC;
+    if (!self->data[idx]) {
+        const bool ok = (size_t)idx < self->mime_count ? fetch_drag_data(self, (size_t)idx) : make_other_format(self, (size_t)idx);
+        if (!ok) return DV_E_FORMATETC;
+    }
     HGLOBAL h = drag_data_for(self, (size_t)idx);
     if (!h) return E_OUTOFMEMORY;
     m->tymed = TYMED_HGLOBAL; m->hGlobal = h; m->pUnkForRelease = NULL;
@@ -2296,6 +2873,21 @@ static IDataObjectVtbl win32_drag_data_vtbl = {
     dd_QueryInterface, dd_AddRef, dd_Release, dd_GetData, dd_GetDataHere, dd_QueryGetData,
     dd_GetCanonicalFormatEtc, dd_SetData, dd_EnumFormatEtc, dd_DAdvise, dd_DUnadvise, dd_EnumDAdvise
 };
+
+// The data of a drag of kitty's own, for the kitty window it is dropped on to
+// read, each mime type's exact bytes, which GlobalSize may pad
+static void
+add_own_drag_items(IDataObject *pdo) {
+    if (pdo->lpVtbl != &win32_drag_data_vtbl) return;
+    Win32DragData *self = (Win32DragData*)pdo;
+    for (size_t i = 0; i < self->mime_count; i++) {
+        if (!self->data[i] && !fetch_drag_data(self, i)) continue;
+        const size_t sz = self->sizes[i];
+        char *copy = malloc(sz ? sz : 1);
+        if (copy && sz) memcpy(copy, self->data[i], sz);
+        add_win32_drop_item(self->mimes[i], copy, sz);
+    }
+}
 
 #define async_self(This) ((Win32DragData*)((char*)(This) - offsetof(Win32DragData, async_iface)))
 static HRESULT STDMETHODCALLTYPE da_QueryInterface(IDataObjectAsyncCapability *This, REFIID riid, void **ppv) {
@@ -2547,7 +3139,9 @@ runPendingDrag(void) {
     Win32DropSource *source = calloc(1, sizeof *source);
     if (data) {
         data->iface.lpVtbl = &win32_drag_data_vtbl; data->async_iface.lpVtbl = &win32_drag_async_vtbl;
-        data->ref = 1; data->async_mode = TRUE;
+        // Data a program supplies has to be read during the drop, while kitty
+        // still holds the drag, so such a drag lets no drop target read later
+        data->ref = 1; data->async_mode = !win32_drag.on_demand;
     }
     if (source) { source->iface.lpVtbl = &win32_drop_source_vtbl; source->ref = 1; }
     if (window && data && source && win32_drag.count && !win32_drag.cancel_requested && take_drag_formats(data)) {
@@ -2598,22 +3192,22 @@ int _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
     free_win32_drag();
     for (size_t i = 0; i < _glfw.drag.item_count && win32_drag.count < WIN32_DRAG_MAX_MIMES; i++) {
         const GLFWDragSourceItem *item = _glfw.drag.items + i;
-        // Data kitty hands over only when asked belongs to the drags programs
-        // in a window start, the dnd kitten's side, which is not done here
-        if (!item->optional_data) continue;
         const UINT cf = RegisterClipboardFormatA(item->mime_type);
         if (!cf) continue;
         const size_t n = win32_drag.count;
         win32_drag.formats[n] = (CLIPFORMAT)cf;
         win32_drag.mimes[n] = _glfw_strdup(item->mime_type);
         win32_drag.sizes[n] = item->data_size;
-        win32_drag.data[n] = malloc(item->data_size ? item->data_size : 1);
-        if (!win32_drag.mimes[n] || !win32_drag.data[n]) {
+        // A program in a kitty window, the dnd kitten among them, supplies its
+        // data once a drop target asks, see fetch_drag_data
+        win32_drag.data[n] = item->optional_data ? malloc(item->data_size ? item->data_size : 1) : NULL;
+        if (!win32_drag.mimes[n] || (item->optional_data && !win32_drag.data[n])) {
             free(win32_drag.mimes[n]); free(win32_drag.data[n]);
             free_win32_drag();
             return ENOMEM;
         }
-        if (item->data_size) memcpy(win32_drag.data[n], item->optional_data, item->data_size);
+        if (item->optional_data && item->data_size) memcpy(win32_drag.data[n], item->optional_data, item->data_size);
+        if (!item->optional_data) win32_drag.on_demand = true;
         win32_drag.total = ++win32_drag.count;
     }
     if (!win32_drag.count) return EINVAL;
@@ -2642,8 +3236,12 @@ void _glfwPlatformFreeDragSourceData(void) {
     if (win32_drag.pending) win32_drag.cancel_requested = true;
 }
 
-// No drag here asks for its data on demand, see _glfwPlatformStartDrag
-int _glfwPlatformDragDataReady(const char* mime_type, const char* data, size_t sz, int type) { (void) mime_type; (void) data; (void) sz; (void) type; return 0; }
+// More of the data a program supplies is in, for fetch_drag_data waiting on it
+int _glfwPlatformDragDataReady(const char* mime_type, const char* data, size_t sz, int type) {
+    (void) mime_type; (void) data; (void) sz; (void) type;
+    win32_drag.data_ready = true;
+    return 0;
+}
 
 int _glfwPlatformChangeDragImage(const GLFWimage* thumbnail) {
     if (!win32_drag.pending && !win32_drag.active) return 0;
@@ -2652,4 +3250,4 @@ int _glfwPlatformChangeDragImage(const GLFWimage* thumbnail) {
 }
 
 // Public API defined per platform. Layer shell is a Wayland concept.
-GLFWAPI bool glfwIsLayerShellSupported(void) { return false; }
+GLFWAPI bool glfwIsLayerShellSupported(void) { return true; }

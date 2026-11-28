@@ -597,6 +597,7 @@ panel_defaults = {
     'single_instance': 'no',
     'instance_group': '',
     'toggle_visibility': 'no',
+    'hotkey': '',
     'start_as_hidden': 'no',
     'detach': 'no',
     'detached_log': '',
@@ -777,6 +778,14 @@ type=bool-set
 default={toggle_visibility}
 When set and using :option:`--single-instance` will toggle the visibility of the
 existing panel rather than creating a new one.
+
+
+--hotkey
+default={hotkey}
+Only on Windows. A global hotkey, such as :code:`ctrl+alt+grave`, that shows
+and hides the panel from any program, in the same syntax as kitty's shortcuts.
+Windows has no compositor to bind a key in, so kitty registers it itself. The
+special value :code:`none` registers nothing.
 
 
 --if-running

@@ -116,6 +116,14 @@ opt(
 
 opt('focus_policy', 'exclusive', choices=panel_opts['focus_policy'].choices, long_text=help_of('focus_policy'))
 
+opt(
+    'hotkey',
+    'none',
+    long_text='Only on Windows. A global hotkey that shows and hides the quick access terminal from any program,'
+    ' in the same syntax as kitty\'s shortcuts, such as :code:`ctrl+alt+grave`. None is registered unless you set one.'
+    ' It works once the quick access terminal has started, so you may want it to start hidden when you sign in.',
+)
+
 
 def options_spec() -> str:
     return f"""

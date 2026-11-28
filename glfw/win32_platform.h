@@ -50,6 +50,14 @@ typedef struct _GLFWwindowWin32 {
     HWND    captionButtons;   // layered overlay hosting min/max/close
     void*   dropTarget;       // IDropTarget* registered for OLE drag-and-drop (drop-in)
     void*   acrylic;          // _GLFWacrylicWin32* composition tree, NULL when off
+    // A panel, kitty's layer shell window: its config, the screen it is on,
+    // whether it holds a strip of that screen as an app bar, and whether it
+    // sits behind the desktop icons
+    struct {
+        bool active, appbar, inDesktop;
+        HMONITOR monitor;
+        GLFWLayerShellConfig config;
+    } layer;
 } _GLFWwindowWin32;
 
 // Per-monitor Win32 state.
@@ -133,6 +141,7 @@ typedef struct _GLFWlibraryWin32 {
 
 void _glfwInitTimerWin32(void);
 void _glfwPollMonitorsWin32(void);
+UINT _glfwWin32MonitorDpi(HMONITOR handle);
 bool _glfwRegisterWindowClassWin32(void);
 void _glfwUnregisterWindowClassWin32(void);
 void _glfwWin32RegisterDropTarget(_GLFWwindow *window);

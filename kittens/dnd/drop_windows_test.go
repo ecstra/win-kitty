@@ -1,0 +1,243 @@
+//go:build windows
+
+package dnd
+
+import (
+	"encoding/binary"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+
+	"golang.org/x/sys/windows"
+)
+
+// An editor saving over a file swaps a new one in by rename, which a move must
+// not take for the source it was given, and delete
+func TestAMoveSourceReplacedByRenameIsNotTakenForIt(t *testing.T) {
+	dir := t.TempDir()
+	src, saved := filepath.Join(dir, "report.txt"), filepath.Join(dir, "save.tmp")
+	for _, p := range []string{src, saved} {
+		if err := os.WriteFile(p, []byte(p), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	info, err := os.Lstat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms := move_source{info: with_identity(info)}
+	if err := os.Rename(saved, src); err != nil {
+		t.Fatal(err)
+	}
+	if cur, err := ms.current(src); err != nil || cur != nil {
+		t.Fatalf("the file saved over the source passes for it: %v %v", cur, err)
+	}
+}
+
+// A junction is a link to a folder, as a symlink is, so merging a move into one
+// that leads into the folder being moved is refused, as for a symlink
+func TestAJunctionInTheDestinationLeadingIntoAMoveSourceIsRefused(t *testing.T) {
+	root := t.TempDir()
+	lib, staged, out := filepath.Join(root, "src", "lib"), filepath.Join(root, "staged"), filepath.Join(root, "out")
+	for _, d := range []string{lib, filepath.Join(staged, "lib"), out} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(staged, "lib", "a.txt"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", filepath.Join(out, "lib"), lib).CombinedOutput(); err != nil {
+		t.Fatalf("could not make a junction: %s %s", err, out)
+	}
+	lib_info, err := os.Lstat(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src_dir, err := os.Open(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src_dir.Close()
+	dest_dir, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dest_dir.Close()
+	got, err := find_overwrites(src_dir, dest_dir, []os.FileInfo{lib_info})
+	if err == nil {
+		t.Fatalf("a merge into a junction to the moved folder was let through, overwriting %v", got)
+	}
+}
+
+// A junction inside a dropped folder is left out, as other special files are,
+// since remaking it as a symlink needs rights most users lack, and the rest of
+// the folder is copied
+func TestAFolderWithAJunctionInsideIsCopiedWithoutIt(t *testing.T) {
+	root := t.TempDir()
+	proj, data, staging := filepath.Join(root, "proj"), filepath.Join(root, "data"), filepath.Join(root, "staging")
+	for _, d := range []string{proj, data, staging} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(proj, "a.txt"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", filepath.Join(proj, "link"), data).CombinedOutput(); err != nil {
+		t.Fatalf("could not make a junction: %s %s", err, out)
+	}
+	dest, err := os.Open(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dest.Close()
+	if err := do_local_copy(t.Context(), dest, []string{proj}, copy_on_drop, "auto"); err != nil {
+		t.Fatalf("a folder with a junction inside was not copied: %s", err)
+	}
+	if _, err := os.Stat(filepath.Join(staging, "proj", "a.txt")); err != nil {
+		t.Fatalf("the folder's file was not copied: %s", err)
+	}
+	if _, err := os.Lstat(filepath.Join(staging, "proj", "link")); err == nil {
+		t.Fatal("the junction was copied as a link")
+	}
+}
+
+// A symlink as WSL and Cygwin make them, which Windows cannot follow, the way
+// Cygwin writes one: the tag, then the format version and the target
+func make_wsl_symlink(t *testing.T, path, target string) {
+	t.Helper()
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := windows.CreateFile(p, windows.GENERIC_WRITE, 0, nil, windows.CREATE_NEW, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(h)
+	data := append([]byte{2, 0, 0, 0}, target...)
+	buf := make([]byte, 8+len(data))
+	binary.LittleEndian.PutUint32(buf, 0xA000001D) // IO_REPARSE_TAG_LX_SYMLINK
+	binary.LittleEndian.PutUint16(buf[4:], uint16(len(data)))
+	copy(buf[8:], data)
+	var returned uint32
+	if err := windows.DeviceIoControl(h, windows.FSCTL_SET_REPARSE_POINT, &buf[0], uint32(len(buf)), nil, 0, &returned, nil); err != nil {
+		t.Fatalf("could not make a WSL symlink: %s", err)
+	}
+}
+
+// A WSL or Cygwin symlink already in the destination leads nowhere Windows can
+// follow, so a dropped file of the same name replaces it as any file
+func TestAWSLSymlinkInTheDestinationIsAnOrdinaryOverwrite(t *testing.T) {
+	root := t.TempDir()
+	staged, out := filepath.Join(root, "staged"), filepath.Join(root, "out")
+	for _, d := range []string{staged, out} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(staged, "notes.txt"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	make_wsl_symlink(t, filepath.Join(out, "notes.txt"), "elsewhere.txt")
+	src_dir, err := os.Open(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src_dir.Close()
+	dest_dir, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dest_dir.Close()
+	got, err := find_overwrites(src_dir, dest_dir, nil)
+	if err != nil || len(got) != 1 || got[0] != "notes.txt" {
+		t.Fatalf("the WSL symlink is not an ordinary overwrite: %v %v", got, err)
+	}
+}
+
+// A folder reached through a junction, or a subst drive, sits where the folder
+// it leads to does, so a move of a folder above that is a drop into itself
+func TestADropThroughAJunctionIsInsideTheRealSource(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "proj")
+	target := filepath.Join(src, "a", "b")
+	if err := os.MkdirAll(filepath.Join(target, "c"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "j")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Fatalf("could not make a junction: %s %s", err, out)
+	}
+	src_info, err := os.Lstat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := os.Open(filepath.Join(link, "c"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	inside, err := destination_is_within_source(d, []os.FileInfo{src_info})
+	if err != nil || !inside {
+		t.Fatalf("a drop into %s through a junction is not inside %s: %v %v", d.Name(), src, inside, err)
+	}
+}
+
+// A local folder drop checks the folder is not dropped into itself, and a move
+// checks each source is still the file it was, both by comparing files
+func TestDropComparesFilesOnWindows(t *testing.T) {
+	root := t.TempDir()
+	src, other := filepath.Join(root, "src"), filepath.Join(root, "other")
+	inner := filepath.Join(src, "inner")
+	for _, d := range []string{inner, other} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src_info, err := os.Lstat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		dest   string
+		inside bool
+	}{{inner, true}, {src, true}, {other, false}, {root, false}} {
+		d, err := os.Open(c.dest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inside, err := destination_is_within_source(d, []os.FileInfo{src_info})
+		d.Close()
+		if err != nil {
+			t.Fatalf("dropping into %s: %s", c.dest, err)
+		}
+		if inside != c.inside {
+			t.Fatalf("dropping into %s counted as inside the source: %v", c.dest, inside)
+		}
+	}
+	if cur, err := (move_source{info: src_info}).current(src); err != nil || cur == nil {
+		t.Fatalf("an unchanged move source is not recognised: %v %v", cur, err)
+	}
+	if cur, err := (move_source{info: src_info}).current(other); err != nil || cur != nil {
+		t.Fatalf("another folder passes for the move source: %v %v", cur, err)
+	}
+}
+
+func TestParseUriListGivesWindowsPaths(t *testing.T) {
+	ans, err := parse_uri_list("file:///C:/Users/me/a%20b.txt\r\nfile://///server/share/x.txt\r\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := []string{`C:\Users\me\a b.txt`, `\\server\share\x.txt`}
+	if len(ans) != len(expected) {
+		t.Fatalf("got %d paths: %#v", len(ans), ans)
+	}
+	for i, e := range expected {
+		if ans[i].path != e {
+			t.Fatalf("path %d is %q, not %q", i, ans[i].path, e)
+		}
+	}
+}

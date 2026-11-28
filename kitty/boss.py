@@ -1197,6 +1197,25 @@ class Boss:
         for os_window_id in self.os_window_map:
             toggle_os_window_visibility(os_window_id, move_to_active_screen=True)
 
+    def register_panel_hotkey(self, spec: str) -> None:
+        # Windows has no compositor to bind a key in, so a panel registers its
+        # own, which then shows and hides it as the quick access service does
+        # on macOS
+        from kittens.panel.main import hotkey_from_spec
+
+        from .fast_data_types import register_global_hotkey
+
+        try:
+            hotkey = hotkey_from_spec(spec)
+        except ValueError as e:
+            self.show_error(_('Invalid hotkey'), str(e))
+            return
+        try:
+            # No key gives up the hotkey this kitty holds, if any
+            register_global_hotkey(*(hotkey or (0, 0)))
+        except (OSError, ValueError) as e:
+            log_error(f'The hotkey {spec} could not be registered, running the kitten again still shows and hides the panel. Error: {e}')
+
     def handle_remote_cmd(self, cmd: memoryview, window: Window | None = None) -> None:
         response = self._handle_remote_command(cmd, window)
         if response is not None and not isinstance(response, AsyncResponse) and window is not None:

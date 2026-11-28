@@ -21,3 +21,21 @@ func file_identity(info os.FileInfo) (dev, ino uint64, err error) {
 	}
 	return 0, 0, fmt.Errorf("unknown stat result type for %s: %T", info.Name(), info.Sys())
 }
+
+// Whether an entry already in the destination may lead to a folder elsewhere
+func is_link(dir *os.File, name string, mode os.FileMode) bool { return mode&os.ModeSymlink != 0 }
+
+// The device and inode are in the info from the start
+func with_identity(info os.FileInfo) os.FileInfo { return info }
+
+func same_file(a, b os.FileInfo) (bool, error) {
+	adev, aino, err := file_identity(a)
+	if err != nil {
+		return false, err
+	}
+	bdev, bino, err := file_identity(b)
+	if err != nil {
+		return false, err
+	}
+	return adev == bdev && aino == bino, nil
+}

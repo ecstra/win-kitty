@@ -969,8 +969,9 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
     // Reserve a title-bar strip at the very top for the win32 custom frame. The
     // strip shows the acrylic window background and hosts the caption buttons;
     // the terminal (and a top tab bar) sit below it. ~36 logical px = 27pt.
-    // Headless mock OS windows have no native frame, so no strip either.
-    if (os_window->handle && !(OPT(hide_window_decorations) & 1)) {
+    // Headless mock OS windows have no native frame, so no strip either, and
+    // nor does a panel, which glfw makes without a title bar.
+    if (os_window->handle && !os_window->is_layer_shell && !(OPT(hide_window_decorations) & 1)) {
         long strip = pt_to_px_for_os_window(30.0, os_window); // ~40px title bar
         if (strip > (long)os_window->viewport_height) strip = os_window->viewport_height;
         if (tab_bar->bottom > tab_bar->top && OPT(tab_bar_edge) == TOP_EDGE) {
