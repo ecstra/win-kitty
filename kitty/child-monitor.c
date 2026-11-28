@@ -661,6 +661,55 @@ ensure_write_buf_space(Screen *screen, size_t sz, size_t limit) {
     return true;
 }
 
+#ifdef _WIN32
+// Windows' console drops OSC from what a program reads and passes APC on. A
+// kitten that asked for it, see dispatch_apc(), gets each whole OSC kitty
+// writes to it here, from start on, as APC, which its loop unwraps.
+static void
+wrap_osc_replies(Screen *screen, size_t start, size_t limit) {
+    if (!screen->wrap_osc_replies) return;
+    const size_t n = screen->write_buf_used - start;
+    size_t codes = 0;
+    for (size_t i = 0; i + 1 < n; i++) if (screen->write_buf[start + i] == 0x1b && screen->write_buf[start + i + 1] == ']') codes++;
+    if (!codes) return;
+    static const char opener[] = "\x1b_kitty-osc;";
+    uint8_t *src = malloc(n), *out = malloc(n + codes * sizeof(opener) + 1);
+    if (!src || !out) { free(src); free(out); return; }
+    memcpy(src, screen->write_buf + start, n);
+    size_t o = 0, i = 0;
+    while (i < n) {
+        if (src[i] == 0x1b && i + 1 < n && src[i + 1] == ']') {
+            size_t j = i + 2, end = 0;
+            for (; j < n; j++) {
+                if (src[j] == 0x07) { end = j + 1; break; }
+                if (src[j] == 0x1b && j + 1 < n && src[j + 1] == '\\') { end = j + 2; break; }
+            }
+            if (end) {
+                memcpy(out + o, opener, sizeof(opener) - 1); o += sizeof(opener) - 1;
+                memcpy(out + o, src + i + 2, j - i - 2); o += j - i - 2;
+                out[o++] = 0x1b; out[o++] = '\\';
+                i = end;
+                continue;
+            }
+        }
+        out[o++] = src[i++];
+    }
+    screen->write_buf_used = start;
+    if (ensure_write_buf_space(screen, o, limit)) {
+        memcpy(screen->write_buf + screen->write_buf_used, out, o);
+        screen->write_buf_used += o;
+    } else {
+        // No room for the longer form, so the replies go as they came
+        memcpy(screen->write_buf + screen->write_buf_used, src, n);
+        screen->write_buf_used += n;
+    }
+    free(src); free(out);
+}
+#define wrap_osc_replies_from(screen, start, limit) wrap_osc_replies(screen, start, limit)
+#else
+#define wrap_osc_replies_from(screen, start, limit)
+#endif
+
 #define schedule_write_to_child_generic(id, num, va_start, get_next_arg, va_end, found, too_much_data) \
     ChildMonitor *self = the_monitor;                                                                  \
     const char *data;                                                                                  \
@@ -682,6 +731,7 @@ ensure_write_buf_space(Screen *screen, size_t sz, size_t limit) {
                 break;                                                                                 \
             }                                                                                          \
             found = true;                                                                              \
+            const size_t written_from = screen->write_buf_used;                                        \
             va_start(ap, num);                                                                         \
             for (unsigned int i = 0; i < num; i++) {                                                   \
                 get_next_arg(ap);                                                                      \
@@ -689,6 +739,7 @@ ensure_write_buf_space(Screen *screen, size_t sz, size_t limit) {
                 screen->write_buf_used += szval;                                                       \
             }                                                                                          \
             va_end(ap);                                                                                \
+            wrap_osc_replies_from(screen, written_from, write_buf_limit);                              \
             if (screen->write_buf_sz > BUFSIZ && screen->write_buf_used < BUFSIZ) {                    \
                 screen->write_buf_sz = BUFSIZ;                                                         \
                 screen->write_buf = PyMem_RawRealloc(screen->write_buf, screen->write_buf_sz);         \
@@ -718,8 +769,10 @@ schedule_write_to_child_if_possible(id_type id, const char *data, size_t sz, boo
                 break;
             }
             *found = true;
+            const size_t written_from = screen->write_buf_used;
             memcpy(screen->write_buf + screen->write_buf_used, data, sz);
             screen->write_buf_used += sz;
+            wrap_osc_replies_from(screen, written_from, limit);
             if (screen->write_buf_sz > BUFSIZ && screen->write_buf_used < BUFSIZ) {
                 screen->write_buf_sz = BUFSIZ;
                 screen->write_buf = PyMem_RawRealloc(screen->write_buf, screen->write_buf_sz);
@@ -2424,6 +2477,9 @@ drain_graphics_injections(ChildMonitor *self, bool *data_received) {
             Child *child = children + child_idx;
             if (local[i].stream_delta > 0) child->side_channel_streams++;
             else if (child->side_channel_streams) child->side_channel_streams--;
+            // A kitten that ended without turning the wrapping off, as one that
+            // crashed, leaves the shell after it the plain replies
+            if (!child->side_channel_streams) screen->wrap_osc_replies = false;
             if (!child->side_channel_streams && child->held_resize.pending) {
                 // The kitten let go of the screen, so the console catches up
                 // on the last size it was held back from.

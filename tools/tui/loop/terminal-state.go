@@ -129,6 +129,7 @@ func reset_modes(sb *strings.Builder, modes ...Mode) {
 func (self *TerminalStateOptions) SetStateEscapeCodes() string {
 	var sb strings.Builder
 	sb.Grow(256)
+	sb.WriteString(osc_wrap_escape_code(true))
 	if self.Alternate_screen {
 		sb.WriteString(SAVE_CURSOR)
 	}
@@ -205,6 +206,7 @@ func (self *TerminalStateOptions) ResetStateEscapeCodes() string {
 		sb.WriteString(RESTORE_COLORS)
 	}
 	sb.WriteString(RESTORE_CURSOR)
+	sb.WriteString(osc_wrap_escape_code(false))
 	return sb.String()
 }
 

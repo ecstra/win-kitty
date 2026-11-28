@@ -1518,6 +1518,16 @@ dispatch_csi(PS *self) {
 static void
 dispatch_apc(PS *self, uint8_t *buf, size_t bufsz, bool is_extended UNUSED) {
     if (bufsz < 2) return;
+#ifdef _WIN32
+    // Windows' console drops OSC from what a program reads and passes APC on,
+    // so a kitten turns this on while it runs to get kitty's OSC replies, its
+    // drag and drop and clipboard ones among them, wrapped in APC
+    static const char wrap[] = "kitty-osc-wrap;";
+    if (bufsz == sizeof(wrap) && memcmp(buf, wrap, sizeof(wrap) - 1) == 0) {
+        self->screen->wrap_osc_replies = buf[sizeof(wrap) - 1] == '1';
+        return;
+    }
+#endif
     switch (buf[0]) {
         case 'G': parse_graphics_code(self, buf, bufsz); break;
         default: REPORT_ERROR("Unrecognized APC code: 0x%x", buf[0]); break;
