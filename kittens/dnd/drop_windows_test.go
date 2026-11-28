@@ -68,6 +68,39 @@ func TestAJunctionInTheDestinationLeadingIntoAMoveSourceIsRefused(t *testing.T) 
 	}
 }
 
+// A junction inside a dropped folder is left out, as other special files are,
+// since remaking it as a symlink needs rights most users lack, and the rest of
+// the folder is copied
+func TestAFolderWithAJunctionInsideIsCopiedWithoutIt(t *testing.T) {
+	root := t.TempDir()
+	proj, data, staging := filepath.Join(root, "proj"), filepath.Join(root, "data"), filepath.Join(root, "staging")
+	for _, d := range []string{proj, data, staging} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(proj, "a.txt"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", filepath.Join(proj, "link"), data).CombinedOutput(); err != nil {
+		t.Fatalf("could not make a junction: %s %s", err, out)
+	}
+	dest, err := os.Open(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dest.Close()
+	if err := do_local_copy(t.Context(), dest, []string{proj}, copy_on_drop, "auto"); err != nil {
+		t.Fatalf("a folder with a junction inside was not copied: %s", err)
+	}
+	if _, err := os.Stat(filepath.Join(staging, "proj", "a.txt")); err != nil {
+		t.Fatalf("the folder's file was not copied: %s", err)
+	}
+	if _, err := os.Lstat(filepath.Join(staging, "proj", "link")); err == nil {
+		t.Fatal("the junction was copied as a link")
+	}
+}
+
 // A folder reached through a junction, or a subst drive, sits where the folder
 // it leads to does, so a move of a folder above that is a drop into itself
 func TestADropThroughAJunctionIsInsideTheRealSource(t *testing.T) {

@@ -4,11 +4,6 @@ go 1.26.0
 
 toolchain go1.26.11
 
-// Windows only: a junction reads as a symlink, as before Go 1.23, rather than
-// as neither a folder nor a link, so the dnd kitten guards it as it does a
-// symlink on any system
-godebug winsymlink=0
-
 require (
 	github.com/ALTree/bigfloat v0.3.0
 	github.com/alecthomas/chroma/v2 v2.27.0
