@@ -48,5 +48,5 @@ fcntl(int fd, int cmd, ...) { (void)fd; (void)cmd; return 0; }
 static inline __attribute__((unused)) int
 openat(int dirfd, const char *path, int flags, ...) {
     (void)dirfd;                 /* approximated as AT_FDCWD for now */
-    return open(path, flags);
+    return open(path, flags | O_BINARY);  /* text mode ends a read at 0x1a */
 }

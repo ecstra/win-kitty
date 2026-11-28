@@ -143,6 +143,8 @@ The dnd kitten compares files for a drop from this machine, to refuse a folder d
 
 kitty/wincompat/ fills in the POSIX surface the rest of the code assumes. Beyond `poll()` it covers `pipe2`, which puts both ends in PIPE_NOWAIT so a read on an empty pipe returns instead of blocking, `socketpair` built over a loopback connection, positioned reads and writes, `strndup`, `posix_memalign`, and `arc4random_buf` over RtlGenRandom. The headers under that directory stand in for the Unix ones the sources include, such as termios.h and sys/, so the same sources compile unchanged.
 
+The C runtime opens a file in text mode unless told otherwise, where a read ends at the first 0x1a byte and line endings change, so `safe_open` in kitty/safe-wrappers.h and the `openat` stand in always add O_BINARY. A dropped image the dnd kitten asked kitty for arrived cut short before that.
+
 Config reloading needs one of these too. Windows has no SIGUSR1, so a reload request, such as the themes kitten applying a theme, is delivered by signalling a named event that a waiter thread in kitty/child-monitor.c turns into the same reload flag the signal would have set.
 
 ## Launchers and PATH shims

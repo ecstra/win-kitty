@@ -33,11 +33,10 @@ is_windows = sys.platform == 'win32'
 def skip_on_windows(reason: str):
     """Skip a test or test class that cannot pass on Windows.
 
-    Used only where the thing under test is genuinely absent here, either
-    because the subsystem is not built (drag and drop compiles to
-    kitty/wincompat/dnd_stub.c) or because the test is written against POSIX
-    semantics that Windows has no equivalent for (process groups, signals a
-    process can ignore, fork, mkfifo, POSIX shared memory, select on a pipe).
+    Used only where the thing under test is genuinely absent here, or where
+    the test is written against POSIX semantics that Windows has no
+    equivalent for (process groups, signals a process can ignore, fork,
+    mkfifo, POSIX shared memory, select on a pipe).
     Every use states which, so a skip is never mistaken for something that
     merely has not been looked at.
     """

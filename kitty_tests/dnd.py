@@ -8,7 +8,9 @@ import tempfile
 from base64 import standard_b64encode
 from contextlib import contextmanager
 from functools import partial
+from pathlib import Path
 
+from kitty.constants import is_windows
 from kitty.fast_data_types import (
     DND_CODE,
     Screen,
@@ -28,9 +30,14 @@ from kitty.fast_data_types import (
 )
 from kitty.machine_id import machine_id
 
-from .base import BaseTest, parse_bytes, skip_on_windows
+from .base import BaseTest, parse_bytes
 
 # ---- helpers ----------------------------------------------------------------
+
+
+def file_uri(path: str) -> str:
+    """The file URL of a local path, file:///C:/x on Windows, since file://C:\\x names the host C:"""
+    return Path(path).as_uri() if is_windows else f'file://{path}'
 
 
 def _osc(payload: str) -> bytes:
@@ -393,8 +400,39 @@ machine_id = partial(machine_id, 'tty-dnd-protocol-machine-id')
 # ---- test class -------------------------------------------------------------
 
 
-@skip_on_windows('drag and drop is not built here, kitty/dnd.c is replaced by wincompat/dnd_stub.c')
+_remote_drag = (
+    'receives the files a program on another machine drags, which no program reaches on Windows until drag and drop'
+    ' works through ssh, and the folder calls this uses wait on that'
+)
+_symlink = 'kitty sends a symlink in a drop as what it points to, since remaking one needs rights most users lack'
+# The tests of the class below that cannot pass on Windows, each with its reason
+windows_skips = dict.fromkeys((
+    'test_remote_drag_case_insensitive_duplicate_entries', 'test_remote_drag_children_freed_on_cleanup',
+    'test_remote_drag_chunked_file', 'test_remote_drag_completion_signal', 'test_remote_drag_deep_directory_tree_depth_first',
+    'test_remote_drag_dir_with_empty_file', 'test_remote_drag_directory_with_symlink',
+    'test_remote_drag_dos_present_data_cap_on_directory', 'test_remote_drag_dos_remote_drag_limit',
+    'test_remote_drag_empty_file', 'test_remote_drag_invalid_base64', 'test_remote_drag_mixed_file_dir_symlink',
+    'test_remote_drag_multiple_chunks_directory_listing', 'test_remote_drag_multiple_uris',
+    'test_remote_drag_single_directory', 'test_remote_drag_single_file', 'test_remote_drag_single_symlink',
+    'test_remote_drag_symlinked_intermediate_component_cannot_escape', 'test_remote_drag_symlinked_subdir_cannot_escape_tempdir',
+    'test_remote_drag_three_level_tree_with_verification', 'test_remote_drag_too_large_chunk',
+    'test_remote_drag_uri_list_parsing', 'test_remote_drag_uri_replaced_without_leak',
+), _remote_drag) | dict.fromkeys((
+    'test_dir_nested_symlink_in_subdir', 'test_dir_symlink_absolute_target', 'test_dir_symlink_and_regular_mixed',
+    'test_dir_symlink_to_directory', 'test_dir_symlink_to_file', 'test_top_level_symlink_to_dir_transmitted_as_symlink',
+    'test_top_level_symlink_to_file_transmitted_as_symlink', 'test_uri_broken_symlink_returns_symlink_target',
+    'test_uri_non_broken_symlink_to_directory_transmitted_as_symlink', 'test_uri_non_broken_symlink_to_file_transmitted_as_symlink',
+), _symlink) | {
+    'test_uri_non_regular_file_returns_einval': 'drops /dev/null, and Windows has no device file to drop',
+}
+
+
 class TestDnDProtocol(BaseTest):
+    def setUp(self) -> None:
+        super().setUp()
+        if is_windows and (why := windows_skips.get(self._testMethodName)):
+            self.skipTest(f'Not supported on Windows: {why}')
+
     def _assert_no_output(self, capture: WriteCapture) -> None:
         self.ae(capture.peek(), b'', 'unexpected output to child')
 
@@ -740,7 +778,7 @@ class TestDnDProtocol(BaseTest):
         with tempfile.TemporaryDirectory() as root:
             with open(os.path.join(root, 'secret.txt'), 'wb') as f:
                 f.write(b'secret data')
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 # Get a directory handle for root.
@@ -797,7 +835,7 @@ class TestDnDProtocol(BaseTest):
             f.write(content)
             fpath = f.name
         try:
-            uri_list = f'file://{fpath}\r\n'.encode()
+            uri_list = f'{file_uri(fpath)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -823,7 +861,7 @@ class TestDnDProtocol(BaseTest):
             f.write(content)
             fpath = f.name
         try:
-            uri_list = f'file://{fpath}\r\n'.encode()
+            uri_list = f'{file_uri(fpath)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -856,7 +894,7 @@ class TestDnDProtocol(BaseTest):
         with tempfile.NamedTemporaryFile(delete=False) as f:
             fpath = f.name
         try:
-            uri_list = f'file://{fpath}\r\n'.encode()
+            uri_list = f'{file_uri(fpath)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 100))  # out of range
@@ -910,7 +948,7 @@ class TestDnDProtocol(BaseTest):
         with tempfile.TemporaryDirectory() as root:
             broken_link = os.path.join(root, 'broken.txt')
             os.symlink(does_not_exist, broken_link)
-            uri_list = f'file://{broken_link}\r\n'.encode()
+            uri_list = f'{file_uri(broken_link)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -934,7 +972,7 @@ class TestDnDProtocol(BaseTest):
                 f.write(content)
             link_path = os.path.join(root, 'link.txt')
             os.symlink(real_file, link_path)
-            uri_list = f'file://{link_path}\r\n'.encode()
+            uri_list = f'{file_uri(link_path)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -958,7 +996,7 @@ class TestDnDProtocol(BaseTest):
                 f.write('hello')
             link_path = os.path.join(root, 'linkdir')
             os.symlink(real_dir, link_path)
-            uri_list = f'file://{link_path}\r\n'.encode()
+            uri_list = f'{file_uri(link_path)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -999,7 +1037,7 @@ class TestDnDProtocol(BaseTest):
             w(bc_content, 'b', 'c.txt')
             w(bde_content, 'b', 'd', 'e.txt')
 
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
 
@@ -1128,7 +1166,7 @@ class TestDnDProtocol(BaseTest):
 
         with tempfile.TemporaryDirectory() as root:
             open(os.path.join(root, 'f.txt'), 'w').close()
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1156,7 +1194,7 @@ class TestDnDProtocol(BaseTest):
 
         with tempfile.TemporaryDirectory() as root:
             open(os.path.join(root, 'only.txt'), 'w').close()
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1179,7 +1217,7 @@ class TestDnDProtocol(BaseTest):
 
         with tempfile.TemporaryDirectory() as root:
             open(os.path.join(root, 'hello.txt'), 'w').close()
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1201,7 +1239,7 @@ class TestDnDProtocol(BaseTest):
             with open(real_file, 'w') as f:
                 f.write('real content')
             os.symlink('real.txt', os.path.join(root, 'link.txt'))
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1235,7 +1273,7 @@ class TestDnDProtocol(BaseTest):
         with tempfile.TemporaryDirectory() as root:
             os.mkdir(os.path.join(root, 'subdir'))
             os.symlink('subdir', os.path.join(root, 'link_to_dir'))
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1268,7 +1306,7 @@ class TestDnDProtocol(BaseTest):
             with open(real_file, 'w') as f:
                 f.write('content')
             os.symlink(real_file, os.path.join(root, 'abs_link.txt'))
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1297,7 +1335,7 @@ class TestDnDProtocol(BaseTest):
         with tempfile.TemporaryDirectory() as root:
             with open(os.path.join(root, 'regular.txt'), 'w') as f:
                 f.write('hello')
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1328,7 +1366,7 @@ class TestDnDProtocol(BaseTest):
             with open(os.path.join(root, 'data.bin'), 'wb') as f:
                 f.write(b'\x00\x01\x02\x03')
             os.symlink('data.bin', os.path.join(root, 'alias.bin'))
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1368,7 +1406,7 @@ class TestDnDProtocol(BaseTest):
             with open(os.path.join(sub, 'target.txt'), 'w') as f:
                 f.write('nested target')
             os.symlink('target.txt', os.path.join(sub, 'nested_link.txt'))
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1406,7 +1444,7 @@ class TestDnDProtocol(BaseTest):
         with tempfile.TemporaryDirectory() as root:
             with open(os.path.join(root, 'first.txt'), 'w') as f:
                 f.write('first file')
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1435,7 +1473,7 @@ class TestDnDProtocol(BaseTest):
                 f.write('resolved content')
             link = os.path.join(root, 'link.txt')
             os.symlink(real, link)
-            uri_list = f'file://{link}\r\n'.encode()
+            uri_list = f'{file_uri(link)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1459,7 +1497,7 @@ class TestDnDProtocol(BaseTest):
                 f.write('inside')
             link = os.path.join(root, 'linkdir')
             os.symlink(sub, link)
-            uri_list = f'file://{link}\r\n'.encode()
+            uri_list = f'{file_uri(link)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -1478,7 +1516,7 @@ class TestDnDProtocol(BaseTest):
 
         with tempfile.TemporaryDirectory() as root:
             open(os.path.join(root, 'f.txt'), 'w').close()
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             # The context manager calls dnd_test_cleanup_fake_window on exit,
             # which calls drop_free_data → drop_free_dir_handles.
             with dnd_test_window() as (screen, cap):
@@ -2210,7 +2248,7 @@ class TestDnDProtocol(BaseTest):
             f.write(content)
             fpath = f.name
         try:
-            uri_list = f'file://{fpath}\r\n'.encode()
+            uri_list = f'{file_uri(fpath)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -2250,7 +2288,7 @@ class TestDnDProtocol(BaseTest):
 
         with tempfile.TemporaryDirectory() as root:
             open(os.path.join(root, 'file.txt'), 'w').close()
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -2277,7 +2315,7 @@ class TestDnDProtocol(BaseTest):
         with tempfile.TemporaryDirectory() as root:
             with open(os.path.join(root, 'f.txt'), 'wb') as f:
                 f.write(content)
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -2309,7 +2347,7 @@ class TestDnDProtocol(BaseTest):
 
         with tempfile.TemporaryDirectory() as root:
             open(os.path.join(root, 'only.txt'), 'w').close()
-            uri_list = f'file://{root}\r\n'.encode()
+            uri_list = f'{file_uri(root)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
                 parse_bytes(screen, client_request_uri_data(2, 1))
@@ -2337,7 +2375,7 @@ class TestDnDProtocol(BaseTest):
             f.write(file_content)
             fpath = f.name
         try:
-            uri_list = f'file://{fpath}\r\n'.encode()
+            uri_list = f'{file_uri(fpath)}\r\n'.encode()
             with dnd_test_window() as (screen, cap):
                 self._setup_uri_drop(screen, cap, uri_list)
 
