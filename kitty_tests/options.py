@@ -11,7 +11,7 @@ from kitty.fast_data_types import Color, test_cursor_blink_easing_function
 from kitty.options.utils import DELETE_ENV_VAR, EasingFunction, build_action_aliases, to_color
 from kitty.utils import log_error, shlex_split
 
-from .base import BaseTest, skip_on_windows
+from .base import BaseTest
 
 
 class TestConfParsing(BaseTest):
@@ -29,7 +29,6 @@ class TestConfParsing(BaseTest):
     def test_conf_parsing(self):
         conf_parsing(self)
 
-    @skip_on_windows('the launcher does not report original_argv or argv here')
     def test_launcher(self):
         launcher(self)
 
@@ -293,9 +292,10 @@ def launcher(self):
         cp = subprocess.run([kexe, '+testing-launcher-code'] + args, env=env, stdout=subprocess.PIPE)
         self.assertEqual(cp.returncode, 0)
         ans = {}
-        # splitlines, not split('\n'): the launcher ends lines with \r\n on
-        # Windows, and a trailing \r survives into every \x1e separated value.
-        for line in cp.stdout.decode().splitlines():
+        # The launcher ends lines with \r\n on Windows, and a trailing \r would
+        # survive into every \x1e separated value. Not splitlines(), which also
+        # breaks a line at \x1e.
+        for line in cp.stdout.decode().replace('\r\n', '\n').split('\n'):
             if not line:
                 continue
             try:

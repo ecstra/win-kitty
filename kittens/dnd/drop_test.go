@@ -1,9 +1,5 @@
 // License: GPLv3 Copyright: 2025, Kovid Goyal, <kovid at kovidgoyal.net>
 
-// These tests build trees with POSIX symlinks and permissions, so Windows runs
-// its own, in drop_windows_test.go.
-//go:build !windows
-
 package dnd
 
 import (
@@ -12,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -698,6 +695,9 @@ func TestLocalDropOutsideSourceDirectory(t *testing.T) {
 }
 
 func TestLocalDropIntoMovedDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("renames the destination folder while the drop holds it open, which Windows refuses")
+	}
 	for _, action := range []int{copy_on_drop, move_on_drop} {
 		for _, location := range []string{"outside", "inside"} {
 			t.Run(action_names[action]+"/"+location, func(t *testing.T) {
@@ -1496,6 +1496,9 @@ func TestSetupBaseDirDetectsNameAliases(t *testing.T) {
 // TestSetupBaseDirInUnwritableDir verifies that the kitten can start in a
 // directory that is not writable, failing only if a drop is attempted.
 func TestSetupBaseDirInUnwritableDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("makes a folder unwritable with POSIX permission bits, which Windows does not honour")
+	}
 	dest := t.TempDir()
 	if err := os.Chmod(dest, 0o500); err != nil {
 		t.Fatal(err)

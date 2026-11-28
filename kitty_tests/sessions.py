@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -149,7 +150,6 @@ class TestSessions(BaseTest):
                     assert_error('None of the matching windows')
         boss.edit_file.assert_not_called()
 
-    @skip_on_windows('expects a POSIX cwd such as /home to survive unchanged, Windows makes it C:/home')
     def test_save_as_session_line_injection(self) -> None:
         # Values such as the cwd reported via OSC 7 or user vars are under the
         # control of programs running in the window and must not be able to
@@ -199,8 +199,10 @@ class TestSessions(BaseTest):
         self.ae(sum(1 for x in lines if x.startswith('launch')), 3)
         (s,) = parse_session(text, opts)
         (t,) = s.tabs
-        self.ae(t.cwd, '/home')
-        self.ae([w.launch_spec.opts.cwd for w in t.windows], [evil_cwd, evil_cwd, '/home'])
+        # Windows makes /home absolute on the current drive
+        home = os.path.splitdrive(os.getcwd())[0] + '/home' if is_windows else '/home'
+        self.ae(t.cwd, home)
+        self.ae([w.launch_spec.opts.cwd for w in t.windows], [evil_cwd, evil_cwd, home])
         self.ae({tuple(w.launch_spec.opts.var) for w in t.windows}, {(evil_var,)})
         self.ae({w.launch_spec.opts.type for w in t.windows}, {'window'})
 

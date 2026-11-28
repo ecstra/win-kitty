@@ -6,7 +6,6 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -93,6 +92,8 @@ func (n node) dir_entries() []fs.DirEntry {
 }
 
 func (n node) ReadFile(name string) ([]byte, error) {
+	// The scanner makes its root absolute, which on Windows puts a drive first
+	name = strings.TrimPrefix(name, filepath.VolumeName(name))
 	if name == string(os.PathSeparator) {
 		return nil, fs.ErrNotExist
 	}
@@ -108,6 +109,7 @@ func (n node) ReadFile(name string) ([]byte, error) {
 }
 
 func (n node) ReadDir(name string) ([]fs.DirEntry, error) {
+	name = strings.TrimPrefix(name, filepath.VolumeName(name))
 	if name == string(os.PathSeparator) {
 		return n.dir_entries(), nil
 	}
@@ -126,12 +128,6 @@ func (n node) ReadDir(name string) ([]fs.DirEntry, error) {
 }
 
 func TestChooseFilesIgnore(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// The scanner fails outright here with "file does not exist". Its path
-		// and ignore-pattern handling is POSIX shaped and has not been ported.
-		// Recorded in WINDOWS_TODO.
-		t.Skip("the scanner does not handle Windows paths yet")
-	}
 	root := node{name: string(os.PathSeparator), children: map[string]*node{
 		"a":          {name: "a"},
 		"b":          {name: "b"},
@@ -159,7 +155,7 @@ func TestChooseFilesIgnore(t *testing.T) {
 	}}
 	r := func(respect_ignores bool, expected string) {
 		ch := make(chan bool)
-		s := new_filesystem_scanner("/", ch, nil)
+		s := new_filesystem_scanner(string(os.PathSeparator), ch, nil)
 		s.dir_reader = root.ReadDir
 		s.file_reader = root.ReadFile
 		s.global_gitignore = ignorefiles.NewGitignore()
@@ -178,7 +174,8 @@ func TestChooseFilesIgnore(t *testing.T) {
 			t.Fatal(s.err)
 		}
 		ci := CollectionIndex{}
-		actual := utils.Map(func(x ResultItem) string { return x.text }, s.Batch(&ci))
+		// Results use the system's separator, a backslash on Windows
+		actual := utils.Map(func(x ResultItem) string { return filepath.ToSlash(x.text) }, s.Batch(&ci))
 		if diff := cmp.Diff(strings.Split(expected, ` `), actual); diff != "" {
 			t.Fatalf("Incorrect ignoring:\n%s", diff)
 		}
@@ -188,10 +185,6 @@ func TestChooseFilesIgnore(t *testing.T) {
 }
 
 func TestChooseFilesScoring(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// Same scanner as TestChooseFilesIgnore, see the note there.
-		t.Skip("the scanner does not handle Windows paths yet")
-	}
 	root := node{name: string(os.PathSeparator), children: map[string]*node{
 		"b":     {name: "b"},
 		"a":     {name: "a"},
@@ -220,7 +213,7 @@ func TestChooseFilesScoring(t *testing.T) {
 	results := func() (ans []string) {
 		rr, _ := s.Results()
 		for _, r := range rr.RenderedMatches(CollectionIndex{}, -1) {
-			ans = append(ans, r.text)
+			ans = append(ans, filepath.ToSlash(r.text))
 		}
 		return
 	}
