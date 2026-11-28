@@ -121,15 +121,18 @@ static uint32_t layoutChar(WPARAM vk, UINT scan, bool shifted) {
 
 // The key a US keyboard has at that place, by scan code, which kitty sends as
 // the alternate key. kitty on Linux takes it from libxkbcommon's default keymap,
-// which is US whatever layouts the user has, so Ctrl with the С of a Russian
-// layout still sends ^C, and Alt with the ü of a German one sends ESC [ there too.
+// pc105 US whatever layouts the user has, so Ctrl with the С of a Russian layout
+// still sends ^C, and Alt with the ü of a German one sends ESC [ there too. The
+// key beside the left Shift is < there, where Windows' US layout has a backslash,
+// which made Ctrl with the í of Hungarian send ^\, a quit signal in a Unix shell.
 static uint32_t usKeyAtScanCode(UINT scan) {
     static const char row1[] = "1234567890-=", row2[] = "qwertyuiop[]", row3[] = "asdfghjkl;'`", row4[] = "zxcvbnm,./";
     if (scan >= 0x02 && scan <= 0x0d) return (uint32_t) row1[scan - 0x02];
     if (scan >= 0x10 && scan <= 0x1b) return (uint32_t) row2[scan - 0x10];
     if (scan >= 0x1e && scan <= 0x29) return (uint32_t) row3[scan - 0x1e];
     if (scan >= 0x2c && scan <= 0x35) return (uint32_t) row4[scan - 0x2c];
-    if (scan == 0x2b || scan == 0x56) return '\\';
+    if (scan == 0x2b) return '\\';
+    if (scan == 0x56) return '<';
     if (scan == 0x39) return ' ';
     return 0;
 }
