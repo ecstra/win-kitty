@@ -32,6 +32,42 @@ func TestAMoveSourceReplacedByRenameIsNotTakenForIt(t *testing.T) {
 	}
 }
 
+// A junction is a link to a folder, as a symlink is, so merging a move into one
+// that leads into the folder being moved is refused, as for a symlink
+func TestAJunctionInTheDestinationLeadingIntoAMoveSourceIsRefused(t *testing.T) {
+	root := t.TempDir()
+	lib, staged, out := filepath.Join(root, "src", "lib"), filepath.Join(root, "staged"), filepath.Join(root, "out")
+	for _, d := range []string{lib, filepath.Join(staged, "lib"), out} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(staged, "lib", "a.txt"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", filepath.Join(out, "lib"), lib).CombinedOutput(); err != nil {
+		t.Fatalf("could not make a junction: %s %s", err, out)
+	}
+	lib_info, err := os.Lstat(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src_dir, err := os.Open(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src_dir.Close()
+	dest_dir, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dest_dir.Close()
+	got, err := find_overwrites(src_dir, dest_dir, []os.FileInfo{lib_info})
+	if err == nil {
+		t.Fatalf("a merge into a junction to the moved folder was let through, overwriting %v", got)
+	}
+}
+
 // A folder reached through a junction, or a subst drive, sits where the folder
 // it leads to does, so a move of a folder above that is a drop into itself
 func TestADropThroughAJunctionIsInsideTheRealSource(t *testing.T) {
