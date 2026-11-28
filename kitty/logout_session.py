@@ -33,9 +33,9 @@ import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from gettext import gettext as _
-from typing import TYPE_CHECKING, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
-from .constants import cache_dir, clear_handled_signals, is_macos, kitty_exe
+from .constants import cache_dir, clear_handled_signals, is_macos, is_windows, kitty_exe
 from .fast_data_types import AES256GCMDecrypt, AES256GCMEncrypt, Screen, Secret, application_logout_requested_at, get_options, monotonic, random_secret
 from .options.types import Options
 from .typing_compat import BossType
@@ -87,6 +87,9 @@ LOGIN_SESSION_ENV_VARS = frozenset(
         'XDG_SESSION_ID',
         'XDG_SESSION_TYPE',
         'XDG_VTNR',
+        # Windows, the console or remote desktop session and its client
+        'SESSIONNAME',
+        'CLIENTNAME',
     )
 )
 # Environment variables used to pass a single use token to a newly started application, never passed on to restored instances
@@ -377,6 +380,8 @@ def save_snapshot(base: str, pid: int, session: str, scrollback: Mapping[int, by
         write_snapshot_file(tdir, key, PROCESS_FILE, json.dumps(pdata).encode())
         write_snapshot_file(tdir, key, SESSION_FILE, session.encode())
         path = os.path.join(base, str(pid))
+        # Windows cannot delete the lock file while this instance holds it open
+        release_saver_lock(path)
         remove_snapshot(path, key_store)
         os.rename(tdir, path)
     except BaseException:
@@ -522,14 +527,18 @@ def start_instance_for_snapshot(snapshot: Snapshot) -> None:
     cwd = snapshot.process_state.cwd
     if not os.path.isdir(cwd):
         cwd = os.path.expanduser('~')
+    if is_windows:
+        # Windows takes no preexec_fn, and a detached process outlives this one
+        detach: dict[str, Any] = {'creationflags': subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:
+        detach = {'start_new_session': True, 'preexec_fn': clear_handled_signals}
     subprocess.Popen(
         (kitty_exe(),) + snapshot.process_state.argv,
         env=env,
         cwd=cwd,
         stdin=subprocess.DEVNULL,
-        start_new_session=True,
         close_fds=True,
-        preexec_fn=clear_handled_signals,
+        **detach,
     )
 
 
@@ -570,8 +579,9 @@ def restore_snapshots(opts: Options, argv: tuple[str, ...]) -> RestoredSnapshot 
 
 def delete_snapshot(path: str) -> None:
     with lock_with_file(lock_path(os.path.dirname(path))):
-        remove_snapshot(path, get_key_store())
+        # Windows cannot delete the lock file while this instance holds it open
         release_saver_lock(path)
+        remove_snapshot(path, get_key_store())
 
 
 def finish_restore(path: str) -> None:

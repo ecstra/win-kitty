@@ -236,11 +236,42 @@ def report_test_env() -> None:
 
 
 @contextmanager
+def std_handles_follow_dup2() -> Iterator[None]:
+    # kitty.exe is a GUI program, whose C runtime leaves the process's standard
+    # handles alone when dup2 replaces fd 0, 1 or 2. A test that swaps stderr
+    # and back then left them on a closed handle, which every program the tests
+    # started afterwards inherited, failing to start with an invalid handle.
+    if sys.platform != 'win32':
+        yield
+        return
+    import ctypes
+    import msvcrt
+
+    set_std_handle = ctypes.WinDLL('kernel32').SetStdHandle
+    set_std_handle.argtypes = [ctypes.c_int, ctypes.c_void_p]
+    std_handle_ids = {0: -10, 1: -11, 2: -12}
+    original_dup2 = os.dup2
+
+    def dup2(fd: int, fd2: int, inheritable: bool = True) -> int:
+        ans = original_dup2(fd, fd2, inheritable)
+        if fd2 in std_handle_ids:
+            set_std_handle(std_handle_ids[fd2], msvcrt.get_osfhandle(fd2))  # ty: ignore[unresolved-attribute]
+        return ans
+
+    os.dup2 = dup2
+    try:
+        yield
+    finally:
+        os.dup2 = original_dup2
+
+
+@contextmanager
 def env_for_python_tests() -> Iterator[None]:
     gohome = os.path.expanduser('~/go')
     slangc = os.environ.get('SLANGC') or shutil.which('slangc') or 'slangc'
     path = path_for_python_tests()
     with (
+        std_handles_follow_dup2(),
         TemporaryDirectory() as tdir,
         env_vars(
             HOME=tdir,

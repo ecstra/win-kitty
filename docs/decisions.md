@@ -138,3 +138,15 @@ Windows types with the left Ctrl and Alt held together as if they were AltGr, on
 Windows Terminal and the GNOME terminals open a link on Ctrl+click, so that is the binding a Windows user tries first. Upstream binds Ctrl+Shift+click instead, which is left in place, as is the plain click. The two are added rather than swapped, because they use different triggers and nothing else was bound to Ctrl+click.
 
 The press is discarded in grabbed mode, mirroring what upstream does for Ctrl+Shift. The release is what opens the URL, so a program holding the mouse must not also receive the press, or it acts on the click as well.
+
+## A window's programs are its job, not its process tree
+
+Windows has no foreground process group, so something has to stand in for it. Walking parent links, as macOS does, fails for MSYS2 and Cygwin shells, where every exec starts a new Windows process whose parent link points at one already gone, and it loses any program whose parent exited. Each window's child already runs in a job object, so that job is the set of the window's programs, the way upstream's cgroup per window is on Linux. Which one is in front comes from shell integration, the shell at its prompt and otherwise the newest program, ranked by start time, since Windows pids say nothing of age. WezTerm picks the newest program too, without the prompt. A program started into a window of its own, such as `start notepad`, can then show as the one in front, which upstream and WezTerm share.
+
+## The session is saved when Windows says it ends
+
+Windows asks before a sign out, and any program can still cancel then, so a save at the asking would have to be thrown away again, the path Linux takes. Microsoft's docs ask for cleanup at WM_ENDSESSION instead, once the end is certain, and kitty saves there. The save has to finish before kitty returns from that message, since Windows may end it the moment it does.
+
+## Only slangc.exe and slang-compiler.dll ship
+
+The Slang release is 121 MB, most of it an LLVM backend and graphics libraries kitty never uses. What kitty compiles at runtime, Slang modules and GLSL, needs only `slangc.exe` and `slang-compiler.dll`, which built all 19 builtin pipelines on their own, 25.6 MB on disk and about 9 MB in the installer. Upstream's own bundles also carry the GLSL modules, which change nothing kitty can reach, since it compiles Slang without `-allow-glsl`.

@@ -188,3 +188,51 @@ class WindowsFeaturesTest(BaseTest):
             with self.assertRaises(SystemExit):
                 parse_args(['--help'])
         self.assertIn('--listen-on', out.getvalue())
+
+    def test_swapping_stderr_moves_the_handle_programs_inherit(self):
+        # kitty.exe is a GUI program, whose C runtime leaves the process's
+        # standard handles alone on dup2, so a program started after a test
+        # swapped stderr and back inherited a closed handle
+        import msvcrt
+
+        kernel32 = ctypes.WinDLL('kernel32')
+        kernel32.GetStdHandle.restype = ctypes.c_void_p
+        with tempfile.TemporaryFile() as f:
+            orig = os.dup(2)
+            os.dup2(f.fileno(), 2)
+            try:
+                self.ae(kernel32.GetStdHandle(-12), msvcrt.get_osfhandle(2))
+            finally:
+                os.dup2(orig, 2)
+                os.close(orig)
+        self.ae(kernel32.GetStdHandle(-12), msvcrt.get_osfhandle(2))
+
+    def test_saved_sessions_keep_the_windows_folder_of_an_msys2_shell(self):
+        # An MSYS2 shell reports its folder at the prompt as a POSIX path, which
+        # no Windows program can start in
+        from types import SimpleNamespace
+
+        from kitty.window import Window
+
+        window = SimpleNamespace(
+            get_cwd_of_child=lambda oldest=False: r'C:\Users\me\proj',
+            screen=SimpleNamespace(last_reported_cwd=f'file://{socket.gethostname()}/home/me/proj'.encode()),
+            at_prompt=True,
+            child_is_remote=False,
+            child=SimpleNamespace(cwd='C:\\'),
+        )
+        self.ae(Window.cwd_for_serialization.fget(window), r'C:\Users\me\proj')
+
+    def test_program_names_drop_the_exe(self):
+        # Tab titles show nvim, and the ssh checks know ssh.exe as ssh
+        from kittens.ssh.utils import is_kitten_cmdline
+        from kitty.utils import program_name
+
+        for path, name in (
+            (r'C:\Program Files\Neovim\bin\nvim.exe', 'nvim'),
+            ('nvim', 'nvim'),
+            (r'C:\Windows\System32\OpenSSH\ssh.EXE', 'ssh'),
+            ('archive.exe.old', 'archive.exe.old'),
+        ):
+            self.ae(program_name(path), name)
+        self.assertTrue(is_kitten_cmdline([r'C:\kitty\bin\kitten.exe', 'ssh', 'host']))

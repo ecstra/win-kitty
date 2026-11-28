@@ -1508,6 +1508,18 @@ if sys.platform == 'win32':
         env: Tuple[str, ...],
     ) -> int:
         pass
+
+    def close_pty(pty_id: int) -> None:
+        pass
+
+    def job_processes(pty_id: int) -> Tuple[Tuple[int, int], ...]:
+        pass
+
+    def children_of_process(pid: int) -> List[int]:
+        pass
+
+    def process_is_alive(pid: int) -> bool:
+        pass
 else:
     def spawn(
         exe: str,

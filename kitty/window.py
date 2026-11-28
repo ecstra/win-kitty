@@ -122,6 +122,7 @@ from .utils import (
     open_url,
     parse_uri_list,
     path_from_osc7_url,
+    program_name,
     resolve_custom_file,
     resolved_shell,
     sanitize_control_codes,
@@ -904,6 +905,9 @@ class Window:
         cell_width, cell_height = cell_size_for_window(self.os_window_id)
         opts = get_options()
         self.screen: Screen = Screen(self, 24, 80, opts.scrollback_lines, cell_width, cell_height, self.id)
+        if is_windows:
+            # The shell's prompt tells which program is in front on Windows
+            child.screen_at_prompt = self.screen.cursor_at_prompt
         self.screen.track_activity = bool(opts.tab_activity_symbol)
         self.session_color_schemes = SessionColorSchemes()
         if copy_colors_from is not None:
@@ -1658,7 +1662,10 @@ class Window:
         args = self.ssh_kitten_cmdline()
         conn_data: None | list[str] | SSHConnectionData = None
         if args:
-            ssh_cmdline = sorted(self.child.foreground_processes, key=lambda p: p['pid'])[-1]['cmdline'] or ['']
+            procs = self.child.foreground_processes
+            # Windows lists them oldest first, and its pids say nothing of age
+            newest = procs[-1] if is_windows else sorted(procs, key=lambda p: p['pid'])[-1]
+            ssh_cmdline = newest['cmdline'] or ['']
             if 'ControlPath=' in ' '.join(ssh_cmdline):
                 idx = ssh_cmdline.index('--')
                 conn_data = [is_ssh_kitten_sentinel] + list(ssh_cmdline[: idx + 2])
@@ -2430,7 +2437,7 @@ class Window:
     def child_is_remote(self) -> bool:
         for p in self.child.foreground_processes:
             q = list(p['cmdline'] or ())
-            if q and os.path.basename(q[0]).lower() == 'ssh':
+            if q and program_name(q[0]).lower() == 'ssh':
                 return True
         return False
 
@@ -2439,7 +2446,7 @@ class Window:
 
         for p in self.child.foreground_processes:
             q = list(p['cmdline'] or ())
-            if len(q) > 3 and os.path.basename(q[0]) == 'kitten' and q[1] == 'run-shell':
+            if len(q) > 3 and program_name(q[0]) == 'kitten' and q[1] == 'run-shell':
                 q = q[2:]  # --hold-after-ssh causes kitten run-shell wrapper to be added
             if is_kitten_cmdline(q):
                 return p['pid'], q
@@ -2670,7 +2677,9 @@ class Window:
     @property
     def cwd_for_serialization(self) -> str:
         cwd = self.get_cwd_of_child(oldest=False) or self.get_cwd_of_child(oldest=True) or self.child.cwd
-        if self.screen.last_reported_cwd and self.at_prompt and not self.child_is_remote:
+        # See cwd_of_child: on Windows the reported cwd is a POSIX path that no
+        # Windows program can start in, and the process's own folder is right
+        if self.screen.last_reported_cwd and not is_windows and self.at_prompt and not self.child_is_remote:
             cwd = path_from_osc7_url(self.screen.last_reported_cwd) or cwd
         return cwd
 

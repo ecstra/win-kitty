@@ -44,8 +44,13 @@ def slangc() -> tuple[str, ...]:
     if not _slangc:
         from kitty.fast_data_types import DEVELOP_ROOT, Shlex
 
+        launcher_dir = kitty_run_data.get('bundle_exe_dir', '') if is_windows else ''
         if DEVELOP_ROOT:
             _slangc = (os.path.join(DEVELOP_ROOT, 'bin', 'slangc'),)
+        elif launcher_dir and os.path.isfile(os.path.join(launcher_dir, 'slangc.exe')):
+            # The installer ships the compiler beside the launcher, and the install
+            # is not frozen, so the frozen lookup further down never runs there
+            _slangc = (os.path.join(launcher_dir, 'slangc.exe'),)
         else:
             spec = os.environ.get('SLANGC', 'slangc')
             if is_windows:

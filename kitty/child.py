@@ -82,6 +82,58 @@ if is_macos:
                     total += _memory_of_process(p)
             return total
         return -1
+elif is_windows:
+    from kitty.fast_data_types import abspath_of_process as _abspath_of_process
+    from kitty.fast_data_types import children_of_process as _children_of_process
+    from kitty.fast_data_types import cmdline_of_process as _cmdline_of_process
+    from kitty.fast_data_types import cwd_of_process as _win_cwd
+    from kitty.fast_data_types import memory_of_process as _memory_of_process
+    from kitty.fast_data_types import ppid_of_process as _ppid_of_process
+
+    def cwd_of_process(pid: int) -> str:
+        # Reads the process PEB, so no /proc dependency. realpath resolves any
+        # substituted-drive or short-name components for a stable title.
+        return os.path.realpath(_win_cwd(pid), strict=True)
+
+    def cmdline_of_pid(pid: int) -> list[str]:
+        return _cmdline_of_process(pid)
+
+    def abspath_of_exe(pid: int) -> str:
+        return os.path.realpath(_abspath_of_process(pid), strict=True)
+
+    def _environ_of_process(pid: int) -> str:
+        # Callers fall back to the environment kitty started the process with
+        raise OSError(f'The environment of process {pid} is not read on Windows')
+
+    def process_group_map() -> DefaultDict[int, list[int]]:
+        # Windows has no process groups, the job of each window stands in for them
+        return defaultdict(list)
+
+    def children_of_process(pid: int) -> list[int]:
+        return _children_of_process(pid)
+
+    def _ppid_of_live_process(pid: int) -> int:
+        return _ppid_of_process(pid)
+
+    def _get_descendants_of(pid: int) -> set[int]:
+        result: set[int] = set()
+        stack = [pid]
+        while stack:
+            with suppress(OSError):  # the process has exited
+                for child in children_of_process(stack.pop()):
+                    if child not in result:
+                        result.add(child)
+                        stack.append(child)
+        return result
+
+    def memory_used_by_process_tree_rooted_at(pid: int, check_if_cgroup_root: bool = False) -> int:
+        with suppress(Exception):
+            total = _memory_of_process(pid)  # raises if pid doesn't exist
+            for p in _get_descendants_of(pid):
+                with suppress(Exception):
+                    total += _memory_of_process(p)
+            return total
+        return -1
 else:
 
     def cmdline_of_pid(pid: int) -> list[str]:
@@ -98,13 +150,6 @@ else:
                 raise ValueError(f'Failed to find cwd of process with pid: {pid}')
             ans = cp.stdout.decode('utf-8', 'replace').split()[1]
             return os.path.realpath(ans, strict=True)
-    elif is_windows:
-        from kitty.fast_data_types import cwd_of_process as _win_cwd
-
-        def cwd_of_process(pid: int) -> str:
-            # Reads the process PEB, so no /proc dependency. realpath resolves any
-            # substituted-drive or short-name components for a stable title.
-            return os.path.realpath(_win_cwd(pid), strict=True)
     else:
 
         def cwd_of_process(pid: int) -> str:
@@ -502,6 +547,13 @@ class Child:
     # Wrapper processes kitty itself inserted around the command, outermost first
     kitty_wrappers: tuple[KittyWrapper, ...] = ()
     resolved_root_pid: int | None = None
+    # On Windows, the pseudoconsole and job the child runs in, the MSYS2 pty
+    # bridge that runs a Cygwin shell, and whether the window's shell is at its
+    # prompt, which stands in for the foreground process group Windows lacks
+    pty_id: int = -1
+    bridge_exe: str = ''
+    root_behind_bridge: int | None = None
+    screen_at_prompt: Callable[[], bool] | None = None
 
     def __init__(
         self,
@@ -809,10 +861,34 @@ class Child:
         exe = which(argv[0]) or argv[0]
         self.final_exe = exe
         self.final_argv0 = argv[0]
+        # The user's launch wrapper and the hold kitten go in front as fork()
+        # puts them. Windows has no exec, so each stays the parent of what it
+        # runs, which root_pid steps past.
+        kitty_wrappers: list[KittyWrapper] = []
+        hold = self.hold
         if self.launch_request is not None:
-            from .launch_wrapper import refuse_launch_wrapper_on_windows
+            from .launch_wrapper import prefix_for_launch
 
-            refuse_launch_wrapper_on_windows()
+            lp = prefix_for_launch(self.launch_request, self.argv, self.cwd, self.final_env, unmodified_argv=self.unmodified_argv, hold=hold)
+            if user_prefix := tuple(lp.argv):
+                hold = hold and not lp.handles_hold
+                argv[0:0] = user_prefix
+                wrapper_argv, inner_hold_argv = user_prefix, ()
+                if self.hold and lp.handles_hold:
+                    held = tuple(cmdline_for_hold())
+                    if user_prefix[-len(held) :] == held:
+                        wrapper_argv, inner_hold_argv = user_prefix[: -len(held)], held
+                if wrapper_argv:
+                    kitty_wrappers.append(KittyWrapper(wrapper_argv, True, tuple(argv[1:])))
+                if inner_hold_argv:
+                    kitty_wrappers.append(KittyWrapper(inner_hold_argv, True))
+        if hold:
+            hold_argv = cmdline_for_hold()
+            argv = hold_argv + argv
+            kitty_wrappers.insert(0, KittyWrapper(tuple(hold_argv), True))
+        self.kitty_wrappers = tuple(kitty_wrappers)
+        # What runs first decides the MSYS2 bridge, a wrapper or the hold kitten
+        exe = which(argv[0]) or argv[0]
         # Create the ConPTY at the real window size so the shell's first prompt
         # is laid out correctly. Using a fixed 80x24 makes conhost/PSReadLine draw
         # the initial prompt at the wrong width until the next resize (or `cls`).
@@ -843,6 +919,7 @@ class Child:
             exe = argv[0]
             use_pty = False
             resize_with_escape = True
+            self.bridge_exe = exe
         self.uses_conpty = use_pty
         read_fd, write_fd, pty_id = fast_data_types.open_pty(cols, rows, use_pty, resize_with_escape)  # ty: ignore[unresolved-attribute]
         cwd = self.cwd or os.getcwd()
@@ -892,8 +969,33 @@ class Child:
             ans['cwd'] = cwd_of_process(pid) or None
         return ans
 
+    def job_processes(self) -> list[int]:
+        """Every process the window started, oldest first, on Windows"""
+        if self.pty_id < 0:
+            return [] if self.pid is None else [self.pid]
+        return [pid for pid, created in sorted(fast_data_types.job_processes(self.pty_id), key=lambda x: x[1])]
+
+    def _windows_programs(self) -> tuple[int | None, list[int]]:
+        # The root and, while the shell is not at its prompt, the programs in
+        # front. Windows has no foreground process group, and the programs the
+        # shell started are the ones younger than it in the window's job.
+        root = self.root_pid
+        members = self.job_processes()
+        if root not in members:
+            return root, []
+        return root, members[members.index(root) + 1 :]
+
+    def _at_prompt(self) -> bool:
+        return self.screen_at_prompt is not None and self.screen_at_prompt()
+
     @property
     def foreground_processes(self) -> list[ProcessDesc]:
+        if is_windows:
+            with suppress(Exception):
+                root, later = self._windows_programs()
+                pids = later if later and not self._at_prompt() else [root]
+                return [self.process_desc(x) for x in pids if x is not None]
+            return []
         if self.child_fd is None:
             return []
         try:
@@ -905,6 +1007,11 @@ class Child:
 
     @property
     def background_processes(self) -> list[ProcessDesc]:
+        if is_windows:
+            with suppress(Exception):
+                if self._at_prompt():
+                    return [self.process_desc(x) for x in self._windows_programs()[1]]
+            return []
         if self.child_fd is None:
             return []
         try:
@@ -990,6 +1097,8 @@ class Child:
         if self.resolved_root_pid is not None:
             return self.resolved_root_pid
         pid = self.pid
+        if is_windows and self.bridge_exe and pid is not None:
+            return self._root_behind_bridge(pid)
         if pid is None or not self.kitty_wrappers:
             return pid
         # Whether the result can never change and so can be cached
@@ -1040,7 +1149,37 @@ class Child:
             self.wrapper_children.clear()
         return pid
 
+    def _root_behind_bridge(self, bridge_pid: int) -> int:
+        # Cygwin's exec starts a new Windows process whose parent link points at
+        # one already gone, so the shell is found in the window's job. It is the
+        # oldest process that is not the bridge, a copy the bridge forked before
+        # running the shell, or a wrapper kitty put in front.
+        members = self.job_processes()
+        # Tab titles ask on every redraw, so the shell is looked for again only
+        # once it has left the job, as after an exec
+        if self.root_behind_bridge in members:
+            return self.root_behind_bridge
+        bridge_exe = os.path.normcase(os.path.realpath(self.bridge_exe))
+        for pid in members:
+            if pid == bridge_pid:
+                continue
+            with suppress(Exception):  # the process has exited
+                if _ppid_of_live_process(pid) == bridge_pid and os.path.normcase(abspath_of_exe(pid)) == bridge_exe:
+                    continue
+                cmdline = cmdline_of_pid(pid)
+                if any(w.matches_cmdline(cmdline) for w in self.kitty_wrappers):
+                    continue
+                self.root_behind_bridge = pid
+                return pid
+        return bridge_pid
+
     def get_pid_for_cwd(self, oldest: bool = False) -> int | None:
+        if is_windows:
+            with suppress(Exception):
+                root, later = self._windows_programs()
+                if later and not self._at_prompt():
+                    return later[0] if oldest else later[-1]
+            return self.root_pid
         with suppress(Exception):
             assert self.child_fd is not None
             pgrp = os.tcgetpgrp(self.child_fd)
@@ -1126,4 +1265,10 @@ class Child:
     def get_memory_used_by_child(self) -> int:
         if self.pid is None:
             return -1
+        if is_windows and self.pty_id > -1:
+            total = -1
+            for pid in self.job_processes():
+                with suppress(Exception):  # the process has exited
+                    total = max(total, 0) + _memory_of_process(pid)
+            return total
         return memory_used_by_process_tree_rooted_at(self.pid, check_if_cgroup_root=False)

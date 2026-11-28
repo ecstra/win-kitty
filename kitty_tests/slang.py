@@ -59,6 +59,79 @@ class TestSlang(BaseTest):
             with patch.object(constants, '_slangc', ()), patch.dict(os.environ, {'SLANGC': value}):
                 self.ae(constants.slangc(), expected)
 
+    def test_slangc_shipped_beside_the_launcher_comes_first(self):
+        # The installed kitty is not frozen, so upstream's bundled lookup never runs there
+        if not is_windows:
+            self.skipTest('the Windows install only')
+        from kitty import constants
+
+        with tempfile.TemporaryDirectory() as launcher_dir:
+            def lookup() -> tuple[str, ...]:
+                with (
+                    patch.object(constants, '_slangc', ()),
+                    patch.dict(constants.kitty_run_data, {'bundle_exe_dir': launcher_dir}),
+                    patch.dict(os.environ, {'SLANGC': r'C:\slang\slangc.exe'}),
+                ):
+                    return constants.slangc()
+
+            self.ae(lookup(), ('C:/slang/slangc.exe',))
+            bundled = os.path.join(launcher_dir, 'slangc.exe')
+            open(bundled, 'wb').close()
+            self.ae(lookup(), (bundled,))
+
+    def test_glsl_errors_too_long_for_a_pipe_are_reported(self):
+        # Windows pipes hold a few KB, and slangc stops writing its errors once
+        # one is full, so they are read while it runs
+        if not is_windows:
+            self.skipTest('the fake compiler is a batch file')
+        import threading
+        from types import SimpleNamespace
+
+        from kitty import constants
+        from kitty.shaders import slang
+        from kitty.shaders.slang import SlangFailed
+
+        with tempfile.TemporaryDirectory() as tdir:
+            fake = os.path.join(tdir, 'slangc.bat')
+            with open(fake, 'w') as f:
+                f.write('@for /L %%i in (1,1,3000) do @echo error %%i of a long list of GLSL errors 1>&2\n@exit /b 1\n')
+            module = os.path.join(tdir, 'shaders', 'c', 'end', 'end.slang-module')
+            os.makedirs(os.path.dirname(module))
+            open(module, 'w').close()
+            pipeline_ir = SimpleNamespace(import_dirs=(), module_path=module, pointer_map_shaders=())
+            outcome: list[BaseException | None] = []
+
+            def build() -> None:
+                try:
+                    build_custom_shader_pipeline_glsl({'slot': 'end'}, cache_dir=tdir)  # type: ignore
+                except BaseException as e:
+                    outcome.append(e)
+                else:
+                    outcome.append(None)
+
+            with patch.object(constants, '_slangc', ('cmd.exe', '/c', fake)), patch.object(slang, 'build_custom_shader_pipeline_ir', return_value=pipeline_ir):
+                t = threading.Thread(target=build, daemon=True)
+                t.start()
+                t.join(60)
+            self.assertTrue(outcome, 'building the GLSL hung on the compiler errors')
+            self.assertIsInstance(outcome[0], SlangFailed)
+
+    def test_custom_shader_builds_in_a_folder_with_accented_letters(self):
+        # A profile folder can have such a name, and the shader cache lives under it
+        if not shutil.which(slangc()[0]):
+            self.skipTest(f'slangc ({slangc()[0]}) not found in PATH')
+        with tempfile.TemporaryDirectory() as tdir:
+            cache_dir = os.path.join(tdir, 'ünï cødé ñ')
+            os.mkdir(cache_dir)
+            clear_caches()
+            p = parse_pipeline_definition(['startgroup', 'shaders sample', 'endgroup'], 'test')
+            try:
+                vert_src, frag_src, _ = build_custom_shader_pipeline_glsl(p, cache_dir=cache_dir)
+            finally:
+                clear_caches()
+        self.assertIn('main', vert_src)
+        self.assertIn('main', frag_src)
+
     def test_animation_step_parsing(self):
         def step(val):
             return parse_pipeline_definition(['startgroup', f'animation_step {val}', 'shaders focus-highlight', 'endgroup'], 'test')['groups'][0][

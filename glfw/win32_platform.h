@@ -139,3 +139,4 @@ void _glfwWin32RegisterDropTarget(_GLFWwindow *window);
 void _glfwWin32RevokeDropTarget(_GLFWwindow *window);
 monotonic_t _glfwWin32ProcessTimers(void);
 bool _glfwWin32DragInProgress(void);
+void _glfwWin32SystemColorThemeMayHaveChanged(void);

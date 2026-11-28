@@ -10,7 +10,7 @@ from contextlib import suppress
 from typing import Any
 
 from kitty.types import run_once
-from kitty.utils import SSHConnectionData
+from kitty.utils import SSHConnectionData, program_name
 
 
 @run_once
@@ -94,7 +94,7 @@ def ssh_options() -> dict[str, str]:
 def is_kitten_cmdline(q: Sequence[str]) -> bool:
     if not q:
         return False
-    exe_name = os.path.basename(q[0]).lower()
+    exe_name = program_name(q[0]).lower()
     if exe_name == 'kitten' and q[1:2] == ['ssh']:
         return True
     if len(q) < 4:

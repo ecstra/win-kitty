@@ -19,6 +19,10 @@ PY="$MINGW/bin/python.exe"
 
 cd "$ROOT"
 [ -x "$PY" ] || { echo "ucrt64 python not found at $PY (set MINGW_ROOT)"; exit 1; }
+# The Slang compiler at the version bypy/sources.json names, which the build
+# compiles kitty's shaders with and which ships for custom shaders
+export SLANGC="${SLANGC:-$(cygpath -m "$LOCALAPPDATA")/slang/2026.14.1/bin/slangc.exe}"
+[ -x "$SLANGC" ] || { echo "slangc not found at $SLANGC (set SLANGC)"; exit 1; }
 
 echo "==> building kitty"
 # --portable drops -march=native. Everything this script produces is meant to
@@ -96,6 +100,15 @@ echo "==> bundling fontconfig's configuration"
 mkdir -p "$LAUNCHER/etc"
 cp -r "$MINGW/etc/fonts" "$LAUNCHER/etc/"
 
+echo "==> bundling the Slang compiler"
+# What kitty compiles at runtime, Slang modules and GLSL, needs only slangc.exe
+# and slang-compiler.dll out of the 121 MB install. kitty looks for it beside
+# the launcher, which is not on PATH.
+SLANG_BIN="$(dirname "$SLANGC")"
+cp "$SLANG_BIN/slangc.exe" "$SLANG_BIN/slang-compiler.dll" "$LAUNCHER/"
+mkdir -p "$DIST/licenses/slang"
+cp -r "$SLANG_BIN/../LICENSE" "$SLANG_BIN/../LICENSES" "$DIST/licenses/slang/"
+
 echo "==> smoke test (clean PATH)"
 SMOKE_PATH="/c/Windows/System32:/c/Windows"
 if PATH="$SMOKE_PATH" "$LAUNCHER/kitten.exe" --version >/dev/null 2>&1; then
@@ -121,7 +134,23 @@ if [ "$FONTS_RC" -ne 0 ] || [[ "$FONTS_OUT" == *'Fontconfig error'* ]]; then
 else
     echo "    fontconfig OK"
 fi
+# kitty has to pick the bundled compiler with no SLANGC set, as a user's has none
+SLANG_CHECK='import os, subprocess, sys
+from kitty.constants import kitty_run_data, slangc
+exe = slangc()[0]
+print(exe)
+bundled = os.path.dirname(os.path.abspath(exe)) == os.path.abspath(kitty_run_data["bundle_exe_dir"])
+sys.exit(0 if bundled and subprocess.call([exe, "-version"]) == 0 else 1)'
+SLANG_RC=0
+SLANG_OUT="$(env -u SLANGC PATH="$SMOKE_PATH" "$LAUNCHER/kitty-console.exe" +runpy "$SLANG_CHECK" </dev/null 2>&1)" || SLANG_RC=$?
+if [ "$SLANG_RC" -ne 0 ]; then
+    echo "    WARNING: kitty does not run the bundled slangc, exit $SLANG_RC:"
+    echo "$SLANG_OUT" | head -5
+    exit 1
+else
+    echo "    slangc OK"
+fi
 
-VERSION=$("$PY" -c "import re; print(re.search(r'version: Version = Version\((\d+), (\d+), (\d+)\)', open('kitty/constants.py').read()).expand(r'\1.\2.\3'))" 2>/dev/null || echo 0.48.0)
+VERSION=$("$PY" -c "import re; print(re.search(r'version: Version = Version\((\d+), (\d+), (\d+)\)', open('kitty/constants.py', encoding='utf-8').read()).expand(r'\1.\2.\3'))")
 echo "$VERSION" > "$ROOT/dist/VERSION"
 echo "==> done: $DIST (version $VERSION)"
