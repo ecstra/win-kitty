@@ -77,6 +77,7 @@ kitty.conf options that do nothing or only part of their job on Windows yet.
 - The bell sound, `enable_audio_bell` and `bell_path`, the taskbar flash of `window_alert_on_bell`, and the tab's bell mark while kitty has focus. conhost turns parts of a shell's output into stray bells, which would make all three go off on many prompts until they are filtered out.
 - The scrollback pager, `scrollback_pager` and the actions that open it, such as ctrl+shift+h. The pager gets no scrollback, and the default `less` is not on a stock Windows PATH.
 - Fullscreen, the `toggle_fullscreen` action.
+- A size in cells, such as `initial_window_width 100c`, for a window placed across the border of two screens with different scaling, by `remember_window_position`, a session or `--position`. When the window, sized for either screen, would sit mostly on the other, it opens with the columns and lines that other screen's scaling gives, such as about 50 of 100 columns with a 200% screen left of a 100% one.
 - `hide_window_decorations`. With `yes` the window cannot be resized or moved with the mouse, and `titlebar-only` does nothing.
 - `env read_from_shell`, which imports nothing.
 - `notify_on_cmd_finish`. The toast shows, but clicking it does not focus the window, and `clear_on` does not remove it.
