@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,12 +21,6 @@ import (
 var _ = fmt.Print
 
 func TestThemeCollections(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// The atomic write renames over the destination while the test still
-		// holds it open. Windows refuses that unless the original handle was
-		// opened with FILE_SHARE_DELETE. Recorded in WINDOWS_TODO.
-		t.Skip("cannot replace a file another handle holds open")
-	}
 	for fname, expected := range map[string]string{
 		"moose":    "Moose",
 		"mooseCat": "Moose Cat",
@@ -117,6 +110,9 @@ func TestThemeCollections(t *testing.T) {
 	}
 	var jm JSONMetadata
 	err = json.Unmarshal([]byte(r.Comment), &jm)
+	// Closed before the fetches below replace the file, which Windows refuses
+	// while a handle to it is open
+	r.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
