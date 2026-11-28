@@ -51,8 +51,10 @@ Source: "..\..\dist\kitty-menu.msix"; DestDir: "{app}\msix"; Tasks: contextmenu;
 Source: "..\..\dist\kitty-menu.cer"; DestDir: "{app}\msix"; Tasks: contextmenu; Check: CanRegisterMsix
 
 [Icons]
-Name: "{autoprograms}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; WorkingDir: "{%USERPROFILE}"
-Name: "{autodesktop}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; WorkingDir: "{%USERPROFILE}"; Tasks: desktopicon
+; The shortcut keeps %USERPROFILE% as it is, which Windows expands for whoever
+; opens it, where {%USERPROFILE} would be the installing admin's folder
+Name: "{autoprograms}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; WorkingDir: "%USERPROFILE%"
+Name: "{autodesktop}\kitty"; Filename: "{app}\kitty\launcher\kitty.exe"; WorkingDir: "%USERPROFILE%"; Tasks: desktopicon
 
 [Registry]
 ; Run (Win+R) looks here before PATH, so kitty typed there opens the window
@@ -64,18 +66,21 @@ Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\kitty.ex
 ; If a Windows 11 build ever shows the packaged verb in Show more options as
 ; well, this would read as a duplicate there and should be gated back behind
 ; "Check: not IsWin11".
+; Each verb passes "%V." rather than "%V". A drive's root ends in a backslash,
+; which the C runtime reads before a closing quote as an escaped quote, and
+; Windows drops the trailing dot of a folder's path.
 ; Right-click on a folder
 Root: HKA; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKA; Subkey: "Software\Classes\Directory\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu
-Root: HKA; Subkey: "Software\Classes\Directory\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
+Root: HKA; Subkey: "Software\Classes\Directory\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V."""; Tasks: contextmenu
 ; Right-click on the background of an open folder
 Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu
-Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
+Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V."""; Tasks: contextmenu
 ; Right-click on a drive
 Root: HKA; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: ""; ValueData: "Open in kitty"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKA; Subkey: "Software\Classes\Drive\shell\kitty"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\kitty\launcher\kitty.exe"; Tasks: contextmenu
-Root: HKA; Subkey: "Software\Classes\Drive\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V"""; Tasks: contextmenu
+Root: HKA; Subkey: "Software\Classes\Drive\shell\kitty\command"; ValueType: string; ValueName: ""; ValueData: """{app}\kitty\launcher\kitty.exe"" --directory ""%V."""; Tasks: contextmenu
 
 [Code]
 const
@@ -216,12 +221,20 @@ begin
        '', SW_HIDE, ewWaitUntilTerminated, R);
 end;
 
+{ Removes the package for every account that has it, since an uninstall by
+  another account than the one that installed left its registration pointing
+  at a deleted folder, then takes the certificate RegisterMsix added out of the
+  machine's trusted stores, matched by its thumbprint, so the machine stops
+  trusting a root whose private key ships in kitty's source. }
 procedure UnregisterMsix();
 var
   R: Integer;
 begin
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-       '-NoProfile -ExecutionPolicy Bypass -Command "Get-AppxPackage Ecstra.Kitty.ContextMenu | Remove-AppxPackage"',
+       '-NoProfile -ExecutionPolicy Bypass -Command "Get-AppxPackage -AllUsers Ecstra.Kitty.ContextMenu | Remove-AppxPackage -AllUsers"',
+       '', SW_HIDE, ewWaitUntilTerminated, R);
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+       ExpandConstant('-NoProfile -ExecutionPolicy Bypass -Command "$c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 ''{app}\msix\kitty-menu.cer''; foreach ($n in ''Root'', ''TrustedPeople'') {{ $s = New-Object System.Security.Cryptography.X509Certificates.X509Store($n, ''LocalMachine''); $s.Open(''ReadWrite''); $s.Remove($c); $s.Close() }"'),
        '', SW_HIDE, ewWaitUntilTerminated, R);
 end;
 

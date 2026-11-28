@@ -219,11 +219,16 @@ static bool
 bind_unix_socket(int s, const char *basename, struct sockaddr_un *addr, cleanup_data *cleanup) {
     addr->sun_family = AF_UNIX;
     const size_t blen = strlen(basename);
+#ifndef _WIN32
     // First try abstract socket
     addr->sun_path[0] = 0;
     memcpy(addr->sun_path + 1, basename, blen + 1);
     if (safe_bind(s, (struct sockaddr *)addr, sizeof(sa_family_t) + 1 + blen) > -1) return true;
     if (errno != ENOENT) return false;
+#endif
+    // Windows has no abstract sockets. Winsock accepts every bind to such a name
+    // and shares none of them, so a second kitty never found the first, and the
+    // socket is always a file, as on macOS.
     // Try an actual filesystem file
     get_socket_dir(addr->sun_path, sizeof(addr->sun_path) - blen - 2);
     size_t dlen = strlen(addr->sun_path);
@@ -284,6 +289,12 @@ peer_is_same_user(int fd) {
 
 static int
 create_unix_socket(void) {
+#ifdef _WIN32
+    // The launcher runs this before Python, which is what starts Winsock, and
+    // without it every socket call fails, so --single-instance never started
+    WSADATA wsa;
+    if (WSAStartup(0x0202, &wsa) != 0) fail_on_errno("Failed to start Winsock for the single instance socket");  // version 2.2
+#endif
     int s = socket(AF_UNIX, SOCK_STREAM, 0);
     if (s < 0) fail_on_errno("Failed to create single instance socket object");
     int flags;
@@ -381,7 +392,16 @@ talk_to_instance(int s, struct sockaddr_un *server_addr, int argc, char *argv[],
     // Check the identity of the listening process before sending it our
     // environment, cwd and session data.
     if (!peer_is_same_user(s)) do_exit(1);
+#ifdef _WIN32
+    // A Winsock socket is no C runtime descriptor, so it takes send, not write
+    for (size_t sent = 0; sent < output.used;) {
+        const int n = send(s, output.data + sent, (int)(output.used - sent), 0);
+        if (n <= 0) fail_on_errno("Failed to write message to single instance socket");
+        sent += (size_t)n;
+    }
+#else
     if (safe_write_all(s, output.data, output.used) != 0) fail_on_errno("Failed to write message to single instance socket");
+#endif
     shutdown(s, SHUT_RDWR);
     safe_close(s, __FILE__, __LINE__);
     cleanup_entries.si.close_fd1 = false;

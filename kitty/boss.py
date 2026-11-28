@@ -3630,18 +3630,9 @@ class Boss:
                             cmd, env=env, cwd=cwd, preexec_fn=clear_handled_signals, pass_fds=pass_fds, stdin=stdin, stdout=stdout, stderr=stderr)
                     if notify_on_death:
                         self.background_process_death_notify_map[p.pid] = notify_on_death
+                        # On Windows monitor_pid also waits on the process and
+                        # wakes the child monitor when it exits
                         monitor_pid(p.pid)
-                        if is_windows:
-                            # Nothing wakes the child monitor when a process that
-                            # is not a window's child exits, so a thread waits on
-                            # it and wakes the monitor, which then reaps it
-                            import threading
-
-                            def wake_when_done(proc: 'subprocess.Popen[bytes]' = p) -> None:
-                                proc.wait()
-                                self.child_monitor.wakeup()
-
-                            threading.Thread(target=wake_when_done, name='BackgroundProcessWaiter', daemon=True).start()
                 except Exception as err:
                     for fd in fds_to_close_on_launch_failure:
                         with suppress(OSError):

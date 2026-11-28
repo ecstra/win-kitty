@@ -74,7 +74,11 @@ typedef struct {
     int fd;
     unsigned long id;
     pid_t pid;
+#ifdef _WIN32
+    long long exit_status;  // a Windows exit code uses all 32 bits, and is shifted by 8 as waitpid's
+#else
     int exit_status;
+#endif
 #ifdef _WIN32
     // Kitten side channel streams open to this window, and the console resize
     // held back while a kitten drawing over one owns the screen, see
@@ -278,6 +282,38 @@ wakeup_io_loop(ChildMonitor *self, bool in_signal_handler) {
 void
 windows_wakeup_child_monitor(void) {
     if (the_monitor) wakeup_io_loop(the_monitor, false);
+}
+
+/* A background process kitty monitors, its handle and the thread pool wait
+ * that wakes the io loop when it exits, at the same index as its pid in
+ * monitored_pids. Python cannot do the waiting, since kitty's main loop holds
+ * the Python lock while it waits for events, so a Python thread waiting on the
+ * process ran only once something else woke kitty, and an idle kitty never
+ * reported the exit. */
+typedef struct { HANDLE process, wait; } MonitoredProcess;
+static MonitoredProcess monitored_processes[arraysz(monitored_pids)];
+
+static VOID CALLBACK
+monitored_process_exited(PVOID ctx UNUSED, BOOLEAN timed_out UNUSED) { windows_wakeup_child_monitor(); }
+
+static void
+watch_monitored_process(size_t j, pid_t pid) {
+    MonitoredProcess *m = monitored_processes + j;
+    m->wait = NULL;
+    m->process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+    if (m->process && !RegisterWaitForSingleObject(&m->wait, m->process, monitored_process_exited, NULL, INFINITE, WT_EXECUTEONLYONCE))
+        m->wait = NULL;
+}
+
+// Called with children_lock held
+static void
+forget_monitored_pid(size_t j) {
+    MonitoredProcess *m = monitored_processes + j;
+    if (m->wait) UnregisterWaitEx(m->wait, NULL);
+    if (m->process) CloseHandle(m->process);
+    size_t count = monitored_pids_count;
+    remove_i_from_array(monitored_processes, j, count);
+    remove_i_from_array(monitored_pids, j, monitored_pids_count);
 }
 
 /* Windows has no SIGUSR1, so a config-reload request (e.g. from the themes
@@ -933,7 +969,11 @@ parse_input(ChildMonitor *self) {
         if (remove_notify[remove_count].screen && do_parse(self, remove_notify[remove_count].screen, now, true)) input_read = true;
         PyObject *t = PyObject_CallFunction(
             self->death_notify,
+#ifdef _WIN32
+            "kOLO",
+#else
             "kOiO",
+#endif
             remove_notify[remove_count].id,
             remove_notify[remove_count].child_died ? Py_True : Py_False,
             remove_notify[remove_count].exit_status,
@@ -1642,6 +1682,9 @@ monitor_pid(PyObject *self UNUSED, PyObject *args) {
         PyErr_SetString(PyExc_RuntimeError, "Too many monitored pids");
         ok = false;
     } else {
+#ifdef _WIN32
+        watch_monitored_process(monitored_pids_count, pid);
+#endif
         monitored_pids[monitored_pids_count++] = pid;
     }
     children_mutex(unlock);
@@ -2204,7 +2247,11 @@ mark_monitored_pids(pid_t pid, int status) {
                 reaped_pids[reaped_pids_count].status = status;
                 reaped_pids[reaped_pids_count++].pid = pid;
             }
+#ifdef _WIN32
+            forget_monitored_pid((size_t)i);
+#else
             remove_i_from_array(monitored_pids, (size_t)i, monitored_pids_count);
+#endif
         }
     }
     children_mutex(unlock);
@@ -2239,10 +2286,10 @@ reap_children(ChildMonitor *self, bool enable_close_on_child_death) {
  * holds the console, which is the case that option exists to preserve). */
 static void
 windows_reap_children(ChildMonitor *self) {
-    extern bool windows_pty_child_exited(int read_fd, int *status);
+    extern bool windows_pty_child_exited(int read_fd, long long *status);
     children_mutex(lock);
     for (size_t i = 0; i < self->count; i++) {
-        int status = 0;
+        long long status = 0;
         if (children[i].pid <= 0 || children[i].needs_removal) continue;
         if (!windows_pty_child_exited(children[i].fd, &status)) continue;
         children[i].needs_removal = true;
@@ -2255,22 +2302,25 @@ windows_reap_children(ChildMonitor *self) {
                     reaped_pids[reaped_pids_count].status = status;
                     reaped_pids[reaped_pids_count++].pid = children[i].pid;
                 }
-                remove_i_from_array(monitored_pids, (size_t)j, monitored_pids_count);
+                forget_monitored_pid((size_t)j);
             }
         }
     }
     // The other monitored processes, kitty's background ones, have no pty to
     // watch and waitpid cannot wait on any child here, so each is checked by
-    // its handle. Python wakes this loop when one exits.
+    // the handle monitor_pid opened, whose wait wakes this loop when it exits
     bool reaped_any = false;
     for (ssize_t j = (ssize_t)monitored_pids_count - 1; j >= 0; j--) {
-        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)monitored_pids[j]);
+        HANDLE h = monitored_processes[j].process;
         DWORD code = 0;
         bool exited = false;
-        if (!h) exited = GetLastError() == ERROR_INVALID_PARAMETER;  // gone already
-        else {
+        if (h) {
             if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) { GetExitCodeProcess(h, &code); exited = true; }
-            CloseHandle(h);
+        } else {
+            // It had exited and gone before monitor_pid could open it
+            HANDLE again = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)monitored_pids[j]);
+            exited = !again && GetLastError() == ERROR_INVALID_PARAMETER;
+            if (again) CloseHandle(again);
         }
         if (!exited) continue;
         if (reaped_pids_count < arraysz(reaped_pids)) {
@@ -2278,7 +2328,7 @@ windows_reap_children(ChildMonitor *self) {
             reaped_pids[reaped_pids_count].status = ((long long)code) << 8;
             reaped_pids[reaped_pids_count++].pid = monitored_pids[j];
         }
-        remove_i_from_array(monitored_pids, (size_t)j, monitored_pids_count);
+        forget_monitored_pid((size_t)j);
         reaped_any = true;
     }
     children_mutex(unlock);

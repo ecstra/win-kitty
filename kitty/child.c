@@ -642,13 +642,15 @@ windows_pty_write_fd_for(int read_fd) {
  * path drains the child's final output (its result) before closing. Reaping them
  * here would race ahead of that drain and lose the result. */
 bool
-windows_pty_child_exited(int read_fd, int *status) {
+windows_pty_child_exited(int read_fd, long long *status) {
     for (int i = 0; i < MAX_PTYS; i++) {
         if (ptys[i].in_use && ptys[i].read_fd == read_fd) {
             if (!ptys[i].process || !ptys[i].hpc) return false;
             if (WaitForSingleObject(ptys[i].process, 0) != WAIT_OBJECT_0) return false;
             DWORD code = 0; GetExitCodeProcess(ptys[i].process, &code);
-            if (status) *status = (int)(code & 0xff);
+            // Shifted as waitpid reports it, which os.waitstatus_to_exitcode
+            // undoes on Windows, keeping codes above 255 and crash codes whole
+            if (status) *status = ((long long)code) << 8;
             return true;
         }
     }

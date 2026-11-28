@@ -11,7 +11,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from kitty.constants import kitty_exe
+from kitty.constants import kitty_base_dir, kitty_exe
 
 from .base import BaseTest, is_windows
 
@@ -188,6 +188,51 @@ class WindowsFeaturesTest(BaseTest):
             with self.assertRaises(SystemExit):
                 parse_args(['--help'])
         self.assertIn('--listen-on', out.getvalue())
+
+    def test_images_load_from_paths_with_letters_outside_ascii(self):
+        # Programs send image paths as UTF-8, which the C runtime's narrow open
+        # read in the ANSI code page, opening a different name
+        from .graphics import load_helpers
+
+        s, g, pl, sl = load_helpers(self)
+        data = os.urandom(32 * 1024)
+        with tempfile.TemporaryDirectory() as tdir:
+            folder = os.path.join(tdir, 'café ünï')
+            os.mkdir(folder)
+            path = os.path.join(folder, 'imágé.rgba')
+            with open(path, 'wb') as f:
+                f.write(data)
+            sl(path, s=1024, v=8, t='f', expecting_data=data)
+
+    def test_open_in_kitty_passes_the_folder_including_a_drive_root(self):
+        # The C runtime reads a backslash before a closing quote as an escaped
+        # quote, and a drive's root, as Explorer hands it over, ends in one
+        import re
+
+        shell32 = ctypes.WinDLL('shell32')
+        shell32.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        shell32.CommandLineToArgvW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        kernel32 = ctypes.WinDLL('kernel32')
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+
+        def argv_of(cmdline: str) -> list[str]:
+            n = ctypes.c_int()
+            p = shell32.CommandLineToArgvW(cmdline, ctypes.byref(n))
+            try:
+                return [p[i] for i in range(n.value)]
+            finally:
+                kernel32.LocalFree(p)
+
+        with open(os.path.join(kitty_base_dir, 'packaging', 'windows', 'kitty.iss'), encoding='utf-8') as f:
+            iss = f.read()
+        verbs = re.findall(r'Subkey: "Software\\Classes\\([^"]+?)\\shell\\kitty\\command";.*?ValueData: "(.*?)"; Tasks', iss)
+        self.ae(sorted(k for k, v in verbs), ['Directory', 'Directory\\Background', 'Drive'])
+        for key, value in verbs:
+            for folder in ('D:\\', r'C:\Users\me', r'C:\Program Files\some app'):
+                cmdline = value.replace('""', '"').replace('{app}', r'C:\Program Files\kitty').replace('%V', folder)
+                argv = argv_of(cmdline)
+                self.ae(argv[-2], '--directory', cmdline)
+                self.ae(os.path.normcase(os.path.abspath(argv[-1])), os.path.normcase(folder), f'{key}: {cmdline}')
 
     def test_swapping_stderr_moves_the_handle_programs_inherit(self):
         # kitty.exe is a GUI program, whose C runtime leaves the process's

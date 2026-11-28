@@ -81,6 +81,14 @@ An input method, for Japanese, Chinese, Korean and more, works through IMM32. ki
 
 The keycode table maps virtual keys to kitty key values, and it has to be an `int` array rather than the stock GLFW `short`. kitty's functional key values sit above 0x7fff, so a signed short held them as negative numbers that sign extended to 0xffffXXXX on read. Those matched nothing and silently dropped Enter, Backspace, Tab, and the arrows. Widening the array to int fixed every functional key together.
 
+The table is US by virtual key, which on another layout names the wrong character, so a key that types goes out as the layout's own character, read with ToUnicodeEx and the flag that leaves the keyboard state alone, so a waiting dead key still composes. What shift makes of the key, with Caps Lock left out, is its shifted key, and the US key at that place, found by scan code, its alternate key, as X11 gives them to kitty from xkb.
+
+## Background processes and exit codes
+
+A window's program reports its exit code shifted by 8, as waitpid would, which `os.waitstatus_to_exitcode` undoes, so codes above 255 and crash codes reach kitty whole. A background process kitty watches, for `kitten @ run` or `launch --type=background`, is watched from C. `monitor_pid` opens its handle and a thread pool wait wakes the child monitor when it exits, as a window's program is watched. A Python thread did the waiting before, but kitty's main loop holds the Python lock while it waits for events, so the thread ran only once something else woke kitty, and an idle kitty never answered `kitten @ run`.
+
+`kitty --single-instance` uses a socket file in the temp folder, as on macOS, since Winsock accepts every bind to an abstract name and shares none of them. The launcher starts Winsock itself, since it runs before Python does, writes to the socket with `send`, and locks the socket's lock file with LockFileEx, which the stub that stood for `lockf` never did. Files kitty opens from C, such as an image a program names, are opened by their UTF-8 name as wide characters, since the C runtime's narrow open reads a name in the ANSI code page.
+
 ## Transparency and acrylic
 
 A plain OpenGL window on Windows is opaque whatever the framebuffer alpha is. `background_blur` picks between two very different paths.
