@@ -58,33 +58,25 @@ static inline __attribute__((unused)) gid_t getegid(void) { return 0; }
 static inline __attribute__((unused)) gid_t getgid(void)  { return 0; }
 
 /* POSIX advisory file locking (from <unistd.h>), which kitty uses only for the
- * single-instance lock file. A stub that always succeeded let a second kitty
- * take the first one's socket over. Locks the whole file whatever len says. */
-#ifndef F_LOCK
-#define F_ULOCK 0
-#define F_LOCK  1
+ * single-instance lock file, and only as F_TLOCK. A stub that always succeeded
+ * let a second kitty take the first one's socket over. Locks the whole file
+ * whatever len says, and the lock goes when the file is closed. */
+#ifndef F_TLOCK
 #define F_TLOCK 2
-#define F_TEST  3
 #endif
 #include <io.h>
 #include <errno.h>
 static inline __attribute__((unused)) int
 lockf(int fd, int cmd, off_t len) {
     (void)len;
+    if (cmd != F_TLOCK) { errno = EINVAL; return -1; }
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     if (h == INVALID_HANDLE_VALUE) { errno = EBADF; return -1; }
     OVERLAPPED whole_file = {0};
-    if (cmd == F_ULOCK) {
-        if (UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &whole_file)) return 0;
-        errno = EINVAL;
-        return -1;
-    }
-    const DWORD flags = LOCKFILE_EXCLUSIVE_LOCK | (cmd == F_LOCK ? 0 : LOCKFILE_FAIL_IMMEDIATELY);
-    if (!LockFileEx(h, flags, 0, MAXDWORD, MAXDWORD, &whole_file)) {
+    if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD, MAXDWORD, &whole_file)) {
         errno = GetLastError() == ERROR_LOCK_VIOLATION ? EAGAIN : EINVAL;
         return -1;
     }
-    if (cmd == F_TEST) UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &whole_file);
     return 0;
 }
 

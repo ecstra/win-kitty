@@ -103,15 +103,15 @@ static bool isKeypadTextKey(uint32_t key) {
         key == GLFW_FKEY_KP_MULTIPLY || key == GLFW_FKEY_KP_SUBTRACT || key == GLFW_FKEY_KP_ADD || key == GLFW_FKEY_KP_SEPARATOR;
 }
 
-// The character the active layout gives a key with no modifiers, or with only
-// shift, Caps Lock left out as on X11. A dead key gives its own character.
-// The flag leaves the keyboard state alone, so a dead key waiting for the next
-// key still composes with it.
-static uint32_t layoutChar(WPARAM vk, UINT scan, bool shifted) {
+// The character a layout gives a key with no modifiers, or with only shift,
+// Caps Lock left out as on X11. A dead key gives its own character. The flag
+// leaves the keyboard state alone, so a dead key waiting for the next key still
+// composes with it.
+static uint32_t layoutChar(WPARAM vk, UINT scan, bool shifted, HKL layout) {
     BYTE state[256] = {0};
     if (shifted) state[VK_SHIFT] = 0x80;
     WCHAR buf[4] = {0};
-    int n = ToUnicodeEx((UINT) vk, scan, state, buf, 4, 0x4, GetKeyboardLayout(0));
+    int n = ToUnicodeEx((UINT) vk, scan, state, buf, 4, 0x4, layout);
     if (n < 0) n = 1;  // a dead key, whose character is in buf
     if (n == 2 && IS_HIGH_SURROGATE(buf[0]) && IS_LOW_SURROGATE(buf[1]))
         return 0x10000 + (((uint32_t) (buf[0] - 0xd800) << 10) | (uint32_t) (buf[1] - 0xdc00));
@@ -119,35 +119,36 @@ static uint32_t layoutChar(WPARAM vk, UINT scan, bool shifted) {
     return 0;
 }
 
-// The key a US keyboard has at that place, by scan code, which kitty sends as
-// the alternate key, as X11 does from its default layout
-static uint32_t usKeyAtScanCode(UINT scan) {
-    static const char row1[] = "1234567890-=", row2[] = "qwertyuiop[]", row3[] = "asdfghjkl;'`", row4[] = "zxcvbnm,./";
-    if (scan >= 0x02 && scan <= 0x0d) return (uint32_t) row1[scan - 0x02];
-    if (scan >= 0x10 && scan <= 0x1b) return (uint32_t) row2[scan - 0x10];
-    if (scan >= 0x1e && scan <= 0x29) return (uint32_t) row3[scan - 0x1e];
-    if (scan >= 0x2c && scan <= 0x35) return (uint32_t) row4[scan - 0x2c];
-    if (scan == 0x2b || scan == 0x56) return '\\';
-    if (scan == 0x39) return ' ';
-    return 0;
+// The key the user's default layout has at that place, which kitty sends as the
+// alternate key, as X11 does from its first layout, and none while the default
+// layout is the one in use. A US key there instead made Alt with ü on German
+// send ESC [, which a shell reads as the start of a control sequence.
+static uint32_t defaultLayoutChar(UINT scan, HKL active) {
+    HKL default_layout = NULL;
+    if (!SystemParametersInfoW(SPI_GETDEFAULTINPUTLANG, 0, &default_layout, 0) || !default_layout || default_layout == active) return 0;
+    const UINT vk = MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK, default_layout);
+    return vk ? layoutChar(vk, scan, false, default_layout) : 0;
 }
 
 // The key table is US by virtual key, which on another layout names the wrong
-// character, so a key that types goes out as the layout's own character, with
-// what shift makes of it as its shifted key and the US key at that place as its
-// alternate key, as kitty gets them on X11
+// character, or none for a key a US keyboard lacks, so a key that types goes
+// out as the layout's own character, with what shift makes of it as its shifted
+// key and the default layout's key there as its alternate key, as kitty gets
+// them on X11
 static void layoutKeys(WPARAM vk, LPARAM lParam, int mods, uint32_t *key, uint32_t *shifted, uint32_t *alternate) {
     *shifted = 0; *alternate = 0;
-    if (!*key || *key >= GLFW_FKEY_FIRST || (HIWORD(lParam) & KF_EXTENDED)) return;
+    if (*key >= GLFW_FKEY_FIRST || (HIWORD(lParam) & KF_EXTENDED)) return;
     const UINT scan = (lParam >> 16) & 0xff;
-    const uint32_t base = layoutChar(vk, scan, false);
-    if (base) *key = base;
+    const HKL active = GetKeyboardLayout(0);
+    const uint32_t base = layoutChar(vk, scan, false, active);
+    if (!base) return;
+    *key = base;
     if (mods & GLFW_MOD_SHIFT) {
-        const uint32_t s = layoutChar(vk, scan, true);
+        const uint32_t s = layoutChar(vk, scan, true, active);
         if (s && s != *key) *shifted = s;
     }
-    const uint32_t us = usKeyAtScanCode(scan);
-    if (us && us != *key) *alternate = us;
+    const uint32_t other = defaultLayoutChar(scan, active);
+    if (other && other != *key) *alternate = other;
 }
 
 static int getKeyMods(void) {

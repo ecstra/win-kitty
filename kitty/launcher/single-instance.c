@@ -51,10 +51,19 @@ struct {
 
 static void
 do_cleanup(cleanup_data *d) {
+#ifdef _WIN32
+    // Windows refuses to delete a file that is open, so each lock file stayed
+    // behind in the temp folder unless it is closed first
+    if (d->close_fd1) safe_close(d->fd1, __FILE__, __LINE__);
+    if (d->close_fd2) safe_close(d->fd2, __FILE__, __LINE__);
+    if (d->path1[0]) unlink(d->path1);
+    if (d->path2[0]) unlink(d->path2);
+#else
     if (d->path1[0]) unlink(d->path1);
     if (d->path2[0]) unlink(d->path2);
     if (d->close_fd1) safe_close(d->fd1, __FILE__, __LINE__);
     if (d->close_fd2) safe_close(d->fd2, __FILE__, __LINE__);
+#endif
 }
 
 static void
@@ -214,6 +223,33 @@ read_till_eof(FILE *f, membuf *m) {
     fclose(f);
 }
 
+#ifdef _WIN32
+// The launcher's argv, getcwd, environ and getenv are in the ANSI code page,
+// while the running kitty reads its message as UTF-8 and Winsock reads a socket
+// path as UTF-8. Passed on as they came, they lost every letter outside ASCII,
+// such as the é of an account named José in TEMP and APPDATA.
+static char *
+utf8_from_wide(const wchar_t *w, int wlen) {
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w, wlen, NULL, 0, NULL, NULL);
+    char *ans = malloc((size_t)(n > 0 ? n : 0) + 1);
+    if (!ans) fail_on_errno("Failed to convert to UTF-8");
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, wlen, ans, n, NULL, NULL);
+    ans[n > 0 ? n : 0] = 0;
+    return ans;
+}
+
+static char *
+utf8_from_ansi(const char *s) {
+    const int n = MultiByteToWideChar(CP_ACP, 0, s, -1, NULL, 0);
+    wchar_t *w = malloc(sizeof(wchar_t) * (size_t)(n > 0 ? n : 1));
+    if (!w) fail_on_errno("Failed to convert from the ANSI code page");
+    if (n > 0) MultiByteToWideChar(CP_ACP, 0, s, -1, w, n);
+    else w[0] = 0;
+    char *ans = utf8_from_wide(w, -1);
+    free(w);
+    return ans;
+}
+#endif
 
 static bool
 bind_unix_socket(int s, const char *basename, struct sockaddr_un *addr, cleanup_data *cleanup) {
@@ -237,9 +273,22 @@ bind_unix_socket(int s, const char *basename, struct sockaddr_un *addr, cleanup_
         fprintf(stderr, "Socket directory has path too long for single instance socket file %s\n", addr->sun_path);
         do_exit(1);
     }
+    // The socket file as the C runtime's calls below name it
+    char file_path[sizeof(addr->sun_path)];
+    memcpy(file_path, addr->sun_path, sizeof(file_path));
+#ifdef _WIN32
+    char *utf8_path = utf8_from_ansi(file_path);
+    const size_t utf8_len = strlen(utf8_path);
+    if (utf8_len < sizeof(addr->sun_path)) memcpy(addr->sun_path, utf8_path, utf8_len + 1);
+    free(utf8_path);
+    if (utf8_len >= sizeof(addr->sun_path)) {
+        fprintf(stderr, "Socket directory has path too long for single instance socket file %s\n", file_path);
+        do_exit(1);
+    }
+#endif
     // First lock the socket file using a separate lock file
     char lock_file_path[sizeof(addr->sun_path) + 16];
-    snprintf(lock_file_path, sizeof(lock_file_path), "%s.lock", addr->sun_path);
+    snprintf(lock_file_path, sizeof(lock_file_path), "%s.lock", file_path);
     int fd = safe_open(lock_file_path, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, S_IRUSR | S_IWUSR);
     if (fd == -1) return false;
     cleanup->close_fd2 = true;
@@ -254,7 +303,7 @@ bind_unix_socket(int s, const char *basename, struct sockaddr_un *addr, cleanup_
         return false;
     }
     // First unlink the socket file and then try to bind it.
-    if (unlink(addr->sun_path) != 0 && errno != ENOENT) return false;
+    if (unlink(file_path) != 0 && errno != ENOENT) return false;
     // Create the socket file accessible only to us, as a defense in depth
     // measure, the peer uid is checked at both ends of the connection as well.
     mode_t old_umask = umask(S_IRWXG | S_IRWXO);
@@ -263,7 +312,7 @@ bind_unix_socket(int s, const char *basename, struct sockaddr_un *addr, cleanup_
     umask(old_umask);
     errno = saved_errno;
     if (bound) {
-        snprintf(cleanup->path1, sizeof(cleanup->path1), "%s", addr->sun_path);
+        snprintf(cleanup->path1, sizeof(cleanup->path1), "%s", file_path);
         return true;
     }
     return false;
@@ -287,6 +336,34 @@ peer_is_same_user(int fd) {
     return true;
 }
 
+// Who the socket names belong to, the uid as upstream has it. geteuid() is 0
+// for every Windows account, so there the name carries a hash of the account's
+// SID, short enough for a socket path, and whether the start is elevated, which
+// keeps accounts and an administrator's kitty apart as uids do on Linux.
+static void
+instance_owner(char *out, size_t sz) {
+#ifdef _WIN32
+    unsigned long long hash = 1469598103934665603ULL;  // FNV-1a
+    bool elevated = false;
+    HANDLE token;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        BYTE user[256];
+        DWORD len = 0;
+        if (GetTokenInformation(token, TokenUser, user, sizeof(user), &len)) {
+            const BYTE *sid = (const BYTE *)((TOKEN_USER *)user)->User.Sid;
+            const DWORD n = GetLengthSid(((TOKEN_USER *)user)->User.Sid);
+            for (DWORD i = 0; i < n; i++) { hash ^= sid[i]; hash *= 1099511628211ULL; }
+        }
+        TOKEN_ELEVATION elevation;
+        if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &len)) elevated = elevation.TokenIsElevated != 0;
+        CloseHandle(token);
+    }
+    snprintf(out, sz, "%llx%s", hash, elevated ? "-admin" : "");
+#else
+    snprintf(out, sz, "%d", (int)geteuid());
+#endif
+}
+
 static int
 create_unix_socket(void) {
 #ifdef _WIN32
@@ -304,6 +381,18 @@ create_unix_socket(void) {
 }
 
 extern char **environ;
+
+// A string the launcher got from the system, as UTF-8 in the message
+static void
+write_json_native_string(membuf *output, const char *s) {
+#ifdef _WIN32
+    char *u = utf8_from_ansi(s);
+    write_json_string(output, u, strlen(u));
+    free(u);
+#else
+    write_json_string(output, s, strlen(s));
+#endif
+}
 
 static void
 talk_to_instance(int s, struct sockaddr_un *server_addr, int argc, char *argv[], const CLIOptions *opts) {
@@ -338,13 +427,46 @@ talk_to_instance(int s, struct sockaddr_un *server_addr, int argc, char *argv[],
     if (session_data.used) write_json_string(&output, session_data.data, session_data.used);
     else write_json_string(&output, "", 0);
     w(",\"session_arg\":");
-    if (opts->session && opts->session[0]) write_json_string(&output, opts->session, strlen(opts->session));
+    if (opts->session && opts->session[0]) write_json_native_string(&output, opts->session);
     else write_json_string(&output, "", 0);
     w(",\"session_path\":");
-    if (session_path && session_path[0]) write_json_string(&output, session_path, strlen(session_path));
+    if (session_path && session_path[0]) write_json_native_string(&output, session_path);
     else write_json_string(&output, "", 0);
     free(session_path);
     w(",\"args\":");
+#ifdef _WIN32
+    {
+        char **utf8_argv = calloc((size_t)argc + 1, sizeof(char *));
+        if (!utf8_argv) fail_on_errno("Failed to alloc space for the arguments");
+        for (int i = 0; i < argc; i++) utf8_argv[i] = utf8_from_ansi(argv[i]);
+        write_json_string_array(&output, argc, utf8_argv);
+        for (int i = 0; i < argc; i++) free(utf8_argv[i]);
+        free(utf8_argv);
+    }
+    wchar_t wcwd[4096];
+    if (!_wgetcwd(wcwd, sizeof(wcwd) / sizeof(wcwd[0]))) fail_on_errno("Failed to get cwd");
+    char *cwd = utf8_from_wide(wcwd, -1);
+    w(",\"cwd\":");
+    write_json_string(&output, cwd, strlen(cwd));
+    free(cwd);
+    w(",\"environ\":{");
+    // NAME=value entries one after another, the drive folders' =C: names among them
+    wchar_t *block = GetEnvironmentStringsW();
+    bool first = true;
+    for (const wchar_t *entry = block; entry && *entry; entry += wcslen(entry) + 1) {
+        const wchar_t *eq = wcschr(entry + 1, L'=');
+        if (!eq) continue;
+        if (!first) write_to_membuf(&output, ",", 1);
+        first = false;
+        char *name = utf8_from_wide(entry, (int)(eq - entry)), *value = utf8_from_wide(eq + 1, -1);
+        write_json_string(&output, name, strlen(name));
+        w(":");
+        write_json_string(&output, value, strlen(value));
+        free(name);
+        free(value);
+    }
+    if (block) FreeEnvironmentStringsW(block);
+#else
     write_json_string_array(&output, argc, argv);
     char cwd[4096];
     if (!getcwd(cwd, sizeof(cwd))) fail_on_errno("Failed to get cwd");
@@ -361,6 +483,7 @@ talk_to_instance(int s, struct sockaddr_un *server_addr, int argc, char *argv[],
             write_json_string(&output, eq + 1, strlen(eq + 1));
         }
     }
+#endif
     w("}");
 
     w(",\"cmdline_args_for_open\":");
@@ -375,7 +498,9 @@ talk_to_instance(int s, struct sockaddr_un *server_addr, int argc, char *argv[],
         cleanup_entries.notify.close_fd1 = true;
         struct sockaddr_un server_addr;
         char addr[128];
-        snprintf(addr, sizeof(addr), "kitty-os-window-close-notify-%d-%d", getpid(), geteuid());
+        char owner[32];
+        instance_owner(owner, sizeof(owner));
+        snprintf(addr, sizeof(addr), "kitty-os-window-close-notify-%d-%s", getpid(), owner);
         if (!bind_unix_socket(notify_socket, addr, &server_addr, &cleanup_entries.notify)) fail_on_errno("Failed to bind notification socket");
         size_t len = strlen(server_addr.sun_path);
         if (len == 0) len = 1 + strlen(server_addr.sun_path + 1);
@@ -440,8 +565,10 @@ single_instance_main(int argc, char *argv[], const CLIOptions *opts) {
     }
     struct sockaddr_un server_addr;
     char addr_buf[sizeof(server_addr.sun_path) - 1];
-    if (opts->instance_group) snprintf(addr_buf, sizeof(addr_buf), "kitty-ipc-%d-%s", geteuid(), opts->instance_group);
-    else snprintf(addr_buf, sizeof(addr_buf), "kitty-ipc-%d", geteuid());
+    char owner[32];
+    instance_owner(owner, sizeof(owner));
+    if (opts->instance_group) snprintf(addr_buf, sizeof(addr_buf), "kitty-ipc-%s-%s", owner, opts->instance_group);
+    else snprintf(addr_buf, sizeof(addr_buf), "kitty-ipc-%s", owner);
 
     int s = create_unix_socket();
     cleanup_entries.si.fd1 = s;

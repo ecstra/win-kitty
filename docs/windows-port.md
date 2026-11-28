@@ -45,8 +45,8 @@ Close any running kitty first. The source tree keeps its own development build a
 - Window creation, OpenGL rendering, live resizing, and per monitor DPI scaling.
 - Any Windows console program as the shell. cmd.exe, Windows PowerShell, and pwsh all run. Pick one with the `shell` option in kitty.conf.
 - MSYS2 and Cygwin shells such as zsh and bash, on a real pty, with shell integration.
-- Keyboard input, including the ctrl and alt shortcuts, the function keys, and the arrow keys. A shortcut on a layout other than US uses the layout's own character, so Alt+ß on German sends ESC ß, as on Linux. On a layout with AltGr, the left Ctrl and Alt together run a kitty shortcut when one is set on that key, and otherwise type the AltGr character, as in Windows Terminal. The AltGr key always types.
-- `kitty --single-instance`, which hands a second start to the kitty already running.
+- Keyboard input, including the ctrl and alt shortcuts, the function keys, and the arrow keys. With Alt or Ctrl, a key on a layout other than US goes out as that layout's own character, as on Linux, so Alt+ß on German no longer sends ESC [. With a second layout installed, a key also carries what the default layout has at that place, which programs and kitty's shortcuts can fall back on. Shortcuts follow the layout's characters as they do on Linux, so on French AZERTY kitty_mod+1 to kitty_mod+0 do not fire from the number row, whose keys type &, é and the rest. On a layout with AltGr, the left Ctrl and Alt together run a kitty shortcut when one is set on that key, and otherwise type the AltGr character, as in Windows Terminal. The AltGr key always types.
+- `kitty --single-instance`, which hands a second start to the kitty already running, with `--wait-for-single-instance-window-close` waiting until that window closes.
 - `remap_modifiers`, for keys, mouse clicks and scrolling.
 - Automatic color themes, which follow Windows as you switch it between light and dark.
 - Custom shaders, `custom_shaders`. The installer ships the part of the Slang compiler kitty builds them with.

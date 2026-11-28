@@ -715,6 +715,9 @@ def safe_pipe(nonblock: bool = True) -> Tuple[int, int]:
 def listen_on_unix_socket(path: str) -> int:  # Windows only
     pass
 
+def send_to_unix_socket(path: str, data: bytes) -> None:  # Windows only
+    pass
+
 def patch_global_colors(spec: Dict[str, Optional[int]], configured: bool) -> None:
     pass
 

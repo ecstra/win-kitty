@@ -3166,12 +3166,41 @@ listen_on_unix_socket(PyObject *self UNUSED, PyObject *args) {
     }
     return PyLong_FromLongLong((long long)s);
 }
+
+// CPython builds no AF_UNIX on Windows, so kitty connects to a Unix socket,
+// such as the one a launcher waits on, from here
+static PyObject*
+send_to_unix_socket(PyObject *self UNUSED, PyObject *args) {
+    const char *path, *data;
+    Py_ssize_t len, data_len;
+    if (!PyArg_ParseTuple(args, "s#y#", &path, &len, &data, &data_len)) return NULL;
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+    if ((size_t)len >= sizeof(addr.sun_path)) {
+        PyErr_Format(PyExc_ValueError, "The socket path %s is too long, a Unix socket path holds at most %zu bytes", path, sizeof(addr.sun_path) - 1);
+        return NULL;
+    }
+    memcpy(addr.sun_path, path, len + 1);
+    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) return PyErr_SetExcFromWindowsErr(PyExc_OSError, WSAGetLastError());
+    int err = 0;
+    if (connect(s, (struct sockaddr*)&addr, sizeof(addr)) != 0) err = WSAGetLastError();
+    for (Py_ssize_t sent = 0; !err && sent < data_len;) {
+        const int k = send(s, data + sent, (int)(data_len - sent), 0);
+        if (k <= 0) err = WSAGetLastError();
+        else sent += k;
+    }
+    shutdown(s, SD_BOTH);
+    closesocket(s);
+    if (err) return PyErr_SetExcFromWindowsErrWithFilename(PyExc_OSError, err, path);
+    Py_RETURN_NONE;
+}
 #endif
 
 static PyMethodDef module_methods[] = {
     METHODB(safe_pipe, METH_VARARGS),
 #ifdef _WIN32
     METHODB(listen_on_unix_socket, METH_VARARGS),
+    METHODB(send_to_unix_socket, METH_VARARGS),
 #endif
     {"add_timer", (PyCFunction)add_python_timer, METH_VARARGS, ""},
     {"remove_timer", (PyCFunction)remove_python_timer, METH_VARARGS, ""},

@@ -2765,6 +2765,14 @@ class Boss:
                 log_error(f'Failed to delete the session saved for a cancelled logout in {path}. Error: {e}')
 
     def notify_on_os_window_death(self, address: str) -> None:
+        if is_windows:
+            # This Python has no socket.AF_UNIX, so the launcher waiting for its
+            # window to close never heard and waited forever
+            from .fast_data_types import send_to_unix_socket
+
+            with suppress(OSError, ValueError):
+                send_to_unix_socket(address, b'c')
+            return
         import socket
 
         s = socket.socket(family=socket.AF_UNIX)

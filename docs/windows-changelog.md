@@ -52,10 +52,10 @@ Based on kitty 0.51.1.
 - New windows and tabs opened from an MSYS2 or Cygwin shell start in the folder the shell is in, rather than the one it started in.
 - A session saved with `save_as_session` reopens an MSYS2 or Cygwin shell's window in the folder the shell was in, instead of your home folder.
 - A window kitty puts back on a screen with different scaling from the main one, from a saved session or a remembered position, keeps its size instead of growing by that scaling.
-- Shortcuts with Alt or Ctrl on a keyboard layout other than US use that layout's character, so Alt+ß on German sends ß rather than `[`.
+- Alt or Ctrl with a key on a keyboard layout other than US sends that layout's character, as on Linux, so Alt+ß on German no longer sends `ESC [`.
 - A window's program reports its real exit code, which `launch --wait-for-child-to-exit` gives back, instead of always 0.
 - `kitten @ run` runs its program and returns its output, instead of timing out, and a background process reports its exit while kitty sits idle.
-- `kitty --single-instance` starts, and a second start opens its window in the kitty already running.
+- `kitty --single-instance` starts, and a second start opens its window in the kitty already running, its folder, arguments and environment whole when they hold letters outside ASCII. With `--wait-for-single-instance-window-close` it returns once that window closes.
 - Images named by a path with accented letters, such as `café.png`, load.
 - Uninstalling kitty installed for everyone removes the certificate its Explorer menu added, and the menu entry of every account. The shortcuts of such an install start in the home folder of whoever opens them, and Open in kitty on a drive opens its root.
 
