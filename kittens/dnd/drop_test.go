@@ -1496,6 +1496,9 @@ func TestSetupBaseDirDetectsNameAliases(t *testing.T) {
 // TestSetupBaseDirInUnwritableDir verifies that the kitten can start in a
 // directory that is not writable, failing only if a drop is attempted.
 func TestSetupBaseDirInUnwritableDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("makes a folder unwritable with POSIX permission bits, which Windows does not honour")
+	}
 	dest := t.TempDir()
 	if err := os.Chmod(dest, 0o500); err != nil {
 		t.Fatal(err)

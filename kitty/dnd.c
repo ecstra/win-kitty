@@ -2108,6 +2108,15 @@ parse_errno_name(const uint8_t *data, size_t sz) {
 static int
 open_item_tmpfile(void) {
     int fd = -1;
+#ifdef _WIN32
+    // Windows has no /tmp, and cannot unlink a file that is open, so the file
+    // goes in the temp folder and Windows deletes it once it is closed
+    wchar_t dir[MAX_PATH + 1], path[MAX_PATH + 1];
+    if (GetTempPathW(MAX_PATH + 1, dir) && GetTempFileNameW(dir, L"kdn", 0, path)) {
+        fd = _wopen(path, _O_RDWR | _O_BINARY | _O_TEMPORARY | _O_NOINHERIT);
+        if (fd < 0) DeleteFileW(path);
+    }
+#else
 #ifdef O_TMPFILE
     fd = safe_open("/tmp", O_TMPFILE | O_CLOEXEC | O_EXCL | O_RDWR, S_IRUSR | S_IWUSR);
 #endif
@@ -2116,6 +2125,7 @@ open_item_tmpfile(void) {
         fd = safe_mkstemp(name);
         if (fd >= 0) unlink(name);
     }
+#endif
     return fd;
 }
 

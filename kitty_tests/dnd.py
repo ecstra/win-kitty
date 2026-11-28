@@ -417,6 +417,9 @@ windows_skips = dict.fromkeys((
     'test_remote_drag_symlinked_intermediate_component_cannot_escape', 'test_remote_drag_symlinked_subdir_cannot_escape_tempdir',
     'test_remote_drag_three_level_tree_with_verification', 'test_remote_drag_too_large_chunk',
     'test_remote_drag_uri_list_parsing', 'test_remote_drag_uri_replaced_without_leak',
+    # These pass on Windows without reaching the receiving side, which gives up at once
+    'test_remote_drag_deep_directory_tree_breadth_first', 'test_remote_drag_empty_directory',
+    'test_remote_drag_uri_list_with_comments',
 ), _remote_drag) | dict.fromkeys((
     'test_dir_nested_symlink_in_subdir', 'test_dir_symlink_absolute_target', 'test_dir_symlink_and_regular_mixed',
     'test_dir_symlink_to_directory', 'test_dir_symlink_to_file', 'test_top_level_symlink_to_dir_transmitted_as_symlink',

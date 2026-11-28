@@ -66,7 +66,9 @@ class ImageRenderCache:
                 os.remove(e.path)
 
     def touch(self, path: str) -> None:
-        os.utime(path, follow_symlinks=False)
+        # Windows cannot set the times of a symlink itself, and Python refuses
+        # follow_symlinks=False there, so it touches what the path names
+        os.utime(path, follow_symlinks=os.utime not in os.supports_follow_symlinks)
 
     def render_image(self, src_path: str, output_path: str) -> None:
         import stat

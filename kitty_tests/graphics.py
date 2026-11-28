@@ -2341,6 +2341,23 @@ class TestGraphics(BaseTest):
         self.assertIsNotNone(g.image_for_client_id(3), 'newly added image should survive')
 
     @unittest.skipIf(Image is None, 'PIL not available, skipping PNG tests')
+    def test_render_cache_renders_and_serves_a_picture(self):
+        # The cache background_image and window_logo_path load through, with
+        # its own touch, which the testing cache below replaces
+        from kitty.render_cache import ImageRenderCache
+
+        w, h = 4, 2
+        img = Image.frombytes('RGBA', (w, h), byte_block(w * h * 4))
+        with tempfile.TemporaryDirectory() as cache_path:
+            src = os.path.join(cache_path, 'src.png')
+            img.save(src, 'PNG')
+            irc = ImageRenderCache(max_entries=2, cache_path=cache_path)
+            for _ in range(2):  # a render, then a cache hit
+                width, height, fd = irc(src)
+                os.close(fd)
+                self.ae((width, height), (w, h))
+
+    @unittest.skipIf(Image is None, 'PIL not available, skipping PNG tests')
     def test_cached_rgba_conversion(self):
         from kitty.render_cache import ImageRenderCacheForTesting
 
