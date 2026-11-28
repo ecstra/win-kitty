@@ -3,12 +3,12 @@
 package dnd
 
 import (
-	"fmt"
 	"os"
 )
 
-// What os.Lstat reports on Windows carries no device or file index, so files
-// cannot be identified this way. Only the Linux birth time lookup uses it.
-func file_identity(info os.FileInfo) (dev, ino uint64, err error) {
-	return 0, 0, fmt.Errorf("cannot identify %s by device and inode on Windows", info.Name())
+// What os.Lstat reports on Windows carries no volume or file index, which
+// os.SameFile reads from the path. Every stat here comes from os, the *At
+// helpers included, which build full paths on Windows.
+func same_file(a, b os.FileInfo) (bool, error) {
+	return os.SameFile(a, b), nil
 }

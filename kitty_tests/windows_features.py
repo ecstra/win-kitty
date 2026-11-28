@@ -309,6 +309,14 @@ class WindowsFeaturesTest(BaseTest):
             with self.assertRaises(ValueError):
                 hotkey_from_spec(bad)
 
+    def test_a_hotkey_needs_modifiers_windows_has(self):
+        from kittens.panel.main import hotkey_from_spec
+
+        # Dropping the modifier would grab the bare key from every program
+        for spec in ('kitty_mod+grave', 'hyper+x', 'meta+x'):
+            with self.assertRaises(ValueError, msg=spec):
+                hotkey_from_spec(spec)
+
     def test_kittens_refuse_to_start_in_other_terminals(self):
         # A console of its own, hidden, stands in for Windows Terminal's
         from kitty.constants import kitten_exe

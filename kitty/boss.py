@@ -1210,10 +1210,9 @@ class Boss:
         except ValueError as e:
             self.show_error(_('Invalid hotkey'), str(e))
             return
-        if hotkey is None:
-            return
         try:
-            register_global_hotkey(*hotkey)
+            # No key gives up the hotkey this kitty holds, if any
+            register_global_hotkey(*(hotkey or (0, 0)))
         except (OSError, ValueError) as e:
             log_error(f'The hotkey {spec} could not be registered, running the kitten again still shows and hides the panel. Error: {e}')
 

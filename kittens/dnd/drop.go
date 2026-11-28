@@ -821,18 +821,6 @@ func (dnd *dnd) new_tdir() (dir_file *os.File, err error) {
 	return utils.CreateDirAt(dnd.base_tempdir, name, 0o700)
 }
 
-func same_file(a, b os.FileInfo) (bool, error) {
-	adev, aino, err := file_identity(a)
-	if err != nil {
-		return false, err
-	}
-	bdev, bino, err := file_identity(b)
-	if err != nil {
-		return false, err
-	}
-	return adev == bdev && aino == bino, nil
-}
-
 func matches_any(info os.FileInfo, candidates []os.FileInfo) (bool, error) {
 	for _, c := range candidates {
 		if same, err := same_file(info, c); err != nil || same {

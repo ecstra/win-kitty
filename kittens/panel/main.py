@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from kitty.cli import parse_args
 from kitty.cli_stub import PanelCLIOptions
-from kitty.constants import is_macos
+from kitty.constants import is_macos, is_windows
 from kitty.fast_data_types import (
     GLFW_EDGE_BOTTOM,
     GLFW_EDGE_CENTER,
@@ -27,6 +27,10 @@ from kitty.fast_data_types import (
     GLFW_LAYER_SHELL_OVERLAY,
     GLFW_LAYER_SHELL_PANEL,
     GLFW_LAYER_SHELL_TOP,
+    GLFW_MOD_ALT,
+    GLFW_MOD_CONTROL,
+    GLFW_MOD_SHIFT,
+    GLFW_MOD_SUPER,
     current_focused_os_window_id,
     get_options,
     layer_shell_config_for_os_window,
@@ -71,6 +75,10 @@ def hotkey_from_spec(spec: str | None) -> tuple[int, int] | None:
         raise ValueError(f'{spec} is not a valid hotkey: {e}') from e
     if not sk.key or sk.is_native:
         raise ValueError(f'{spec} is not a valid hotkey')
+    # Windows has no other modifiers for a hotkey, and dropping one would grab
+    # the bare key from every program
+    if sk.mods & ~(GLFW_MOD_ALT | GLFW_MOD_CONTROL | GLFW_MOD_SHIFT | GLFW_MOD_SUPER):
+        raise ValueError(f'{spec} is not a valid hotkey, its modifiers can only be ctrl, alt, shift and super')
     return sk.key, sk.mods
 
 
@@ -218,7 +226,11 @@ def handle_single_instance_command(
         return
     lsc = layer_shell_config(new_args)
     config_changed = have_config_files_been_updated(new_args.config) or args.config != new_args.config or args.override != new_args.override
+    hotkey_changed = new_args.hotkey != args.hotkey
     args = new_args
+    if is_windows and hotkey_changed:
+        # As when the quick access terminal's config names another hotkey, or none
+        boss.register_panel_hotkey(args.hotkey)
     if config_changed:
         boss.load_config_file(*args.config, overrides=tuple(map(parse_override, new_args.override)))
     if args.toggle_visibility and boss.os_window_map:

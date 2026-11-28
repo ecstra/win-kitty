@@ -326,6 +326,12 @@ static void
 window_close_callback(GLFWwindow *window) {
     if (!set_callback_window(window)) return;
     global_state.callback_os_window->close_request = CONFIRMABLE_CLOSE_REQUESTED;
+#ifdef _WIN32
+    // kitty asks in the window itself, so one that does not show closes without
+    // a question, such as a panel on the desktop Explorer took along when it
+    // restarted
+    if (!glfwGetWindowAttrib(window, GLFW_VISIBLE)) global_state.callback_os_window->close_request = IMPERATIVE_CLOSE_REQUESTED;
+#endif
     global_state.has_pending_closes = true;
     request_tick_callback();
     glfwSetWindowShouldClose(window, false);
@@ -3994,6 +4000,11 @@ static PyObject *
 register_global_hotkey(PyObject *self UNUSED, PyObject *args) {
     int glfw_key, glfw_mods;
     if (!PyArg_ParseTuple(args, "ii", &glfw_key, &glfw_mods)) return NULL;
+    static HWND window = NULL;
+    if (!glfw_key) {
+        if (window) UnregisterHotKey(window, 1);
+        Py_RETURN_NONE;
+    }
     const UINT vk = virtual_key_for(glfw_key);
     if (!vk) {
         PyErr_SetString(PyExc_ValueError, "The hotkey's key is not on this keyboard layout");
@@ -4004,7 +4015,6 @@ register_global_hotkey(PyObject *self UNUSED, PyObject *args) {
     if (glfw_mods & GLFW_MOD_ALT) mods |= MOD_ALT;
     if (glfw_mods & GLFW_MOD_SHIFT) mods |= MOD_SHIFT;
     if (glfw_mods & GLFW_MOD_SUPER) mods |= MOD_WIN;
-    static HWND window = NULL;
     if (!window) {
         WNDCLASSEXW wc = {.cbSize = sizeof(wc), .lpfnWndProc = hotkey_window_proc, .hInstance = GetModuleHandleW(NULL), .lpszClassName = L"kitty-hotkey"};
         RegisterClassExW(&wc);

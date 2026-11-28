@@ -21,3 +21,15 @@ func file_identity(info os.FileInfo) (dev, ino uint64, err error) {
 	}
 	return 0, 0, fmt.Errorf("unknown stat result type for %s: %T", info.Name(), info.Sys())
 }
+
+func same_file(a, b os.FileInfo) (bool, error) {
+	adev, aino, err := file_identity(a)
+	if err != nil {
+		return false, err
+	}
+	bdev, bino, err := file_identity(b)
+	if err != nil {
+		return false, err
+	}
+	return adev == bdev && aino == bino, nil
+}
