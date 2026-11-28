@@ -49,6 +49,59 @@ struct {
     cleanup_data si, notify;
 } cleanup_entries = {0};
 
+#ifdef _WIN32
+// The C runtime hands the launcher argv, getcwd, getenv and environ in the ANSI
+// code page, which holds no letter outside it, such as the Д of Дмитрий, and
+// loses the rest on the way to the running kitty, which reads its message as
+// UTF-8, and to Winsock, which reads a socket path as UTF-8. So the launcher
+// reads the system's text wide where it can and passes it on as UTF-8.
+static void do_exit(int code);
+
+static wchar_t *
+wide_from(UINT code_page, const char *s) {
+    const int n = MultiByteToWideChar(code_page, 0, s, -1, NULL, 0);
+    wchar_t *w = malloc(sizeof(wchar_t) * (size_t)(n > 0 ? n : 1));
+    if (!w) fail_on_errno("Failed to convert to wide characters");
+    if (n > 0) MultiByteToWideChar(code_page, 0, s, -1, w, n);
+    else w[0] = 0;
+    return w;
+}
+
+static char *
+utf8_from_wide(const wchar_t *w, int wlen) {
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w, wlen, NULL, 0, NULL, NULL);
+    char *ans = malloc((size_t)(n > 0 ? n : 0) + 1);
+    if (!ans) fail_on_errno("Failed to convert to UTF-8");
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, wlen, ans, n, NULL, NULL);
+    ans[n > 0 ? n : 0] = 0;
+    return ans;
+}
+
+static char *
+utf8_from_ansi(const char *s) {
+    wchar_t *w = wide_from(CP_ACP, s);
+    char *ans = utf8_from_wide(w, -1);
+    free(w);
+    return ans;
+}
+#endif
+
+// unlink, for the socket and lock files, whose paths are UTF-8 on Windows,
+// where the C runtime's unlink reads a path as ANSI
+static int
+remove_file(const char *path) {
+#ifdef _WIN32
+    wchar_t *w = wide_from(CP_UTF8, path);
+    const int ret = _wunlink(w);
+    const int saved_errno = errno;
+    free(w);
+    errno = saved_errno;
+    return ret;
+#else
+    return unlink(path);
+#endif
+}
+
 static void
 do_cleanup(cleanup_data *d) {
 #ifdef _WIN32
@@ -56,8 +109,8 @@ do_cleanup(cleanup_data *d) {
     // behind in the temp folder unless it is closed first
     if (d->close_fd1) safe_close(d->fd1, __FILE__, __LINE__);
     if (d->close_fd2) safe_close(d->fd2, __FILE__, __LINE__);
-    if (d->path1[0]) unlink(d->path1);
-    if (d->path2[0]) unlink(d->path2);
+    if (d->path1[0]) remove_file(d->path1);
+    if (d->path2[0]) remove_file(d->path2);
 #else
     if (d->path1[0]) unlink(d->path1);
     if (d->path2[0]) unlink(d->path2);
@@ -84,11 +137,17 @@ static bool
 is_ok_tmpdir(const char *x) {
     if (!x || !x[0]) return false;
     char path[2048];
+#ifdef _WIN32
+    // mkstemp reads its path as ANSI, and the folder is UTF-8 here
+    snprintf(path, sizeof(path), "%s/kitty-si-test-tmpdir-%lu", x, (unsigned long)GetCurrentProcessId());
+    int fd = safe_open(path, O_CREAT | O_WRONLY | O_TRUNC, S_IRUSR | S_IWUSR);
+#else
     snprintf(path, sizeof(path), "%s/kitty-si-test-tmpdir-XXXXXXXXXXXX", x);
     int fd = safe_mkstemp(path);
+#endif
     if (fd > -1) {
         safe_close(fd, __FILE__, __LINE__);
-        unlink(path);
+        remove_file(path);
         return true;
     }
     return false;
@@ -106,6 +165,39 @@ get_socket_dir(char *output, size_t output_capacity) {
 #ifdef __APPLE__
     if (confstr(_CS_DARWIN_USER_CACHE_DIR, output, output_capacity)) return;
     snprintf(output, output_capacity, "%s", "/Library/Caches");
+#elif defined(_WIN32)
+    // The same places as on Linux, read wide and kept as UTF-8, with the
+    // account's profile folder for its home
+#define test_env(name)                                        \
+    {                                                         \
+        const wchar_t *e = _wgetenv(name);                    \
+        char *dir = e ? utf8_from_wide(e, -1) : NULL;         \
+        const bool ok = is_ok_tmpdir(dir);                    \
+        if (ok) snprintf(output, output_capacity, "%s", dir); \
+        free(dir);                                            \
+        if (ok) return;                                       \
+    }
+    test_env(L"XDG_RUNTIME_DIR");
+    test_env(L"TMPDIR");
+    test_env(L"TEMP");
+    test_env(L"TMP");
+
+    ret_if_ok("/tmp");
+    ret_if_ok("/var/tmp");
+    ret_if_ok("/usr/tmp");
+
+    test_env(L"HOME");
+    test_env(L"USERPROFILE");
+
+    wchar_t cwd[4096];
+    if (_wgetcwd(cwd, sizeof(cwd) / sizeof(cwd[0]))) {
+        char *dir = utf8_from_wide(cwd, -1);
+        snprintf(output, output_capacity, "%s", dir);
+        free(dir);
+        return;
+    }
+    snprintf(output, output_capacity, "%s", ".");
+#undef test_env
 #else
 #define test_env(x)                 \
     {                               \
@@ -223,34 +315,6 @@ read_till_eof(FILE *f, membuf *m) {
     fclose(f);
 }
 
-#ifdef _WIN32
-// The launcher's argv, getcwd, environ and getenv are in the ANSI code page,
-// while the running kitty reads its message as UTF-8 and Winsock reads a socket
-// path as UTF-8. Passed on as they came, they lost every letter outside ASCII,
-// such as the é of an account named José in TEMP and APPDATA.
-static char *
-utf8_from_wide(const wchar_t *w, int wlen) {
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w, wlen, NULL, 0, NULL, NULL);
-    char *ans = malloc((size_t)(n > 0 ? n : 0) + 1);
-    if (!ans) fail_on_errno("Failed to convert to UTF-8");
-    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, wlen, ans, n, NULL, NULL);
-    ans[n > 0 ? n : 0] = 0;
-    return ans;
-}
-
-static char *
-utf8_from_ansi(const char *s) {
-    const int n = MultiByteToWideChar(CP_ACP, 0, s, -1, NULL, 0);
-    wchar_t *w = malloc(sizeof(wchar_t) * (size_t)(n > 0 ? n : 1));
-    if (!w) fail_on_errno("Failed to convert from the ANSI code page");
-    if (n > 0) MultiByteToWideChar(CP_ACP, 0, s, -1, w, n);
-    else w[0] = 0;
-    char *ans = utf8_from_wide(w, -1);
-    free(w);
-    return ans;
-}
-#endif
-
 static bool
 bind_unix_socket(int s, const char *basename, struct sockaddr_un *addr, cleanup_data *cleanup) {
     addr->sun_family = AF_UNIX;
@@ -273,22 +337,9 @@ bind_unix_socket(int s, const char *basename, struct sockaddr_un *addr, cleanup_
         fprintf(stderr, "Socket directory has path too long for single instance socket file %s\n", addr->sun_path);
         do_exit(1);
     }
-    // The socket file as the C runtime's calls below name it
-    char file_path[sizeof(addr->sun_path)];
-    memcpy(file_path, addr->sun_path, sizeof(file_path));
-#ifdef _WIN32
-    char *utf8_path = utf8_from_ansi(file_path);
-    const size_t utf8_len = strlen(utf8_path);
-    if (utf8_len < sizeof(addr->sun_path)) memcpy(addr->sun_path, utf8_path, utf8_len + 1);
-    free(utf8_path);
-    if (utf8_len >= sizeof(addr->sun_path)) {
-        fprintf(stderr, "Socket directory has path too long for single instance socket file %s\n", file_path);
-        do_exit(1);
-    }
-#endif
     // First lock the socket file using a separate lock file
     char lock_file_path[sizeof(addr->sun_path) + 16];
-    snprintf(lock_file_path, sizeof(lock_file_path), "%s.lock", file_path);
+    snprintf(lock_file_path, sizeof(lock_file_path), "%s.lock", addr->sun_path);
     int fd = safe_open(lock_file_path, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, S_IRUSR | S_IWUSR);
     if (fd == -1) return false;
     cleanup->close_fd2 = true;
@@ -303,7 +354,7 @@ bind_unix_socket(int s, const char *basename, struct sockaddr_un *addr, cleanup_
         return false;
     }
     // First unlink the socket file and then try to bind it.
-    if (unlink(file_path) != 0 && errno != ENOENT) return false;
+    if (remove_file(addr->sun_path) != 0 && errno != ENOENT) return false;
     // Create the socket file accessible only to us, as a defense in depth
     // measure, the peer uid is checked at both ends of the connection as well.
     mode_t old_umask = umask(S_IRWXG | S_IRWXO);
@@ -312,7 +363,7 @@ bind_unix_socket(int s, const char *basename, struct sockaddr_un *addr, cleanup_
     umask(old_umask);
     errno = saved_errno;
     if (bound) {
-        snprintf(cleanup->path1, sizeof(cleanup->path1), "%s", file_path);
+        snprintf(cleanup->path1, sizeof(cleanup->path1), "%s", addr->sun_path);
         return true;
     }
     return false;
@@ -395,6 +446,20 @@ write_json_native_string(membuf *output, const char *s) {
 }
 
 static void
+write_json_native_string_array(membuf *output, int count, char **items) {
+#ifdef _WIN32
+    char **utf8_items = calloc((size_t)count + 1, sizeof(char *));
+    if (!utf8_items) fail_on_errno("Failed to alloc space for the arguments");
+    for (int i = 0; i < count; i++) utf8_items[i] = utf8_from_ansi(items[i]);
+    write_json_string_array(output, count, utf8_items);
+    for (int i = 0; i < count; i++) free(utf8_items[i]);
+    free(utf8_items);
+#else
+    write_json_string_array(output, count, items);
+#endif
+}
+
+static void
 talk_to_instance(int s, struct sockaddr_un *server_addr, int argc, char *argv[], const CLIOptions *opts) {
     cleanup_entries.si.path2[0] = 0;
     cleanup_entries.si.path1[0] = 0;
@@ -434,15 +499,8 @@ talk_to_instance(int s, struct sockaddr_un *server_addr, int argc, char *argv[],
     else write_json_string(&output, "", 0);
     free(session_path);
     w(",\"args\":");
+    write_json_native_string_array(&output, argc, argv);
 #ifdef _WIN32
-    {
-        char **utf8_argv = calloc((size_t)argc + 1, sizeof(char *));
-        if (!utf8_argv) fail_on_errno("Failed to alloc space for the arguments");
-        for (int i = 0; i < argc; i++) utf8_argv[i] = utf8_from_ansi(argv[i]);
-        write_json_string_array(&output, argc, utf8_argv);
-        for (int i = 0; i < argc; i++) free(utf8_argv[i]);
-        free(utf8_argv);
-    }
     wchar_t wcwd[4096];
     if (!_wgetcwd(wcwd, sizeof(wcwd) / sizeof(wcwd[0]))) fail_on_errno("Failed to get cwd");
     char *cwd = utf8_from_wide(wcwd, -1);
@@ -467,7 +525,6 @@ talk_to_instance(int s, struct sockaddr_un *server_addr, int argc, char *argv[],
     }
     if (block) FreeEnvironmentStringsW(block);
 #else
-    write_json_string_array(&output, argc, argv);
     char cwd[4096];
     if (!getcwd(cwd, sizeof(cwd))) fail_on_errno("Failed to get cwd");
     w(",\"cwd\":");
@@ -487,7 +544,7 @@ talk_to_instance(int s, struct sockaddr_un *server_addr, int argc, char *argv[],
     w("}");
 
     w(",\"cmdline_args_for_open\":");
-    if (opts->open_url_count) write_json_string_array(&output, opts->open_url_count, opts->open_urls);
+    if (opts->open_url_count) write_json_native_string_array(&output, opts->open_url_count, opts->open_urls);
     else w("[]");
 
     w(",\"notify_on_os_window_death\":");
