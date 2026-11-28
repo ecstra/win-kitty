@@ -62,7 +62,7 @@ Since the whole window is client area, a size or a position kitty asks for is th
 
 A window kitty places, by `remember_window_position`, a session, `kitty --position` or `launch --os-window-position`, is made on the main screen and moved to its place before it is shown. A window not yet shown keeps its size when that move crosses to a screen of another scale, where WM_DPICHANGED would scale it, so a remembered size, saved at that place, comes back as it was. A size in cells is worked out at the scale of the screen the window lands on, in `create_os_window` in kitty/glfw.c. kitty moves its small temp window to the place and reads the scale there, then gives the temp window the real size at that place and reads it again, since Windows gives a window the scale of the screen holding most of it, and works the size out again when the scale changed. Across the border of two screens of different scale, where sized for either screen the window lands mostly on the other, no size settles, and it opens with the columns and lines the other screen's scale gives.
 
-kitty/state.c reserves a strip at the top of the OS window for the title bar. The grid and any tab bar sit below it, and a border rectangle fills the strip with the background colour at the same opacity as the cells, so the title bar matches the body exactly.
+kitty/state.c reserves a strip at the top of the OS window for the title bar. The grid and any tab bar sit below it, and a border rectangle fills the strip with the background colour at the same opacity as the cells, so the title bar matches the body exactly. A panel has no title bar, so it gets no strip, which would otherwise take a line from a panel only a few lines high.
 
 ## Caption buttons
 
