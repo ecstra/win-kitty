@@ -63,6 +63,7 @@ Based on kitty 0.51.1.
 - Uninstalling kitty installed for everyone removes the certificate its Explorer menu added, and the menu entry of every account. The shortcuts of such an install start in the home folder of whoever opens them, and Open in kitty on a drive opens its root.
 - A hidden kitty window closes when another program asks it to, even with `confirm_os_window_close` set, instead of waiting on a question in a window no one can see.
 - The themes kitten refreshes its list of themes once its saved copy is old, where Windows refused to replace a file it still held open.
+- `background_image` and `window_logo_path` show their picture. Loading it failed on Windows for every picture.
 
 ### Changed
 

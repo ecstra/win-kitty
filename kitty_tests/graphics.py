@@ -2380,9 +2380,12 @@ class TestGraphics(BaseTest):
 
             # non-regular files must be rejected rather than streamed into the converter
             num = irc.num_of_renders
-            fifo = os.path.join(cache_path, 'fifo')
-            os.mkfifo(fifo)
-            for bad in (os.devnull, fifo, cache_path):
+            bad_paths = [os.devnull, cache_path]
+            if not is_windows:  # Windows has no FIFOs
+                fifo = os.path.join(cache_path, 'fifo')
+                os.mkfifo(fifo)
+                bad_paths.insert(1, fifo)
+            for bad in bad_paths:
                 with self.assertRaises(ValueError, msg=bad):
                     irc.render(bad)
                 with self.assertRaises(ValueError, msg=bad):

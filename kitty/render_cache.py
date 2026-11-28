@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import closing, suppress
 from functools import partial
 
-from .constants import cache_dir, kitten_exe
+from .constants import cache_dir, is_windows, kitten_exe
 from .utils import lock_file, unlock_file
 
 
@@ -75,11 +75,19 @@ class ImageRenderCache:
         # Open with O_NONBLOCK so that opening a FIFO cannot block and then
         # ensure we are reading from a regular file, so that the converter
         # cannot be fed an infinite stream from things like /dev/zero
-        src_fd = os.open(src_path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_NOCTTY', 0) | getattr(os, 'O_CLOEXEC', 0))
+        nonblock = getattr(os, 'O_NONBLOCK', 0)
+        try:
+            src_fd = os.open(src_path, os.O_RDONLY | nonblock | getattr(os, 'O_NOCTTY', 0) | getattr(os, 'O_CLOEXEC', 0))
+        except PermissionError:
+            # Windows refuses to open a folder at all
+            if is_windows and os.path.isdir(src_path):
+                raise ValueError(f'Cannot convert {src_path} to RGBA data as it is not a regular file') from None
+            raise
         try:
             if not stat.S_ISREG(os.fstat(src_fd).st_mode):
                 raise ValueError(f'Cannot convert {src_path} to RGBA data as it is not a regular file')
-            os.set_blocking(src_fd, True)
+            if nonblock:  # Windows has no O_NONBLOCK, and refuses set_blocking on a file
+                os.set_blocking(src_fd, True)
         except Exception:
             os.close(src_fd)
             raise
@@ -117,7 +125,12 @@ class ImageRenderCache:
         src_info = os.stat(src_path)
         if not stat.S_ISREG(src_info.st_mode):
             raise ValueError(f'Cannot render {src_path} as it is not a regular file')
-        output_name = sha256(struct.pack('@qqqq', src_info.st_dev, src_info.st_ino, src_info.st_size, src_info.st_mtime_ns)).hexdigest()
+        if is_windows:
+            # A Windows file id uses all 64 bits, and a ReFS one 128, more than q holds
+            key = f'{src_info.st_dev}:{src_info.st_ino}:{src_info.st_size}:{src_info.st_mtime_ns}'.encode()
+        else:
+            key = struct.pack('@qqqq', src_info.st_dev, src_info.st_ino, src_info.st_size, src_info.st_mtime_ns)
+        output_name = sha256(key).hexdigest()
 
         with self:
             output_path = os.path.join(self.cache_dir, output_name)
