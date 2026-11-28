@@ -934,7 +934,7 @@ func (dnd *dnd) all_mime_data_dropped() (err error) {
 			if drop_status.move_sources == nil {
 				drop_status.move_sources = make(map[int]move_source, len(drop_status.uri_list))
 			}
-			drop_status.move_sources[i] = move_source{info: source_info, birth: birth_time(u.path, source_info)}
+			drop_status.move_sources[i] = move_source{info: with_identity(source_info), birth: birth_time(u.path, source_info)}
 		}
 	}
 	f, err := dnd.new_tdir()

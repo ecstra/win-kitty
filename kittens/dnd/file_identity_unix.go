@@ -22,6 +22,9 @@ func file_identity(info os.FileInfo) (dev, ino uint64, err error) {
 	return 0, 0, fmt.Errorf("unknown stat result type for %s: %T", info.Name(), info.Sys())
 }
 
+// The device and inode are in the info from the start
+func with_identity(info os.FileInfo) os.FileInfo { return info }
+
 func same_file(a, b os.FileInfo) (bool, error) {
 	adev, aino, err := file_identity(a)
 	if err != nil {
