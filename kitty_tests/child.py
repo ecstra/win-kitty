@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
+import json
 import os
 import shutil
 import signal
@@ -10,6 +11,7 @@ import time
 from contextlib import suppress
 from select import select
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock, patch
 
 from kitty.child import (
@@ -285,6 +287,103 @@ time.sleep(300)
             self._terminate_tree(p)
 
 
+PING = ['ping', '-n', '300', '127.0.0.1']
+
+
+def _job_window(pings: int, via_copy: bool = False) -> Child:
+    # A window whose program starts pings one after another, through a copy of
+    # itself when via_copy is set, as the MSYS2 bridge forks itself before the
+    # shell runs. What it starts ends with the process that made the window,
+    # whose exit closes the job.
+    from kitty import fast_data_types
+
+    start = f"""\
+import subprocess, sys, time
+for i in range({pings}):
+    subprocess.Popen({PING!r}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.05)
+sys.stdout.write('ready\\n')
+sys.stdout.flush()
+time.sleep(300)
+"""
+    # The copy has no console to share, so its ready comes back through a pipe
+    copy = f"""\
+import subprocess, sys, time
+p = subprocess.Popen([sys.executable, '+runpy', {start!r}], stdout=subprocess.PIPE)
+sys.stdout.write(p.stdout.readline().decode())
+sys.stdout.flush()
+time.sleep(300)
+"""
+    read_fd, write_fd, pty_id = fast_data_types.open_pty(80, 24, False, False)
+    env = tuple(f'{k}={v}' for k, v in os.environ.items())
+    pid = fast_data_types.spawn(pty_id, kitty_exe(), os.getcwd(), (kitty_exe(), '+runpy', copy if via_copy else start), env)
+    out = b''
+    while b'ready' not in out:
+        data = os.read(read_fd, 4096)
+        if not data:
+            raise AssertionError(f'The window program exited before it was ready: {out!r}')
+        out += data
+    c = Child(['unused'], os.getcwd())
+    c.pid, c.pty_id = pid, pty_id
+    return c
+
+
+def check_job_order() -> dict[str, Any]:
+    c = _job_window(2)
+    members = c.job_processes()
+    return {'pid': c.pid, 'members': members, 'cmdlines': [cmdline_of_pid(p) for p in members[1:]]}
+
+
+def check_program_in_front() -> dict[str, Any]:
+    from kitty.fast_data_types import memory_of_process
+
+    c = _job_window(2)
+    ans = {
+        'pid': c.pid,
+        'members': c.job_processes(),
+        'root': c.root_pid,
+        'front': c.pid_for_cwd,
+        'oldest': c.get_pid_for_cwd(oldest=True),
+        'foreground': [p['pid'] for p in c.foreground_processes],
+        'background': [p['pid'] for p in c.background_processes],
+        'exe': os.path.basename(c.get_foreground_exe() or ''),
+        'memory': c.get_memory_used_by_child(),
+        'own_memory': memory_of_process(c.pid),
+    }
+    c.screen_at_prompt = lambda: True
+    ans['prompt_front'] = c.pid_for_cwd
+    ans['prompt_foreground'] = [p['pid'] for p in c.foreground_processes]
+    ans['prompt_background'] = [p['pid'] for p in c.background_processes]
+    return ans
+
+
+def check_console_host() -> dict[str, Any]:
+    from kitty import fast_data_types
+
+    read_fd, write_fd, pty_id = fast_data_types.open_pty(80, 24, False, False)
+    ping = shutil.which('ping') or 'ping'
+    env = tuple(f'{k}={v}' for k, v in os.environ.items())
+    pid = fast_data_types.spawn(pty_id, ping, os.getcwd(), (ping, *PING[1:]), env)
+    c = Child(['unused'], os.getcwd())
+    c.pid, c.pty_id = pid, pty_id
+    os.read(read_fd, 1)  # ping is running and its console host started
+    return {'pid': pid, 'names': [os.path.basename(abspath_of_exe(p)).lower() for p in c.job_processes()], 'front': c.pid_for_cwd}
+
+
+def check_root_behind_bridge() -> dict[str, Any]:
+    c = _job_window(2, via_copy=True)
+    members = c.job_processes()
+    c.bridge_exe = kitty_exe()
+    return {
+        'members': members,
+        'root': c.root_pid,
+        'front': c.pid_for_cwd,
+        'oldest': c.get_pid_for_cwd(oldest=True),
+        'cwd': c.current_cwd,
+        'first_cwd': cwd_of_process(members[2]),
+    }
+
+
 class WindowsProcessTest(BaseTest):
     # Windows has no process groups and no /proc. A window's programs are the
     # job kitty starts its child in, and a pid says nothing of a process's age.
@@ -293,60 +392,20 @@ class WindowsProcessTest(BaseTest):
         super().setUp()
         if not is_windows:
             self.skipTest('the job and the Windows process queries are Windows only')
-        self.ping = ['ping', '-n', '300', '127.0.0.1']
 
-    def _window(self, pings: int, via_copy: bool = False) -> tuple[Child, int, int]:
-        # A window whose program starts pings one after another, through a copy
-        # of itself when via_copy is set, as the MSYS2 bridge forks itself
-        # before the shell runs
-        from kitty import fast_data_types
-
-        start = f"""\
-import subprocess, sys, time
-for i in range({pings}):
-    subprocess.Popen({self.ping!r}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(0.05)
-sys.stdout.write('ready\\n')
-sys.stdout.flush()
-time.sleep(300)
-"""
-        # The copy has no console to share, so its ready comes back through a pipe
-        copy = f"""\
-import subprocess, sys, time
-p = subprocess.Popen([sys.executable, '+runpy', {start!r}], stdout=subprocess.PIPE)
-sys.stdout.write(p.stdout.readline().decode())
-sys.stdout.flush()
-time.sleep(300)
-"""
-        code = copy if via_copy else start
-        read_fd, write_fd, pty_id = fast_data_types.open_pty(80, 24, False, False)
-        env = tuple(f'{k}={v}' for k, v in os.environ.items())
-        pid = fast_data_types.spawn(pty_id, kitty_exe(), os.getcwd(), (kitty_exe(), '+runpy', code), env)
-        out = b''
-        while b'ready' not in out:
-            data = os.read(read_fd, 4096)
-            if not data:
-                raise AssertionError(f'The window program exited before it was ready: {out!r}')
-            out += data
-        c = Child(['unused'], os.getcwd())
-        c.pid, c.pty_id = pid, pty_id
-        self.addCleanup(self._close, c, read_fd, write_fd)
-        return c, read_fd, write_fd
-
-    def _close(self, c: Child, read_fd: int, write_fd: int) -> None:
-        from kitty import fast_data_types
-
-        for pid in c.job_processes():
-            with suppress(OSError):
-                os.kill(pid, signal.SIGTERM)
-        os.close(read_fd)
-        os.close(write_fd)
-        fast_data_types.close_pty(c.pty_id)
+    def _checked_apart(self, check: str) -> dict[str, Any]:
+        # Making a window detaches the process from its console, as kitty needs,
+        # which would leave the later tests in this one without a stderr to hand on
+        code = f'import json; from kitty_tests.child import {check}; print(json.dumps({check}()))'
+        cp = subprocess.run([kitty_exe(), '+runpy', code], capture_output=True, timeout=120)
+        if cp.returncode != 0:
+            raise AssertionError(f'{check} failed with: {cp.stderr.decode("utf-8", "replace")}')
+        return json.loads(cp.stdout.decode().strip().splitlines()[-1])
 
     def test_cmdline_exe_and_children_of_a_running_process(self):
-        p = subprocess.Popen(self.ping, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(PING, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
-            self.ae(cmdline_of_pid(p.pid), self.ping)
+            self.ae(cmdline_of_pid(p.pid), PING)
             self.ae(os.path.normcase(abspath_of_exe(p.pid)), os.path.normcase(os.path.realpath(shutil.which('ping'))))
             self.assertIn(p.pid, children_of_process(os.getpid()))
             self.assertGreater(memory_used_by_process_tree_rooted_at(p.pid), 0)
@@ -357,41 +416,43 @@ time.sleep(300)
         self.ae(memory_used_by_process_tree_rooted_at(p.pid), -1)
 
     def test_job_holds_the_window_and_what_it_started_oldest_first(self):
-        c, _, _ = self._window(2)
-        members = c.job_processes()
-        self.ae(len(members), 3)
-        self.ae(members[0], c.pid)
-        for pid in members[1:]:
-            self.ae(cmdline_of_pid(pid), self.ping)
+        d = self._checked_apart('check_job_order')
+        self.ae(len(d['members']), 3)
+        self.ae(d['members'][0], d['pid'])
+        for cmdline in d['cmdlines']:
+            self.ae(cmdline, PING)
 
     def test_program_in_front_is_the_youngest_unless_at_the_prompt(self):
-        from kitty.fast_data_types import memory_of_process
-
-        c, _, _ = self._window(2)
-        _, first, last = c.job_processes()
-        self.ae(c.root_pid, c.pid)
-        self.ae(c.pid_for_cwd, last)
-        self.ae(c.get_pid_for_cwd(oldest=True), first)
-        self.ae([p['pid'] for p in c.foreground_processes], [first, last])
-        self.ae(c.background_processes, [])
-        self.ae(os.path.basename(c.get_foreground_exe() or ''), 'ping')
-        self.assertGreater(c.get_memory_used_by_child(), memory_of_process(c.pid))
+        d = self._checked_apart('check_program_in_front')
+        _, first, last = d['members']
+        self.ae(d['root'], d['pid'])
+        self.ae(d['front'], last)
+        self.ae(d['oldest'], first)
+        self.ae(d['foreground'], [first, last])
+        self.ae(d['background'], [])
+        self.ae(d['exe'], 'ping')
+        self.assertGreater(d['memory'], d['own_memory'])
         # At the prompt the shell is in front and the rest runs in the background
-        c.screen_at_prompt = lambda: True
-        self.ae(c.pid_for_cwd, c.pid)
-        self.ae([p['pid'] for p in c.foreground_processes], [c.pid])
-        self.ae([p['pid'] for p in c.background_processes], [first, last])
+        self.ae(d['prompt_front'], d['pid'])
+        self.ae(d['prompt_foreground'], [d['pid']])
+        self.ae(d['prompt_background'], [first, last])
+
+    def test_the_console_host_of_a_console_program_is_left_out(self):
+        # Windows gives a console program started without a console, as kitten
+        # windows and the MSYS2 bridge are, a conhost of its own in the same job
+        d = self._checked_apart('check_console_host')
+        self.ae(d['names'], ['ping.exe'])
+        self.ae(d['front'], d['pid'])
 
     def test_root_behind_the_msys2_bridge_is_the_shell(self):
         # Cygwin's exec breaks parent links, so the shell is found in the job,
         # past the bridge and the copy of itself the bridge forks
-        c, _, _ = self._window(2, via_copy=True)
-        bridge, copy, first, last = c.job_processes()
-        c.bridge_exe = kitty_exe()
-        self.ae(c.root_pid, first)
-        self.ae(c.pid_for_cwd, last)
-        self.ae(c.get_pid_for_cwd(oldest=True), last)
-        self.ae(c.current_cwd, cwd_of_process(first))
+        d = self._checked_apart('check_root_behind_bridge')
+        bridge, copy, first, last = d['members']
+        self.ae(d['root'], first)
+        self.ae(d['front'], last)
+        self.ae(d['oldest'], last)
+        self.ae(d['cwd'], d['first_cwd'])
 
 
 class LaunchWrapperTest(BaseTest):

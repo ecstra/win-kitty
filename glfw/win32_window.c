@@ -716,6 +716,11 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             const float xscale = HIWORD(wParam) / 96.0f;
             const float yscale = LOWORD(wParam) / 96.0f;
             _glfwInputWindowContentScale(window, xscale, yscale);
+            // A window kitty moves to its saved place before showing it keeps
+            // the size it was made at, which is the size saved for that place.
+            // Scaled on the way from the main screen to one of another scale,
+            // a restored session grew by that scale at every restore.
+            if (!IsWindowVisible(hWnd)) return 0;
             RECT* r = (RECT*) lParam;
             SetWindowPos(hWnd, HWND_TOP, r->left, r->top, r->right - r->left, r->bottom - r->top,
                          SWP_NOACTIVATE | SWP_NOZORDER);

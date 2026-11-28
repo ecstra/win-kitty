@@ -50,6 +50,7 @@ Based on kitty 0.51.1.
 - A background process reports its real exit code, including codes above 255 and crash codes.
 - `launch --hold` keeps the window open after its program exits.
 - New windows and tabs opened from an MSYS2 or Cygwin shell start in the folder the shell is in, rather than the one it started in.
+- A window kitty puts back on a screen with different scaling from the main one, from a saved session or a remembered position, keeps its size instead of growing by that scaling.
 
 ### Changed
 

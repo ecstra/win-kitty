@@ -464,7 +464,11 @@ open_pty(PyObject *self UNUSED, PyObject *args) {
             return NULL;
         }
         COORD size = { (SHORT)cols, (SHORT)rows };
-        HRESULT hr = pCreatePseudoConsole(size, in_read, out_write, 0, &hpc);
+        // Without it the pseudoconsole clears the screen as the shell starts,
+        // which wiped the scrollback restore_session_after_logout puts back.
+        // With it, conhost asks kitty where the cursor is and starts there.
+        const DWORD PSEUDOCONSOLE_INHERIT_CURSOR_FLAG = 0x1;
+        HRESULT hr = pCreatePseudoConsole(size, in_read, out_write, PSEUDOCONSOLE_INHERIT_CURSOR_FLAG, &hpc);
         CloseHandle(in_read); CloseHandle(out_write);  /* owned by the console now */
         if (FAILED(hr)) {
             CloseHandle(in_write); CloseHandle(out_read);
@@ -761,6 +765,15 @@ job_processes(PyObject *self UNUSED, PyObject *args) {
         if (!h) continue;
         BOOL in_job = FALSE;
         IsProcessInJob(h, ptys[id].job, &in_job);
+        // Windows gives a console program started without a console, as a
+        // kitten window and the MSYS2 bridge are, a conhost of its own, which
+        // joins the job and is no program the user ran
+        wchar_t image[1024];
+        DWORD image_len = sizeof(image) / sizeof(image[0]);
+        if (in_job && QueryFullProcessImageNameW(h, 0, image, &image_len)) {
+            const wchar_t *name = wcsrchr(image, L'\\');
+            if (_wcsicmp(name ? name + 1 : image, L"conhost.exe") == 0) in_job = FALSE;
+        }
         CloseHandle(h);
         ULONGLONG created;
         if (!in_job || !win_process_creation_time(pid, &created)) continue;
