@@ -21,7 +21,7 @@ Based on kitty 0.51.1.
 - `remap_modifiers`.
 - Automatic color themes switch as soon as you change Windows between light and dark.
 - Panels, `kitten panel`. kitty can sit as a bar on a screen edge that maximised windows leave free, above other windows, or behind your desktop icons like a live wallpaper.
-- The quick access terminal, `kitten quick-access-terminal`, a kitty that drops down from the top of the screen and hides again on Ctrl+Alt+` or another key you pick. The installer can start it hidden when you sign in.
+- The quick access terminal, `kitten quick-access-terminal`, a kitty that drops down from the top of the screen and hides again when you run it again, or on a hotkey you set with `hotkey` in quick-access-terminal.conf. The installer can start it hidden when you sign in.
 - The dnd kitten, and drag and drop for programs inside kitty, which can take every format a drop offers and drag their own data out, files from another machine included.
 
 ### Fixed

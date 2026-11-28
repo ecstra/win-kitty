@@ -66,7 +66,7 @@ A panel on a screen edge registers as an app bar, the one supported way on Windo
 
 ## kitty registers the quick access terminal's hotkey itself
 
-On Linux the desktop's own shortcut settings run the quick access terminal, and on macOS a service does. On Windows a Start menu shortcut can carry a key, but only Ctrl+Alt with another key, and it starts a program rather than shows one. So the panel registers a global hotkey with RegisterHotKey, Ctrl+Alt+` unless quick-access-terminal.conf names another key. A hotkey also lets the window it shows take the foreground, which Windows otherwise refuses a program in the background. Win+` would have matched Windows Terminal's own drop-down, but Windows Terminal holds that key while it runs.
+On Linux the desktop's own shortcut settings run the quick access terminal, and on macOS a service does. On Windows a Start menu shortcut can carry a key, but only Ctrl+Alt with another key, and it starts a program rather than shows one. So the panel registers a global hotkey with RegisterHotKey, the one quick-access-terminal.conf names. A hotkey also lets the window it shows take the foreground, which Windows otherwise refuses a program in the background. None is registered unless one is set, since a global hotkey takes its keys from every other program, and Ctrl+Alt+`, the first default, opened the quick access terminal by surprise.
 
 ## Asking for a 1 ms timer resolution in both processes
 

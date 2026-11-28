@@ -118,10 +118,10 @@ opt('focus_policy', 'exclusive', choices=panel_opts['focus_policy'].choices, lon
 
 opt(
     'hotkey',
-    'ctrl+alt+grave',
-    long_text='Only on Windows. The global hotkey that shows and hides the quick access terminal from any program,'
-    ' in the same syntax as kitty\'s shortcuts. It works once the quick access terminal has started, so you may want'
-    ' it to start hidden when you sign in. The special value :code:`none` registers no hotkey.',
+    'none',
+    long_text='Only on Windows. A global hotkey that shows and hides the quick access terminal from any program,'
+    ' in the same syntax as kitty\'s shortcuts, such as :code:`ctrl+alt+grave`. None is registered unless you set one.'
+    ' It works once the quick access terminal has started, so you may want it to start hidden when you sign in.',
 )
 
 

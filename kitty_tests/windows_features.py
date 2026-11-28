@@ -311,11 +311,11 @@ class WindowsFeaturesTest(BaseTest):
         self.assertEqual(p.returncode, 1)
         self.assertIn(b'needs to run inside the kitty terminal', err)
 
-    def test_the_quick_access_terminal_shows_on_ctrl_alt_grave_by_default(self):
+    def test_the_quick_access_terminal_has_no_hotkey_unless_set(self):
         from kittens.panel.main import hotkey_from_spec, parse_panel_args
         from kittens.quick_access_terminal.main import definition
 
-        self.ae(definition.option_map['hotkey'].defval_as_string, 'ctrl+alt+grave')
+        self.assertIsNone(hotkey_from_spec(definition.option_map['hotkey'].defval_as_string))
         args, _ = parse_panel_args(['--hotkey=ctrl+alt+grave'])
         self.ae(args.hotkey, 'ctrl+alt+grave')
         args, _ = parse_panel_args([])

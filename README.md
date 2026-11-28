@@ -42,7 +42,7 @@ I built it so I could use kitty as my daily terminal on Windows, and it does tha
 * **Low input lag:** typing feels instant, and kitty draws at your monitor's real refresh rate.
 * **Custom shaders:** the installer includes the shader compiler they need.
 * **Session restore:** kitty brings back your windows, tabs and scrollback after you sign out or restart.
-* **Panels:** kitty as a bar on a screen edge, behind your desktop icons, or as a drop-down terminal you show and hide with Ctrl+Alt+`.
+* **Panels:** kitty as a bar on a screen edge, behind your desktop icons, or as a drop-down terminal you show and hide with a hotkey you pick.
 * **The rest of kitty:** tabs, OS windows, scrollback, mouse selection, the clipboard, ligatures, per monitor scaling, live config reload, themes that follow Windows' light or dark mode, tab titles that show the running program, launch wrappers, `kitty +` commands from any terminal, dragging files and text in and out of a window, and dragging tabs along the tab bar, into another window or out into a new one.
 
 ## What is missing

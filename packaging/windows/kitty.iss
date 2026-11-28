@@ -44,7 +44,7 @@ WizardSmallImageFile=
 Name: "addtopath"; Description: "Add kitty to your PATH (so 'kitty' and 'kitten' work in any terminal)"
 Name: "contextmenu"; Description: "Add 'Open in kitty' to the Explorer right-click menu"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
-Name: "quickaccess"; Description: "Start the quick access terminal hidden when you sign in, so Ctrl+Alt+` shows it"; Flags: unchecked
+Name: "quickaccess"; Description: "Start the quick access terminal hidden when you sign in, so a hotkey you set for it works"; Flags: unchecked
 
 [Files]
 Source: "..\..\dist\kitty\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
