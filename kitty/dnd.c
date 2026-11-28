@@ -24,6 +24,32 @@
 #include <unistd.h>
 #include <errno.h>
 
+#ifdef _WIN32
+// The paths here are UTF-8, where the C runtime's narrow stat reads the ANSI
+// code page, and this file asks only a path's type of it. Windows has no
+// symlinks in the Unix sense, so a link reads as what it points to.
+static int
+dnd_lstat(const char *path, struct stat *st) {
+    wchar_t wpath[4 * MAX_PATH];
+    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, (int)(sizeof(wpath) / sizeof(wpath[0])))) {
+        errno = EINVAL;
+        return -1;
+    }
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExW(wpath, GetFileExInfoStandard, &a)) {
+        const DWORD e = GetLastError();
+        errno = (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME) ? ENOENT : e == ERROR_ACCESS_DENIED ? EACCES : EIO;
+        return -1;
+    }
+    memset(st, 0, sizeof(*st));
+    st->st_mode = (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? S_IFDIR : S_IFREG;
+    st->st_size = (off_t)(((unsigned long long)a.nFileSizeHigh << 32) | a.nFileSizeLow);
+    return 0;
+}
+#undef lstat
+#define lstat dnd_lstat
+#endif
+
 #define DEFAULT_MIME_LIST_SIZE_CAP 1024u * 1024u
 static size_t MIME_LIST_SIZE_CAP = DEFAULT_MIME_LIST_SIZE_CAP;
 #define DEFAULT_PRESENT_DATA_CAP 64 * 1024 * 1024
@@ -856,6 +882,12 @@ get_nth_file_url(const char *uri_list, size_t uri_list_sz, int n, char **path_ou
         *error_out = "EINVAL";
         return false;
     }
+#ifdef _WIN32
+    // A Windows path in a file URL reads /C:/x, or ///host/share/x for a share,
+    // as kitty writes what Explorer drops, which Windows opens without the slash
+    if (strlen(path) >= 3 && ((isalpha((unsigned char)path[1]) && path[2] == ':') || (path[1] == '/' && path[2] == '/')))
+        memmove(path, path + 1, strlen(path));
+#endif
     *path_out = strdup(path);
     if (!*path_out) {
         *error_out = "ENOMEM";

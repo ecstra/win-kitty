@@ -1935,6 +1935,8 @@ static struct {
     Win32DropOffer offered[WIN32_DROP_MAX];  // what the active drag offers (enter..leave)
     size_t offered_count;
     _GLFWwindow *window;
+    POINTL last_pt;            // where the last move kitty heard of was
+    DWORD last_keys, last_allowed;
 } win32_drop;
 
 // A drag kitty started, of a tab or a window. Its mime types and data are
@@ -2213,7 +2215,6 @@ self_drag_effect(size_t accepted, DWORD allowed) {
 // A drag holds its own reference to the target under the pointer, so the
 // target can outlive its window, which leaves the window NULL behind it.
 static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pdo, DWORD keys, POINTL pt, DWORD *effect) {
-    (void)keys;
     Win32DropTarget *self = (Win32DropTarget*)This;
     if (!self->window) { *effect = DROPEFFECT_NONE; return S_OK; }
     win32_drop.window = self->window;
@@ -2224,6 +2225,7 @@ static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pd
     }
     collect_drop_offers(pdo);
     set_drop_source_actions(self->window, *effect);
+    win32_drop.last_pt = pt; win32_drop.last_keys = keys; win32_drop.last_allowed = *effect;
     double x, y; drop_point_to_client(self->window, pt, &x, &y);
     size_t accepted = 0;
     if (win32_drop.offered_count) {
@@ -2234,7 +2236,6 @@ static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pd
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POINTL pt, DWORD *effect) {
-    (void)keys;
     Win32DropTarget *self = (Win32DropTarget*)This;
     if (!self->window) { *effect = DROPEFFECT_NONE; return S_OK; }
     if (win32_drag.active) {
@@ -2246,7 +2247,13 @@ static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POIN
     size_t accepted = 0;
     if (win32_drop.offered_count) {
         const char *m[WIN32_DROP_MAX];
-        accepted = _glfwInputDropEvent(self->window, GLFW_DROP_MOVE, x, y, m, offered_mimes(m), false);
+        // Windows asks about 15 times a second even while the mouse is still.
+        // A program in the window hears of a move only when there is one, and
+        // otherwise kitty answers from what the program said last, which
+        // took it the next ask to show, as X11 shows a status update at once.
+        const bool moved = pt.x != win32_drop.last_pt.x || pt.y != win32_drop.last_pt.y || keys != win32_drop.last_keys || *effect != win32_drop.last_allowed;
+        win32_drop.last_pt = pt; win32_drop.last_keys = keys; win32_drop.last_allowed = *effect;
+        accepted = _glfwInputDropEvent(self->window, moved ? GLFW_DROP_MOVE : GLFW_DROP_STATUS_UPDATE, x, y, m, offered_mimes(m), false);
     }
     *effect = chosen_drop_effect(self->window, accepted, *effect);
     return S_OK;
