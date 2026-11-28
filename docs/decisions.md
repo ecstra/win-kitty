@@ -133,6 +133,10 @@ Windows has no primary selection. The port used to tell kitty it had one, and th
 
 Windows types with the left Ctrl and Alt held together as if they were AltGr, on any layout with characters on its AltGr level. Treating that as AltGr swallowed shortcuts. On US International, for one, kitty's own kitty_mod+alt+t typed Þ instead of opening the tab title prompt. Treating the left keys as a shortcut only, as kitty on Linux does, broke the other way. Scripts and tools that type text press the plain Ctrl and Alt keys for an AltGr character, so `user@host` typed by one on a German layout lost its @. So the port does what Windows Terminal does. The left keys run a kitty shortcut when one is set on that key, and type the character when none is. The AltGr key always types, as on Linux.
 
+## A key's alternate is the US key at its place, not the default layout's
+
+kitty on Linux takes a key's alternate from libxkbcommon's default keymap, a 105 key US keyboard whatever layouts the user has, and the port gives the same key, so a program and kitty's shortcuts see one key on both. Taking it from the Windows default layout instead was tried, and on a machine whose default layout is Russian it left the С key with no ASCII alternate, so Ctrl+С lost its `^C`. The key beside the left Shift is `<` in that keymap, where Windows' own US layout has a backslash. Taking Windows' backslash made Ctrl with the í of Hungarian send `^\`, a quit signal in a Unix shell.
+
 ## Ctrl+click opens a link, alongside upstream's Ctrl+Shift+click
 
 Windows Terminal and the GNOME terminals open a link on Ctrl+click, so that is the binding a Windows user tries first. Upstream binds Ctrl+Shift+click instead, which is left in place, as is the plain click. The two are added rather than swapped, because they use different triggers and nothing else was bound to Ctrl+click.

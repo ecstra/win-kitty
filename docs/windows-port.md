@@ -29,7 +29,7 @@ An upgrade keeps the choice the earlier install made. The installer follows Wind
 The installer offers three optional tasks.
 
 - Add kitty to your PATH: puts `<install>\bin` on your PATH, or the machine's for everyone, so `kitty` and `kitten` work in any terminal.
-- Add "Open in kitty" to the Explorer right click menu: appears under "Show more options", and for everyone in the main Windows 11 menu as well. The main menu needs a package whose certificate is trusted for the whole machine, which takes administrator rights, see [windows-internals.md](windows-internals.md).
+- Add "Open in kitty" to the Explorer right click menu: appears under "Show more options", and with an install for everyone also in the main Windows 11 menu of the account the installer ran as. The main menu needs a package whose certificate is trusted for the whole machine, which takes administrator rights, see [windows-internals.md](windows-internals.md).
 - Create a desktop shortcut: off by default.
 
 A Start menu entry is always created. To install without any prompts, run it with the silent flags, and `/CURRENTUSER` or `/ALLUSERS` to pick the install.
@@ -85,7 +85,7 @@ kitty.conf options that do nothing or only part of their job on Windows yet.
 - Custom pointer images. Every shape name maps to the nearest cursor Windows has.
 - `touch_scroll_multiplier` and `pixel_scroll`. A touchpad scrolls smoothly, by the wheel settings, but not by the pixel.
 - `command_on_bell` runs only while kitty is in the background, for the same stray bells as the bell sound.
-- Remote control from a background process, `remote_control_script` and `launch --type=background --allow-remote-control`. The process runs, without a way back to kitty, and has to be something Windows starts by itself, such as an `.exe` or a `.bat`, so a Python or shell script is given with its interpreter.
+- Remote control from a background process, `remote_control_script`, `launch --type=background --allow-remote-control` and `kitten @ run --allow-remote-control`. The process runs, without a way back to kitty, and has to be something Windows starts by itself, such as an `.exe` or a `.bat`, so a Python or shell script is given with its interpreter.
 - `update_check_interval`.
 - `close_on_child_death`. A window always closes when its shell exits.
 - `forward_stdio` and `menu_map`, which have nothing on Windows to attach to yet.
