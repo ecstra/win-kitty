@@ -11,9 +11,6 @@ import (
 )
 
 func TestAtomicWriteFileSymlinkChain(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("compares symlink targets spelled with forward slashes and POSIX permission bits")
-	}
 	dir := t.TempDir()
 	t.Chdir(dir)
 	for _, name := range []string{"nested", "real"} {
@@ -32,13 +29,15 @@ func TestAtomicWriteFileSymlinkChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, l := range links {
-		if actual, err := os.Readlink(l.path); err != nil || actual != l.target {
+		// Windows stores a symlink's target with backslashes
+		if actual, err := os.Readlink(l.path); err != nil || filepath.ToSlash(actual) != l.target {
 			t.Errorf("Symlink %s changed: %q %v", l.path, actual, err)
 		}
 	}
 	target := filepath.Join("real", "target")
 	assert_file_contents(t, target, "new contents")
-	if st, err := os.Stat(target); err != nil || st.Mode().Perm() != 0o640 {
+	// Windows keeps no POSIX permission bits
+	if st, err := os.Stat(target); err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o640) {
 		t.Fatalf("Incorrect target permissions: %v %v", st, err)
 	}
 	if entries, err := os.ReadDir("real"); err != nil || len(entries) != 1 || entries[0].Name() != "target" {
@@ -47,9 +46,6 @@ func TestAtomicWriteFileSymlinkChain(t *testing.T) {
 }
 
 func TestAtomicWriteFileSymlinkFailure(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("compares symlink targets spelled with forward slashes, Windows stores them with backslashes")
-	}
 	for _, link := range []string{"missing/target", "link"} {
 		t.Run(link, func(t *testing.T) {
 			dir := t.TempDir()
@@ -60,7 +56,7 @@ func TestAtomicWriteFileSymlinkFailure(t *testing.T) {
 			if err := AtomicWriteFile(dest, strings.NewReader("new contents"), 0o600); err == nil {
 				t.Error("Expected write to fail with a missing parent directory or a symlink loop")
 			}
-			if actual, err := os.Readlink(dest); err != nil || actual != link {
+			if actual, err := os.Readlink(dest); err != nil || filepath.ToSlash(actual) != link {
 				t.Errorf("Symlink at destination changed: %q %v", actual, err)
 			}
 			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 || entries[0].Name() != "link" {
