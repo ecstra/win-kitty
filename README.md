@@ -40,7 +40,6 @@ I built it so I could use kitty as my daily terminal on Windows, and it does tha
 * **Notifications:** real Windows notifications from kitty.
 * **Explorer:** an Open in kitty entry when you right click a folder.
 * **Low input lag:** typing feels instant, and kitty draws at your monitor's real refresh rate.
-* **Other languages:** Japanese, Chinese and Korean input, with the text you are composing shown at the cursor.
 * **Custom shaders:** the installer includes the shader compiler they need.
 * **Session restore:** kitty brings back your windows, tabs and scrollback after you sign out or restart.
 * **The rest of kitty:** tabs, OS windows, scrollback, mouse selection, the clipboard, ligatures, per monitor scaling, live config reload, themes that follow Windows' light or dark mode, tab titles that show the running program, launch wrappers, `kitty +` commands from any terminal, dragging files and text in and out of a window, and dragging tabs along the tab bar, into another window or out into a new one.

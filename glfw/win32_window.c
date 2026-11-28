@@ -103,6 +103,60 @@ static bool isKeypadTextKey(uint32_t key) {
         key == GLFW_FKEY_KP_MULTIPLY || key == GLFW_FKEY_KP_SUBTRACT || key == GLFW_FKEY_KP_ADD || key == GLFW_FKEY_KP_SEPARATOR;
 }
 
+// The character the active layout gives a key with no modifiers, or with only
+// shift, Caps Lock left out as on X11. A dead key gives its own character.
+// The flag leaves the keyboard state alone, so a dead key waiting for the next
+// key still composes with it.
+static uint32_t layoutChar(WPARAM vk, UINT scan, bool shifted) {
+    BYTE state[256] = {0};
+    if (shifted) state[VK_SHIFT] = 0x80;
+    WCHAR buf[4] = {0};
+    int n = ToUnicodeEx((UINT) vk, scan, state, buf, 4, 0x4, GetKeyboardLayout(0));
+    if (n < 0) n = 1;  // a dead key, whose character is in buf
+    if (n == 2 && IS_HIGH_SURROGATE(buf[0]) && IS_LOW_SURROGATE(buf[1]))
+        return 0x10000 + (((uint32_t) (buf[0] - 0xd800) << 10) | (uint32_t) (buf[1] - 0xdc00));
+    if (n == 1 && buf[0] >= 0x20 && buf[0] != 0x7f) return buf[0];
+    return 0;
+}
+
+// The key a US keyboard has at that place, by scan code, which kitty sends as
+// the alternate key. kitty on Linux takes it from libxkbcommon's default keymap,
+// pc105 US whatever layouts the user has, so Ctrl with the С of a Russian layout
+// still sends ^C, and Alt with the ü of a German one sends ESC [ there too. The
+// key beside the left Shift is < there, where Windows' US layout has a backslash,
+// which made Ctrl with the í of Hungarian send ^\, a quit signal in a Unix shell.
+static uint32_t usKeyAtScanCode(UINT scan) {
+    static const char row1[] = "1234567890-=", row2[] = "qwertyuiop[]", row3[] = "asdfghjkl;'`", row4[] = "zxcvbnm,./";
+    if (scan >= 0x02 && scan <= 0x0d) return (uint32_t) row1[scan - 0x02];
+    if (scan >= 0x10 && scan <= 0x1b) return (uint32_t) row2[scan - 0x10];
+    if (scan >= 0x1e && scan <= 0x29) return (uint32_t) row3[scan - 0x1e];
+    if (scan >= 0x2c && scan <= 0x35) return (uint32_t) row4[scan - 0x2c];
+    if (scan == 0x2b) return '\\';
+    if (scan == 0x56) return '<';
+    if (scan == 0x39) return ' ';
+    return 0;
+}
+
+// The key table is US by virtual key, which on another layout names the wrong
+// character, or none for a key a US keyboard lacks, so a key that types goes
+// out as the layout's own character, with what shift makes of it as its shifted
+// key and the US key at that place as its alternate key, as kitty gets them on
+// X11
+static void layoutKeys(WPARAM vk, LPARAM lParam, int mods, uint32_t *key, uint32_t *shifted, uint32_t *alternate) {
+    *shifted = 0; *alternate = 0;
+    if (*key >= GLFW_FKEY_FIRST || (HIWORD(lParam) & KF_EXTENDED)) return;
+    const UINT scan = (lParam >> 16) & 0xff;
+    const uint32_t base = layoutChar(vk, scan, false);
+    if (!base) return;
+    *key = base;
+    if (mods & GLFW_MOD_SHIFT) {
+        const uint32_t s = layoutChar(vk, scan, true);
+        if (s && s != *key) *shifted = s;
+    }
+    const uint32_t us = usKeyAtScanCode(scan);
+    if (us && us != *key) *alternate = us;
+}
+
 static int getKeyMods(void) {
     int mods = 0;
     if (GetKeyState(VK_SHIFT)   & 0x8000) mods |= GLFW_MOD_SHIFT;
@@ -565,9 +619,11 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             const bool up = uMsg == WM_KEYUP || uMsg == WM_SYSKEYUP;
             uint32_t key = refineKey(wParam, lParam, (wParam < 512) ? (uint32_t) _glfw.win32.keycodes[wParam] : 0);
             int mods = getKeyMods();
+            uint32_t shiftedKey, alternateKey;
+            layoutKeys(wParam, lParam, mods, &key, &shiftedKey, &alternateKey);
             const bool functional = key >= GLFW_FKEY_FIRST;
             const int shortcutMods = mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER);
-            if (!up) window->win32.pendingCharKey = 0;
+            if (!up) window->win32.pendingCharKey = window->win32.pendingShiftedKey = window->win32.pendingAlternateKey = 0;
             if (isKeypadTextKey(key) && (!shortcutMods || (shortcutMods == GLFW_MOD_ALT && key <= GLFW_FKEY_KP_9)) &&
                     (up || shortcutMods || charFollows(hWnd))) {
                 // A keypad key that types goes out with its text from WM_CHAR,
@@ -587,6 +643,8 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                 // character too. When no character follows, the key goes out
                 // below as the shortcut it is.
                 window->win32.pendingCharKey = key;
+                window->win32.pendingShiftedKey = shiftedKey;
+                window->win32.pendingAlternateKey = alternateKey;
                 if (uMsg == WM_SYSKEYDOWN) break;  // a system key, which DefWindowProc still sees
                 return 0;
             }
@@ -597,6 +655,8 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             if (key && (functional || shortcutMods)) {
                 GLFWkeyevent ev = {0};
                 ev.key = key;
+                ev.shifted_key = shiftedKey;
+                ev.alternate_key = alternateKey;
                 ev.native_key = (int) wParam;
                 ev.action = up ? GLFW_RELEASE : (HIWORD(lParam) & KF_REPEAT ? GLFW_REPEAT : GLFW_PRESS);
                 ev.mods = reportedMods(mods);
@@ -610,10 +670,11 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             // Alt with a dead key: no character follows, so the key goes out alone
             if (window->win32.pendingCharKey) {
                 const int mods = getKeyMods();
-                GLFWkeyevent ev = {.key = window->win32.pendingCharKey, .action = GLFW_PRESS, .mods = reportedMods(mods)};
+                GLFWkeyevent ev = {.key = window->win32.pendingCharKey, .action = GLFW_PRESS, .mods = reportedMods(mods),
+                    .shifted_key = window->win32.pendingShiftedKey, .alternate_key = window->win32.pendingAlternateKey};
                 window->win32.pendingCharKey = 0;
                 // The dead key's own character, as the one shift made
-                if ((mods & GLFW_MOD_SHIFT) && (uint32_t) wParam != ev.key) ev.shifted_key = (uint32_t) wParam;
+                if (!ev.shifted_key && (mods & GLFW_MOD_SHIFT) && (uint32_t) wParam != ev.key) ev.shifted_key = (uint32_t) wParam;
                 _glfwInputKeyboard(window, &ev);
             }
             return 0;
@@ -657,6 +718,7 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 
         case WM_CHAR: case WM_SYSCHAR: {
             const uint32_t pairedKey = window->win32.pendingCharKey;
+            const uint32_t pairedShiftedKey = window->win32.pendingShiftedKey, pairedAlternateKey = window->win32.pendingAlternateKey;
             window->win32.pendingCharKey = 0;
             int mods = getKeyMods();
             // Control chars (< 0x20) and pure-ctrl combos are encoded from the key
@@ -664,7 +726,8 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             // for its character still goes out, as the key alone.
             if ((WCHAR) wParam < 0x20) {
                 if (pairedKey) {
-                    GLFWkeyevent ev = {.key = pairedKey, .action = GLFW_PRESS, .mods = reportedMods(mods)};
+                    GLFWkeyevent ev = {.key = pairedKey, .action = GLFW_PRESS, .mods = reportedMods(mods),
+                        .shifted_key = pairedShiftedKey, .alternate_key = pairedAlternateKey};
                     _glfwInputKeyboard(window, &ev);
                 }
                 return 0;
@@ -687,13 +750,17 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                     else cp = utf16[0];
                     GLFWkeyevent ev = {0};
                     ev.key = pairedKey ? pairedKey : cp;
+                    if (pairedKey) ev.alternate_key = pairedAlternateKey;
                     ev.action = GLFW_PRESS;
                     if (uMsg == WM_SYSCHAR) {
                         // Alt with a key goes out as the key, which kitty encodes
                         // with the Alt, since an event with text goes out as the
                         // bare character. The character shift made lets it send
-                        // ESC S for Alt+Shift+S, as on X11.
-                        if ((mods & GLFW_MOD_SHIFT) && cp != ev.key) ev.shifted_key = cp;
+                        // ESC S for Alt+Shift+S, as on X11, taken from the layout
+                        // with Caps Lock left out, since the character Windows
+                        // typed has Caps Lock undo the shift.
+                        if (pairedShiftedKey) ev.shifted_key = pairedShiftedKey;
+                        else if ((mods & GLFW_MOD_SHIFT) && cp != ev.key) ev.shifted_key = cp;
                     } else {
                         ev.text = text;
                         // AltGr's character carries neither the ctrl nor the alt

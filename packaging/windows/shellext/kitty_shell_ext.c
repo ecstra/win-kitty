@@ -183,8 +183,12 @@ static HRESULT STDMETHODCALLTYPE cmd_Invoke(IExplorerCommand *This, IShellItemAr
     bool have_dir = resolve_directory(self, items, dir, MAX_PATH);
 
     WCHAR cmdline[2 * MAX_PATH + 64];
+    // A drive's root ends in a backslash, which the C runtime reads before the
+    // closing quote as an escaped quote, so it is doubled there
+    const size_t dir_len = have_dir ? wcslen(dir) : 0;
+    const wchar_t *closing = dir_len && dir[dir_len - 1] == L'\\' ? L"\\\"" : L"\"";
     if (have_dir)
-        StringCchPrintfW(cmdline, ARRAYSIZE(cmdline), L"\"%s\" --directory \"%s\"", exe, dir);
+        StringCchPrintfW(cmdline, ARRAYSIZE(cmdline), L"\"%s\" --directory \"%s%s", exe, dir, closing);
     else
         StringCchPrintfW(cmdline, ARRAYSIZE(cmdline), L"\"%s\"", exe);
 

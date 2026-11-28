@@ -29,7 +29,7 @@ An upgrade keeps the choice the earlier install made. The installer follows Wind
 The installer offers three optional tasks.
 
 - Add kitty to your PATH: puts `<install>\bin` on your PATH, or the machine's for everyone, so `kitty` and `kitten` work in any terminal.
-- Add "Open in kitty" to the Explorer right click menu: appears under "Show more options", and for everyone in the main Windows 11 menu as well. The main menu needs a package whose certificate is trusted for the whole machine, which takes administrator rights, see [windows-internals.md](windows-internals.md).
+- Add "Open in kitty" to the Explorer right click menu: appears under "Show more options", and with an install for everyone also in the main Windows 11 menu of the account the installer ran as. The main menu needs a package whose certificate is trusted for the whole machine, which takes administrator rights, see [windows-internals.md](windows-internals.md).
 - Create a desktop shortcut: off by default.
 
 A Start menu entry is always created. To install without any prompts, run it with the silent flags, and `/CURRENTUSER` or `/ALLUSERS` to pick the install.
@@ -45,9 +45,9 @@ Close any running kitty first. The source tree keeps its own development build a
 - Window creation, OpenGL rendering, live resizing, and per monitor DPI scaling.
 - Any Windows console program as the shell. cmd.exe, Windows PowerShell, and pwsh all run. Pick one with the `shell` option in kitty.conf.
 - MSYS2 and Cygwin shells such as zsh and bash, on a real pty, with shell integration.
-- Keyboard input, including the ctrl and alt shortcuts, the function keys, and the arrow keys. On a layout with AltGr, the left Ctrl and Alt together run a kitty shortcut when one is set on that key, and otherwise type the AltGr character, as in Windows Terminal. The AltGr key always types.
+- Keyboard input, including the ctrl and alt shortcuts, the function keys, and the arrow keys. With Alt or Ctrl, a key on a layout other than US goes out as that layout's own character, with the US key at that place for programs and kitty's shortcuts to fall back on, as on Linux. So Ctrl+С on Russian still sends Ctrl+C, and Alt+ß on German sends ESC - where it sent ESC [. Shortcuts follow the layout's characters as they do on Linux, so on French AZERTY kitty_mod+1 to kitty_mod+0 do not fire from the number row, whose keys type &, é and the rest. On a layout with AltGr, the left Ctrl and Alt together run a kitty shortcut when one is set on that key, and otherwise type the AltGr character, as in Windows Terminal. The AltGr key always types.
+- `kitty --single-instance`, which hands a second start to the kitty already running, with `--wait-for-single-instance-window-close` waiting until that window closes.
 - `remap_modifiers`, for keys, mouse clicks and scrolling.
-- Typing with an input method, such as Japanese, Chinese or Korean. kitty draws the text being composed at its cursor, and the list of words to pick from opens beside it.
 - Automatic color themes, which follow Windows as you switch it between light and dark.
 - Custom shaders, `custom_shaders`. The installer ships the part of the Slang compiler kitty builds them with.
 - `restore_session_after_logout`. When you sign out, restart or shut down, kitty saves its windows, tabs and scrollback, and the next kitty you start brings them back.
@@ -85,7 +85,7 @@ kitty.conf options that do nothing or only part of their job on Windows yet.
 - Custom pointer images. Every shape name maps to the nearest cursor Windows has.
 - `touch_scroll_multiplier` and `pixel_scroll`. A touchpad scrolls smoothly, by the wheel settings, but not by the pixel.
 - `command_on_bell` runs only while kitty is in the background, for the same stray bells as the bell sound.
-- Remote control from a background process, `remote_control_script` and `launch --type=background --allow-remote-control`. The process runs, without a way back to kitty, and has to be something Windows starts by itself, such as an `.exe` or a `.bat`, so a Python or shell script is given with its interpreter.
+- Remote control from a background process, `remote_control_script`, `launch --type=background --allow-remote-control` and `kitten @ run --allow-remote-control`. The process runs, without a way back to kitty, and has to be something Windows starts by itself, such as an `.exe` or a `.bat`, so a Python or shell script is given with its interpreter.
 - `update_check_interval`.
 - `close_on_child_death`. A window always closes when its shell exits.
 - `forward_stdio` and `menu_map`, which have nothing on Windows to attach to yet.
@@ -98,6 +98,7 @@ Not tested, so treat as unknown rather than working.
 
 - The ssh kitten, the file transfer kitten, and anything else that expects a Unix host environment.
 - Sessions, watchers, and startup scripts.
+- Typing with an input method, such as Japanese, Chinese or Korean. kitty should draw the text being composed at its cursor and open the list of words to pick from beside it, but nobody with such a keyboard has tried it yet.
 
 ## Remote control
 

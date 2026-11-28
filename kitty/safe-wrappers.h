@@ -142,11 +142,29 @@ safe_mkstemp(char *template) {
 
 static inline int
 safe_open(const char *path, int flags, mode_t mode) {
+#ifdef _WIN32
+    // kitty's paths are UTF-8, which the C runtime's narrow open reads in the
+    // ANSI code page, so a name with letters outside ASCII opened another file.
+    // A path that is not UTF-8 came from the ANSI side and opens as before.
+    // O_NONBLOCK is kitty's own bit for pipes, which a file never needs.
+    const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    wchar_t *wide_path = n > 0 ? malloc(n * sizeof(wchar_t)) : NULL;
+    if (wide_path) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide_path, n);
+    while (true) {
+        int fd = wide_path ? _wopen(wide_path, flags & ~O_NONBLOCK, mode) : open(path, flags & ~O_NONBLOCK, mode);
+        if (fd == -1 && errno == EINTR) continue;
+        const int saved_errno = errno;
+        free(wide_path);
+        errno = saved_errno;
+        return fd;
+    }
+#else
     while (true) {
         int fd = open(path, flags, mode);
         if (fd == -1 && errno == EINTR) continue;
         return fd;
     }
+#endif
 }
 
 static inline int
