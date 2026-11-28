@@ -69,6 +69,8 @@ Based on kitty 0.51.1.
 
 - Updated from kitty 0.48.0 to 0.51.1.
 - The desktop-ui kitten is marked Linux only, since it serves Linux's desktop portals.
+- Open in kitty in the main Windows 11 right click menu is an installer option, off unless you tick it, since it adds a certificate to the computer's trusted certificates. Open in kitty under Show more options stays on as before.
+- kitty's programs and its installer show win-kitty and their version in their file details.
 - Building from source now uses the MSYS2 UCRT64 toolchain instead of MINGW64, which MSYS2 is retiring, and needs the Slang shader compiler.
 
 ## 0.48.0-win.1 (2026-07-24)
