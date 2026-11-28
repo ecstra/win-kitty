@@ -2526,6 +2526,28 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     if (ret == NULL) return NULL;
     int width = PyLong_AsLong(PyTuple_GET_ITEM(ret, 0)), height = PyLong_AsLong(PyTuple_GET_ITEM(ret, 1));
     Py_CLEAR(ret);
+#ifdef _WIN32
+    // Windows gives a window the scale of the screen holding most of it, which
+    // at its real size can be another screen than the one holding most of the
+    // small temp window, so the size is worked out again at that scale
+    if (temp_window && x != INT_MIN && y != INT_MIN && is_visible_on_a_monitor(x, y, width, height)) {
+        glfwSetWindowSize(temp_window, width, height);
+        glfwSetWindowPos(temp_window, x, y);
+        float placed_xscale, placed_yscale;
+        double placed_xdpi, placed_ydpi;
+        get_window_content_scale(temp_window, &placed_xscale, &placed_yscale, &placed_xdpi, &placed_ydpi);
+        if (placed_xscale != xscale || placed_yscale != yscale) {
+            xscale = placed_xscale; yscale = placed_yscale; xdpi = placed_xdpi; ydpi = placed_ydpi;
+            fonts_data = load_fonts_data(OPT(font_size), xdpi, ydpi);
+            ret = PyObject_CallFunction(
+                get_window_size, "IIddff", fonts_data->fcm.cell_width, fonts_data->fcm.cell_height,
+                fonts_data->logical_dpi_x, fonts_data->logical_dpi_y, xscale, yscale);
+            if (ret == NULL) return NULL;
+            width = PyLong_AsLong(PyTuple_GET_ITEM(ret, 0)); height = PyLong_AsLong(PyTuple_GET_ITEM(ret, 1));
+            Py_CLEAR(ret);
+        }
+    }
+#endif
     if (lsc) {
         if (!layer_shell_config_from_python(layer_shell_config, lsc)) return NULL;
         lsc->expected.xscale = xscale;

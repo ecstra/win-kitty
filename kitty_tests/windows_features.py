@@ -189,6 +189,24 @@ class WindowsFeaturesTest(BaseTest):
                 parse_args(['--help'])
         self.assertIn('--listen-on', out.getvalue())
 
+    def test_swapping_stderr_moves_the_handle_programs_inherit(self):
+        # kitty.exe is a GUI program, whose C runtime leaves the process's
+        # standard handles alone on dup2, so a program started after a test
+        # swapped stderr and back inherited a closed handle
+        import msvcrt
+
+        kernel32 = ctypes.WinDLL('kernel32')
+        kernel32.GetStdHandle.restype = ctypes.c_void_p
+        with tempfile.TemporaryFile() as f:
+            orig = os.dup(2)
+            os.dup2(f.fileno(), 2)
+            try:
+                self.ae(kernel32.GetStdHandle(-12), msvcrt.get_osfhandle(2))
+            finally:
+                os.dup2(orig, 2)
+                os.close(orig)
+        self.ae(kernel32.GetStdHandle(-12), msvcrt.get_osfhandle(2))
+
     def test_saved_sessions_keep_the_windows_folder_of_an_msys2_shell(self):
         # An MSYS2 shell reports its folder at the prompt as a POSIX path, which
         # no Windows program can start in
