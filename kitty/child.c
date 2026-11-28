@@ -732,11 +732,55 @@ close_pty(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+/* job_processes(pty_id) -> ((pid, created), ...): every process in the window's
+ * job, which holds everything the window started, as a cgroup per window does
+ * on Linux, with each one's start time, since a pid says nothing of age on
+ * Windows. A pid the job lists can be gone and handed out again by the time it
+ * is opened, so each is checked to still be in the job. */
+static PyObject*
+job_processes(PyObject *self UNUSED, PyObject *args) {
+    extern bool win_process_creation_time(DWORD pid, ULONGLONG *ans);
+    int id;
+    if (!PyArg_ParseTuple(args, "i", &id)) return NULL;
+    if (id < 0 || id >= MAX_PTYS || !ptys[id].in_use || !ptys[id].job) return PyTuple_New(0);
+    DWORD capacity = 64;
+    JOBOBJECT_BASIC_PROCESS_ID_LIST *list = NULL;
+    for (;;) {
+        const size_t sz = offsetof(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList) + capacity * sizeof(ULONG_PTR);
+        JOBOBJECT_BASIC_PROCESS_ID_LIST *bigger = realloc(list, sz);
+        if (!bigger) { free(list); return PyErr_NoMemory(); }
+        list = bigger;
+        if (QueryInformationJobObject(ptys[id].job, JobObjectBasicProcessIdList, list, (DWORD)sz, NULL)) break;
+        if (GetLastError() != ERROR_MORE_DATA) { free(list); return PyErr_SetFromWindowsErr(0); }
+        capacity = list->NumberOfAssignedProcesses + 16;
+    }
+    PyObject *ans = PyList_New(0);
+    for (DWORD i = 0; ans && i < list->NumberOfProcessIdsInList; i++) {
+        const DWORD pid = (DWORD)list->ProcessIdList[i];
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!h) continue;
+        BOOL in_job = FALSE;
+        IsProcessInJob(h, ptys[id].job, &in_job);
+        CloseHandle(h);
+        ULONGLONG created;
+        if (!in_job || !win_process_creation_time(pid, &created)) continue;
+        PyObject *item = Py_BuildValue("kK", (unsigned long)pid, (unsigned long long)created);
+        if (!item || PyList_Append(ans, item) != 0) Py_CLEAR(ans);
+        Py_XDECREF(item);
+    }
+    free(list);
+    if (!ans) return NULL;
+    PyObject *t = PyList_AsTuple(ans);
+    Py_DECREF(ans);
+    return t;
+}
+
 static PyMethodDef module_methods[] = {
     METHODB(open_pty, METH_VARARGS),
     METHODB(spawn, METH_VARARGS),
     METHODB(resize_pty, METH_VARARGS),
     METHODB(close_pty, METH_VARARGS),
+    METHODB(job_processes, METH_VARARGS),
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 

@@ -13,6 +13,13 @@ Based on kitty 0.51.1.
 - Remote control over a Unix socket, `listen_on unix:PATH`.
 - `kitty +list-fonts` and the other `kitty +` commands, and the full `kitty --help`, print in any terminal, PowerShell included.
 - The installer can install kitty for you only, with no administrator prompt, which is now the default, or for everyone as before. It follows Windows' light or dark mode, with kitty's cat on its pages.
+- Custom shaders, `custom_shaders`. The installer now includes the shader compiler they need.
+- `restore_session_after_logout`. kitty saves its windows, tabs and scrollback when you sign out, restart or shut down, and brings them back the next time it starts.
+- Tab titles can show the program running in a window, `{tab.active_exe}`, and how much memory a tab's programs use, `{tab.children_mem_usage}`. `confirm_os_window_close` with `count-background` counts programs left running in the background.
+- Launch wrappers, `launch_wrapper.py`.
+- Typing with an input method, such as Japanese, Chinese or Korean. The text you are composing shows at the cursor, and the list of words opens beside it.
+- `remap_modifiers`.
+- Automatic color themes switch as soon as you change Windows between light and dark.
 
 ### Fixed
 
@@ -41,6 +48,8 @@ Based on kitty 0.51.1.
 - Alt with a letter, such as Alt+B in a shell, no longer types the letter as well, which also left stray text like `5;4uS` behind after Shift+Alt+S.
 - Shortcuts with the left Ctrl and Alt work on layouts that have AltGr, instead of typing the AltGr character. Where no shortcut is set, they still type it.
 - A background process reports its real exit code, including codes above 255 and crash codes.
+- `launch --hold` keeps the window open after its program exits.
+- New windows and tabs opened from an MSYS2 or Cygwin shell start in the folder the shell is in, rather than the one it started in.
 
 ### Changed
 

@@ -12,15 +12,24 @@ from select import select
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from kitty.child import Child, KittyWrapper, children_of_process, cmdline_of_pid, cwd_of_process, memory_used_by_process_tree_rooted_at
+from kitty.child import (
+    Child,
+    KittyWrapper,
+    abspath_of_exe,
+    children_of_process,
+    cmdline_of_pid,
+    cwd_of_process,
+    memory_used_by_process_tree_rooted_at,
+)
 from kitty.constants import is_macos, kitten_exe, kitty_exe
 
 from .base import BaseTest, is_windows, skip_on_windows
 
-# Features new in kitty 0.49 to 0.51 that the Windows port does not have yet
-no_memory_accounting = skip_on_windows('child memory accounting reads /proc and cgroups, which is not ported yet')
-no_root_tracking = skip_on_windows('root and descendant process tracking walks the POSIX process tree, which is not ported yet')
-no_launch_wrapper = skip_on_windows('the launch wrapper is written for POSIX shells and paths, which is not ported yet')
+# sys.executable is kitty.exe on Windows, which takes no -c, so these start
+# their grandchild there with another program, and WindowsProcessTest below
+# covers the same ground with native programs
+no_root_tracking = skip_on_windows('these start a python grandchild through sys.executable, which is kitty.exe on Windows')
+no_launch_wrapper = skip_on_windows('these run POSIX shell scripts, or python through sys.executable, which is kitty.exe on Windows')
 
 
 def _descendants(pid: int) -> list[int]:
@@ -66,7 +75,6 @@ time.sleep(300)
         p.terminate()
         p.wait()
 
-    @no_memory_accounting
     def test_memory_returns_positive_for_live_process(self):
         mem = memory_used_by_process_tree_rooted_at(os.getpid())
         self.assertGreater(mem, 0)
@@ -74,7 +82,6 @@ time.sleep(300)
     def test_memory_returns_minus_one_for_nonexistent_pid(self):
         self.ae(memory_used_by_process_tree_rooted_at(99999999), -1)
 
-    @no_memory_accounting
     def test_memory_accounts_for_child_allocation(self):
         # Verify that a child's known resident allocation shows up in the
         # measurement.  check_if_cgroup_root=True falls back to per-process
@@ -93,7 +100,6 @@ time.sleep(300)
         finally:
             self._terminate(child)
 
-    @no_memory_accounting
     def test_memory_of_parent_tree_includes_child(self):
         # Measuring the current process tree must yield more than measuring
         # the child alone, because the test runner itself occupies memory.
@@ -110,7 +116,6 @@ time.sleep(300)
         finally:
             self._terminate(child)
 
-    @no_memory_accounting
     def test_memory_cgroup_path_returns_positive(self):
         # The fast cgroup path (check_if_cgroup_root=False, the default) must
         # return a usable value on Linux.
@@ -119,7 +124,6 @@ time.sleep(300)
         mem = memory_used_by_process_tree_rooted_at(os.getpid())
         self.assertGreater(mem, 0)
 
-    @no_memory_accounting
     def test_memory_cgroup_and_tree_walk_both_positive(self):
         # Both the cgroup path and the tree-walk path should give positive
         # results for a process that is alive.
@@ -281,6 +285,115 @@ time.sleep(300)
             self._terminate_tree(p)
 
 
+class WindowsProcessTest(BaseTest):
+    # Windows has no process groups and no /proc. A window's programs are the
+    # job kitty starts its child in, and a pid says nothing of a process's age.
+
+    def setUp(self):
+        super().setUp()
+        if not is_windows:
+            self.skipTest('the job and the Windows process queries are Windows only')
+        self.ping = ['ping', '-n', '300', '127.0.0.1']
+
+    def _window(self, pings: int, via_copy: bool = False) -> tuple[Child, int, int]:
+        # A window whose program starts pings one after another, through a copy
+        # of itself when via_copy is set, as the MSYS2 bridge forks itself
+        # before the shell runs
+        from kitty import fast_data_types
+
+        start = f"""\
+import subprocess, sys, time
+for i in range({pings}):
+    subprocess.Popen({self.ping!r}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.05)
+sys.stdout.write('ready\\n')
+sys.stdout.flush()
+time.sleep(300)
+"""
+        # The copy has no console to share, so its ready comes back through a pipe
+        copy = f"""\
+import subprocess, sys, time
+p = subprocess.Popen([sys.executable, '+runpy', {start!r}], stdout=subprocess.PIPE)
+sys.stdout.write(p.stdout.readline().decode())
+sys.stdout.flush()
+time.sleep(300)
+"""
+        code = copy if via_copy else start
+        read_fd, write_fd, pty_id = fast_data_types.open_pty(80, 24, False, False)
+        env = tuple(f'{k}={v}' for k, v in os.environ.items())
+        pid = fast_data_types.spawn(pty_id, kitty_exe(), os.getcwd(), (kitty_exe(), '+runpy', code), env)
+        out = b''
+        while b'ready' not in out:
+            data = os.read(read_fd, 4096)
+            if not data:
+                raise AssertionError(f'The window program exited before it was ready: {out!r}')
+            out += data
+        c = Child(['unused'], os.getcwd())
+        c.pid, c.pty_id = pid, pty_id
+        self.addCleanup(self._close, c, read_fd, write_fd)
+        return c, read_fd, write_fd
+
+    def _close(self, c: Child, read_fd: int, write_fd: int) -> None:
+        from kitty import fast_data_types
+
+        for pid in c.job_processes():
+            with suppress(OSError):
+                os.kill(pid, signal.SIGTERM)
+        os.close(read_fd)
+        os.close(write_fd)
+        fast_data_types.close_pty(c.pty_id)
+
+    def test_cmdline_exe_and_children_of_a_running_process(self):
+        p = subprocess.Popen(self.ping, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            self.ae(cmdline_of_pid(p.pid), self.ping)
+            self.ae(os.path.normcase(abspath_of_exe(p.pid)), os.path.normcase(os.path.realpath(shutil.which('ping'))))
+            self.assertIn(p.pid, children_of_process(os.getpid()))
+            self.assertGreater(memory_used_by_process_tree_rooted_at(p.pid), 0)
+        finally:
+            p.kill()
+            p.wait()
+        self.assertNotIn(p.pid, children_of_process(os.getpid()))
+        self.ae(memory_used_by_process_tree_rooted_at(p.pid), -1)
+
+    def test_job_holds_the_window_and_what_it_started_oldest_first(self):
+        c, _, _ = self._window(2)
+        members = c.job_processes()
+        self.ae(len(members), 3)
+        self.ae(members[0], c.pid)
+        for pid in members[1:]:
+            self.ae(cmdline_of_pid(pid), self.ping)
+
+    def test_program_in_front_is_the_youngest_unless_at_the_prompt(self):
+        from kitty.fast_data_types import memory_of_process
+
+        c, _, _ = self._window(2)
+        _, first, last = c.job_processes()
+        self.ae(c.root_pid, c.pid)
+        self.ae(c.pid_for_cwd, last)
+        self.ae(c.get_pid_for_cwd(oldest=True), first)
+        self.ae([p['pid'] for p in c.foreground_processes], [first, last])
+        self.ae(c.background_processes, [])
+        self.ae(os.path.basename(c.get_foreground_exe() or ''), 'ping')
+        self.assertGreater(c.get_memory_used_by_child(), memory_of_process(c.pid))
+        # At the prompt the shell is in front and the rest runs in the background
+        c.screen_at_prompt = lambda: True
+        self.ae(c.pid_for_cwd, c.pid)
+        self.ae([p['pid'] for p in c.foreground_processes], [c.pid])
+        self.ae([p['pid'] for p in c.background_processes], [first, last])
+
+    def test_root_behind_the_msys2_bridge_is_the_shell(self):
+        # Cygwin's exec breaks parent links, so the shell is found in the job,
+        # past the bridge and the copy of itself the bridge forks
+        c, _, _ = self._window(2, via_copy=True)
+        bridge, copy, first, last = c.job_processes()
+        c.bridge_exe = kitty_exe()
+        self.ae(c.root_pid, first)
+        self.ae(c.pid_for_cwd, last)
+        self.ae(c.get_pid_for_cwd(oldest=True), last)
+        self.ae(c.current_cwd, cwd_of_process(first))
+
+
 class LaunchWrapperTest(BaseTest):
     def setUp(self):
         super().setUp()
@@ -302,46 +415,40 @@ class LaunchWrapperTest(BaseTest):
         load_prefix_func.set_override(user_func)
         spawned = {}
 
-        def spawn(exe, cwd, argv, *a):
+        def spawn(*a):
+            # Windows passes its pseudoconsole first, spawn(pty_id, exe, cwd, argv, env)
+            exe, cwd, argv = a[1:4] if is_windows else a[:3]
             spawned['exe'], spawned['argv'] = exe, argv
             return 1234567
+
+        def open_pty(*a):
+            read_fd, write_fd = os.pipe()
+            return read_fd, write_fd, -1
 
         boss = SimpleNamespace(encryption_public_key='key', listening_on='', window_id_map={})
         c = Child(list(argv), cwd, env={'KITTY_WINDOW_ID': '7', **(env or {})}, hold=hold, launch_request=launch_request)
         with (
             patch.object(child_module.fast_data_types, 'spawn', spawn),
+            patch.object(child_module.fast_data_types, 'open_pty', open_pty, create=True),
             patch.object(child_module.fast_data_types, 'get_boss', return_value=boss),
             patch.object(child_module.fast_data_types, 'systemd_move_pid_into_new_scope', side_effect=NotImplementedError, create=True),
         ):
             c.fork()
         os.close(c.child_fd)
         c.child_fd = None
+        if is_windows:
+            os.close(c.windows_write_fd)
         return c, spawned['exe'], spawned['argv']
 
-    def test_launch_wrapper_refused_on_windows(self):
-        # Windows starts children through a ConPTY of its own, which the
-        # wrapper is not ported to, so a configured wrapper must be reported
-        if not is_windows:
-            self.skipTest('the refusal is Windows only')
-        from kitty import child as child_module
-        from kitty import launch_wrapper
-        from kitty.launch_wrapper import LaunchRequest, load_prefix_func, refuse_launch_wrapper_on_windows
+    def test_hold_runs_the_command_through_the_hold_kitten(self):
+        from kitty.utils import cmdline_for_hold
 
-        class StopBeforeSpawn(Exception):
-            pass
-
-        load_prefix_func.set_override(lambda ctx: ('wrapper',))
-        refuse_launch_wrapper_on_windows.clear_cached()
-        c = Child(['cmd.exe'], os.getcwd(), env={}, launch_request=LaunchRequest('window'))
-        boss = SimpleNamespace(encryption_public_key='key', listening_on='', window_id_map={})
-        with (
-            patch.object(child_module.fast_data_types, 'get_boss', return_value=boss),
-            patch.object(launch_wrapper, 'log_error') as log_error,
-            patch.object(child_module.fast_data_types, 'open_pty', side_effect=StopBeforeSpawn, create=True),
-            self.assertRaises(StopBeforeSpawn),
-        ):
-            c.fork()
-        self.assertIn('not supported on Windows', log_error.call_args[0][0])
+        hold_argv = tuple(cmdline_for_hold())
+        c, exe, argv = self._fork(hold=True)
+        self.ae(argv[: len(hold_argv)], hold_argv)
+        self.ae(argv[-2:], ('/bin/prog', 'arg'))
+        self.ae(exe, hold_argv[0])
+        self.ae(c.kitty_wrappers[0], KittyWrapper(hold_argv, True))
 
     def _recording(self, ans):
         def func(ctx):
@@ -554,7 +661,6 @@ read -r _
                     finally:
                         self._stop_tree(p)
 
-    @no_launch_wrapper
     def test_launch_wrapper(self):
         from kitty.launch_wrapper import LaunchRequest
 
@@ -576,7 +682,7 @@ read -r _
         self.ae(c.kitty_wrappers, (KittyWrapper(('/bin/wrapper', '-x'), True, ('-x', '/bin/prog', 'arg')),))
         ctx = self.contexts[-1]
         self.ae(ctx.argv, ('/bin/prog', 'arg'))
-        self.ae(ctx.cwd, '/')
+        self.ae(ctx.cwd, os.path.abspath('/'))  # the root of the drive on Windows
         self.ae(ctx.window_id, 7)
         self.ae(ctx.launch_type, 'tab')
         self.ae(ctx.source_window_id, None)

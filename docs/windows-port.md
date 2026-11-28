@@ -46,6 +46,13 @@ Close any running kitty first. The source tree keeps its own development build a
 - Any Windows console program as the shell. cmd.exe, Windows PowerShell, and pwsh all run. Pick one with the `shell` option in kitty.conf.
 - MSYS2 and Cygwin shells such as zsh and bash, on a real pty, with shell integration.
 - Keyboard input, including the ctrl and alt shortcuts, the function keys, and the arrow keys. On a layout with AltGr, the left Ctrl and Alt together run a kitty shortcut when one is set on that key, and otherwise type the AltGr character, as in Windows Terminal. The AltGr key always types.
+- `remap_modifiers`, for keys, mouse clicks and scrolling.
+- Typing with an input method, such as Japanese, Chinese or Korean. kitty draws the text being composed at its cursor, and the list of words to pick from opens beside it.
+- Automatic color themes, which follow Windows as you switch it between light and dark.
+- Custom shaders, `custom_shaders`. The installer ships the part of the Slang compiler kitty builds them with.
+- `restore_session_after_logout`. When you sign out, restart or shut down, kitty saves its windows, tabs and scrollback, and the next kitty you start brings them back.
+- `{tab.active_exe}`, `{tab.active_oldest_exe}` and `{tab.children_mem_usage}` in tab titles, and the `count-background` part of `confirm_os_window_close`. The program in front is the shell while it waits at its prompt, which needs shell integration, and otherwise the newest program the window started.
+- A launch wrapper, `launch_wrapper.py`, and `launch --hold`. A wrapper that reads its command line again, such as `cmd /c`, can split the command it is handed, so pass it one that needs no quoting.
 - Tabs and OS windows. Closing one OS window leaves the others alone.
 - Scrollback, mouse selection, and the real Windows clipboard for copy and paste.
 - Dropping files and text onto a window, which pastes the paths or the text, and dragging a selection or a link out of a window into another program. A link to a file, such as one `ls --hyperlink` prints, drops as the file itself, which Explorer copies and never moves. That holds for the paths MSYS2, Cygwin and WSL shells print too, such as `/home/me` or `/mnt/c/Users`, but not for a WSL path outside `/mnt`, which drops as a link.
@@ -65,28 +72,17 @@ Known missing, and confirmed so.
 - Programs inside kitty starting drags of their own, which is the dnd kitten's side of drag and drop.
 - Abstract Unix sockets, `listen_on unix:@name`, which Windows does not have. Use a path, such as `unix:kitty.sock`.
 
-New in kitty 0.49 to 0.51 and not ported yet.
-
-- Custom shaders. They are compiled with the Slang compiler when first used, and the installer does not include it yet.
-- The launch wrapper, which runs new windows through a wrapper command. It is written around POSIX shells and paths. If you have a `launch_wrapper.py`, kitty logs once that it is not used.
-- `restore_session_after_logout`. Nothing on Windows tells kitty the session is ending yet. Turning it on logs that it is not supported and changes nothing else.
-- `tab.children_mem_usage` in tab titles, and the tracking of a window's root and descendant processes. Both read `/proc` and cgroups.
-
 kitty.conf options that do nothing or only part of their job on Windows yet.
 
 - The bell sound, `enable_audio_bell` and `bell_path`, the taskbar flash of `window_alert_on_bell`, and the tab's bell mark while kitty has focus. conhost turns parts of a shell's output into stray bells, which would make all three go off on many prompts until they are filtered out.
 - The scrollback pager, `scrollback_pager` and the actions that open it, such as ctrl+shift+h. The pager gets no scrollback, and the default `less` is not on a stock Windows PATH.
 - Fullscreen, the `toggle_fullscreen` action.
-- The IME candidate window, which is not placed at the cursor.
 - `hide_window_decorations`. With `yes` the window cannot be resized or moved with the mouse, and `titlebar-only` does nothing.
-- `remap_modifiers`.
 - `env read_from_shell`, which imports nothing.
 - `notify_on_cmd_finish`. The toast shows, but clicking it does not focus the window, and `clear_on` does not remove it.
-- `{tab.active_exe}` and `{tab.active_oldest_exe}` in tab titles, which always show the shell.
 - The 6 pixel resize band along the window's edges takes clicks meant for a tab bar at the bottom and for the scrollbar of the rightmost window. A maximized window has no band.
 - Custom pointer images. Every shape name maps to the nearest cursor Windows has.
 - `touch_scroll_multiplier` and `pixel_scroll`. A touchpad scrolls smoothly, by the wheel settings, but not by the pixel.
-- The `count-background` part of `confirm_os_window_close`.
 - `command_on_bell` runs only while kitty is in the background, for the same stray bells as the bell sound.
 - Remote control from a background process, `remote_control_script` and `launch --type=background --allow-remote-control`. The process runs, without a way back to kitty, and has to be something Windows starts by itself, such as an `.exe` or a `.bat`, so a Python or shell script is given with its interpreter.
 - `update_check_interval`.

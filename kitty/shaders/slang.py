@@ -84,9 +84,14 @@ def get_custom_pipeline_src(name: str) -> bytes:
     return read_kitty_resource(f'{name}.pipeline', 'kitty.shaders.custom')
 
 
+# slangc is a console program and kitty on Windows has no console, so each
+# compile would flash a console window of its own
+no_console_window: dict[str, int] = {'creationflags': subprocess.CREATE_NO_WINDOW} if is_windows else {}
+
+
 @run_once
 def slangc_version() -> str:
-    return subprocess.check_output(list(slangc()) + ['-version'], stderr=subprocess.STDOUT).decode().strip()
+    return subprocess.check_output(list(slangc()) + ['-version'], stderr=subprocess.STDOUT, **no_console_window).decode().strip()
 
 
 def is_dir_ok(path: str, checks: dict[str, str]) -> bool:
@@ -686,7 +691,7 @@ class SlangShaderQuery:
             cmd += ['--', '-']
             if self.invocation_tracker is not None:
                 self.invocation_tracker.add(tuple(cmd))
-            cp = subprocess.run(cmd, input=self.src, capture_output=True)
+            cp = subprocess.run(cmd, input=self.src, capture_output=True, **no_console_window)
             if cp.returncode != 0:
                 raise SlangFailed(self.name or 'shader', cp)
             self._preprocessed = parse_slang_declarations(cp.stdout.decode())
@@ -1964,7 +1969,7 @@ def build_custom_shader_pipeline_ir(pipeline: Pipeline, cache_dir: str, invocati
     if not cache_ok:
         cmd = bc + ['-module-name', 'kitty_custom_shader_types', '-o', j('kitty-custom-shader-types.slang-module'), '--', '-']
         invocation_tracker.add(tuple(cmd))
-        cp = subprocess.run(cmd, input=ct_shader, capture_output=True)
+        cp = subprocess.run(cmd, input=ct_shader, capture_output=True, **no_console_window)
         if cp.returncode != 0:
             raise SlangFailed('custom-types.slang', cp)
         ct_key_path = j('ct.key')
@@ -2013,7 +2018,7 @@ def build_custom_shader_pipeline_ir(pipeline: Pipeline, cache_dir: str, invocati
             defines = [f'-D{func}={entry_point(g_idx, s_idx, func)}' for func in ('fragment_main', 'pointer_map')]
             cmd = bc + inc + defines + ['-module-name', modname, '-o', module_file, '--', '-']
             invocation_tracker.add(tuple(cmd))
-            cp = subprocess.run(cmd, input=src, capture_output=True)
+            cp = subprocess.run(cmd, input=src, capture_output=True, **no_console_window)
             if cp.returncode != 0:
                 raise SlangFailed(name, cp)
             mtime = max(mtime, os.stat(module_file).st_mtime_ns)
@@ -2051,7 +2056,7 @@ def build_custom_shader_pipeline_ir(pipeline: Pipeline, cache_dir: str, invocati
             inc.extend(('-I', x))
         cmd = bc + inc + [f'-DPOINTER_MAP_SIZE={POINTER_MAP_SIZE}', '-module-name', slot_module_name, '-o', ans, '--', '-']
         invocation_tracker.add(tuple(cmd))
-        cp = subprocess.run(cmd, cwd=tdir, capture_output=True, input=mod_src.encode())
+        cp = subprocess.run(cmd, cwd=tdir, capture_output=True, input=mod_src.encode(), **no_console_window)
         if cp.returncode != 0:
             raise SlangFailed(f'{slot}.slang', cp)
 
@@ -2134,13 +2139,18 @@ def build_custom_shader_pipeline_glsl(
                     f'glsl_{glsl_version}',
                 ]
             )
-            vcmd = cmd + ['-stage', 'vertex', '-entry', 'vmain_wrap', '-o', vertex, '--', '-']
-            fcmd = cmd + ['-stage', 'fragment', '-entry', 'fmain_wrap', '-o', fragment, '--', '-']
+            # slangc 2026.14.1 cannot write GLSL to a path with letters outside
+            # ASCII, which a Windows profile folder can have, so there it writes
+            # a bare name inside the folder it runs in
+            run_in = glsl_dir if is_windows else None
+            vout, fout = (os.path.basename(vertex), os.path.basename(fragment)) if is_windows else (vertex, fragment)
+            vcmd = cmd + ['-stage', 'vertex', '-entry', 'vmain_wrap', '-o', vout, '--', '-']
+            fcmd = cmd + ['-stage', 'fragment', '-entry', 'fmain_wrap', '-o', fout, '--', '-']
             src = module_wrapper_for_slot(slot)
             invocation_tracker.add(tuple(vcmd))
             invocation_tracker.add(tuple(fcmd))
-            v = subprocess.Popen(vcmd, stderr=subprocess.PIPE, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
-            f = subprocess.Popen(fcmd, stderr=subprocess.PIPE, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+            v = subprocess.Popen(vcmd, cwd=run_in, stderr=subprocess.PIPE, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, **no_console_window)
+            f = subprocess.Popen(fcmd, cwd=run_in, stderr=subprocess.PIPE, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, **no_console_window)
             assert v.stdin is not None and f.stdin is not None
             assert v.stderr is not None and f.stderr is not None
             v.stdin.write(src), v.stdin.close()

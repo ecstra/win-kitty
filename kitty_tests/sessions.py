@@ -295,18 +295,66 @@ class TestSessions(BaseTest):
             with self.subTest(unsafe=unsafe):
                 self.ae(s(f'a{unsafe}b'), expected)
 
-    def test_restore_after_logout_refused_on_windows(self) -> None:
-        # The logout monitor is a D-Bus portal with no Windows counterpart, so
-        # turning the option on must not stop kitty from starting
+    def test_restore_after_logout_on_windows(self) -> None:
+        # Windows tells kitty's windows when the session ends, through the same
+        # callback the Linux portal calls, and its files behave differently
         if not is_windows:
-            self.skipTest('the refusal is Windows only')
-        from kitty import boss
+            self.skipTest('Windows only')
+        import json
+        import os
+        import shlex
+        import shutil
+        import subprocess
+        import tempfile
+
+        from kitty import boss, fast_data_types
+        from kitty import logout_session as ls
+        from kitty.constants import unserialize_launch_flag
+        from kitty.utils import is_pid_alive
 
         self.set_options({'restore_session_after_logout': True})
-        fake_boss = cast(boss.Boss, SimpleNamespace(on_desktop_session_state_changed=lambda state: None))
-        with patch.object(boss, 'log_error') as log_error:
-            boss.Boss.monitor_desktop_session_if_needed(fake_boss)
-        self.assertIn('not supported on Windows', log_error.call_args[0][0])
+        callback = SimpleNamespace(on_desktop_session_state_changed=lambda state: None)
+        with patch.object(boss, 'log_error') as log_error, patch.object(fast_data_types, 'dbus_monitor_session_state', create=True) as monitor:
+            boss.Boss.monitor_desktop_session_if_needed(cast(boss.Boss, callback))
+        log_error.assert_not_called()
+        monitor.assert_called_once_with(callback.on_desktop_session_state_changed)
+
+        # os.kill(pid, 0) sends Ctrl+C on Windows, so the check asks for the process instead
+        self.assertTrue(is_pid_alive(os.getpid()))
+        p = subprocess.Popen(['cmd.exe', '/c', 'exit'], stdout=subprocess.DEVNULL)
+        p.wait()
+        self.assertFalse(is_pid_alive(p.pid))
+        self.assertFalse(is_pid_alive(99999999))
+
+        tdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tdir, True)
+        base = os.path.join(tdir, 'saved-at-logout')
+        state = ls.ProcessState(('--config', 'other.conf'), tdir, {'VAR': 'value'}, 0)
+        session = shlex.join(['launch', unserialize_launch_flag + json.dumps({'id': 7})])
+        # Windows cannot delete a file that is open, so the lock this kitty holds
+        # on its own snapshot is let go before the snapshot is replaced or deleted
+        path = ls.save_snapshot(base, 21, session, {7: b'seven'}, state, None)
+        ls.lock_snapshot_for_saver(path)
+        path = ls.save_snapshot(base, 21, session, {7: b'seven'}, state, None)
+        self.assertTrue(os.path.isdir(path))
+        ls.lock_snapshot_for_saver(path)
+        ls.delete_snapshot(path)
+        self.assertFalse(os.path.exists(path))
+        self.assertIsNone(ls.saver_lock)
+        # A saved snapshot is claimed and restored with its scrollback
+        ls.save_snapshot(base, 22, session, {7: b'seven'}, state, None)
+        (snapshot,) = ls.claim_snapshots(base, 1, None, lambda pid: False)
+        (s,) = ls.load_snapshot(snapshot.path, self.set_options(), None)
+        self.assertTrue(s.tabs[0].windows[0].restored_scrollback.startswith(b'seven\r\n'))
+        ls.finish_restore(snapshot.path)
+        self.ae(os.listdir(base), [])
+        # Windows takes no preexec_fn, so the kitty that restores another
+        # instance's snapshot is started detached instead
+        with patch.object(subprocess, 'Popen') as popen:
+            ls.start_instance_for_snapshot(snapshot)
+        kw = popen.call_args.kwargs
+        self.assertNotIn('preexec_fn', kw)
+        self.assertTrue(kw['creationflags'] & subprocess.DETACHED_PROCESS)
 
     @skip_on_windows('checks POSIX permission bits on the saved snapshots, which Windows does not keep')
     def test_logout_snapshots(self) -> None:

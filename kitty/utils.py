@@ -872,6 +872,14 @@ def system_paths_on_macos() -> tuple[str, ...]:
     return tuple(entries)
 
 
+def program_name(path: str) -> str:
+    '''The name of a program from its path, without the .exe Windows gives it'''
+    name = os.path.basename(path)
+    if is_windows and name.lower().endswith('.exe'):
+        name = name[:-4]
+    return name
+
+
 def which(name: str, only_system: bool = False) -> str | None:
     if os.sep in name:
         return name
@@ -1201,6 +1209,11 @@ def less_version(less_exe: str = 'less') -> int:
 
 
 def is_pid_alive(pid: int) -> bool:
+    if is_windows:
+        # os.kill(pid, 0) sends Ctrl+C on Windows rather than checking the pid
+        from .fast_data_types import process_is_alive
+
+        return process_is_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

@@ -12,6 +12,7 @@
 #include <ole2.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <imm.h>
 
 #include "win32_acrylic.h"
 
@@ -112,6 +113,10 @@ static int getKeyMods(void) {
     if (GetKeyState(VK_NUMLOCK) & 1) mods |= GLFW_MOD_NUM_LOCK;
     return mods;
 }
+
+// The keys really held decide how a key press goes out, since Windows' text
+// and AltGr follow them, and remap_modifiers changes only what kitty is told
+static int reportedMods(int heldMods) { return _glfwApplyModifierRemap(heldMods); }
 
 // ---------------------------------------------------------------------------
 // Custom title bar (frame reclaimed so the caption shares the acrylic surface)
@@ -228,6 +233,103 @@ static float backgroundOpacity(void) {
 static void captureTint(_GLFWwindow* window) {
     window->win32.tintRGB = titlebarRGB();
     window->win32.tintOpacity = backgroundOpacity();
+}
+
+// ---------------------------------------------------------------------------
+// Input methods, which type Chinese, Japanese, Korean and more
+// ---------------------------------------------------------------------------
+
+static char* win32_wide_to_utf8(const wchar_t *w, size_t *out_len); // fwd
+
+// The text being composed, or the text the input method just finished, as
+// UTF-8, with the cursor's place inside it in code points when asked for
+static char*
+imeText(HIMC imc, DWORD which, int *cursor) {
+    const LONG bytes = ImmGetCompositionStringW(imc, which, NULL, 0);
+    if (bytes < 0) return NULL;
+    const LONG units = bytes / (LONG) sizeof(WCHAR);
+    WCHAR *wide = calloc((size_t) units + 1, sizeof(WCHAR));
+    if (!wide) return NULL;
+    if (bytes) ImmGetCompositionStringW(imc, which, wide, (DWORD) bytes);
+    if (cursor) {
+        // Windows counts the cursor in UTF-16 units and kitty in code points
+        LONG at = ImmGetCompositionStringW(imc, GCS_CURSORPOS, NULL, 0) & 0xffff;
+        if (at > units) at = units;
+        int points = 0;
+        for (LONG i = 0; i < at; i++) if (!IS_LOW_SURROGATE(wide[i])) points++;
+        *cursor = points;
+    }
+    char *text = win32_wide_to_utf8(wide, NULL);
+    free(wide);
+    return text;
+}
+
+static void
+sendImeEvent(_GLFWwindow *window, GLFWIMEState state, const char *text, int cursor) {
+    GLFWkeyevent ev = {.action = GLFW_PRESS, .ime_state = state, .text = text ? text : ""};
+    if (cursor >= 0) { ev.has_ime_cursor = true; ev.ime_cursor = (uint32_t) cursor; }
+    _glfwInputKeyboard(window, &ev);
+}
+
+// The cursor comes in the window's client pixels, which both calls take
+static void
+placeImeWindows(_GLFWwindow *window, const GLFWIMEUpdateEvent *ev) {
+    HIMC imc = ImmGetContext(window->win32.handle);
+    if (!imc) return;
+    const LONG left = ev->cursor.left, top = ev->cursor.top;
+    COMPOSITIONFORM composition = {.dwStyle = CFS_POINT, .ptCurrentPos = {left, top}};
+    ImmSetCompositionWindow(imc, &composition);
+    // The word list opens beside the cursor's cell and never covers it
+    CANDIDATEFORM candidates = {.dwIndex = 0, .dwStyle = CFS_EXCLUDE, .ptCurrentPos = {left, top},
+        .rcArea = {left, top, left + ev->cursor.width, top + ev->cursor.height}};
+    ImmSetCandidateWindow(imc, &candidates);
+    ImmReleaseContext(window->win32.handle, imc);
+}
+
+// Keys the input method takes reach kitty as VK_PROCESSKEY, which carries no
+// key, so kitty is asked where its cursor is now rather than at the last key
+static void
+placeImeWindowsAtCursor(_GLFWwindow *window) {
+    GLFWIMEUpdateEvent ev = {.type = GLFW_IME_UPDATE_CURSOR_POSITION};
+    if (_glfw.callbacks.get_ime_cursor_position &&
+            _glfw.callbacks.get_ime_cursor_position((GLFWwindow *) window, &ev))
+        placeImeWindows(window, &ev);
+}
+
+// ---------------------------------------------------------------------------
+// The end of the Windows session, for restore_session_after_logout
+// ---------------------------------------------------------------------------
+
+// The states the session monitor on Linux reports, from linux_session_monitor.h
+#define SESSION_STATE_QUERY_END 2
+#define SESSION_STATE_ENDING 3
+typedef void (*GLFWDBussessionstatefun)(uint32_t);
+static GLFWDBussessionstatefun sessionStateCallback = NULL;
+
+// Named for the D-Bus portal Linux watches, the name kitty loads it by
+GLFWAPI bool
+glfwDBusMonitorSessionState(GLFWDBussessionstatefun callback) {
+    sessionStateCallback = callback;
+    // Windows shuts down processes from the highest level to the lowest, so
+    // kitty hears of the end before its shells, whose scrollback it saves
+    SetProcessShutdownParameters(0x3ff, 0);
+    return true;
+}
+
+// Every kitty window hears the end of the session, and kitty saves once. It
+// saves only once Windows says the session ends, since another program can
+// still cancel when Windows asks, and Windows may end kitty the moment this
+// returns. An installer closing kitty to replace its files is no end of the
+// session, and saves nothing.
+static void
+sessionEnding(HWND hWnd, LPARAM lParam) {
+    static bool saved = false;
+    if (saved || !sessionStateCallback || (lParam & ENDSESSION_CLOSEAPP)) return;
+    saved = true;
+    ShutdownBlockReasonCreate(hWnd, L"Saving the kitty session");
+    sessionStateCallback(SESSION_STATE_QUERY_END);
+    sessionStateCallback(SESSION_STATE_ENDING);
+    ShutdownBlockReasonDestroy(hWnd);
 }
 
 // ---------------------------------------------------------------------------
@@ -430,13 +532,13 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             else if (uMsg == WM_MBUTTONDOWN || uMsg == WM_MBUTTONUP) button = GLFW_MOUSE_BUTTON_MIDDLE;
             int action = (uMsg == WM_LBUTTONDOWN || uMsg == WM_RBUTTONDOWN || uMsg == WM_MBUTTONDOWN) ? GLFW_PRESS : GLFW_RELEASE;
             if (action == GLFW_PRESS) SetCapture(hWnd); else ReleaseCapture();
-            _glfwInputMouseClick(window, button, action, getKeyMods());
+            _glfwInputMouseClick(window, button, action, reportedMods(getKeyMods()));
             return 0;
         }
         // The back and forward buttons, the fourth and fifth as on X11
         case WM_XBUTTONDOWN: case WM_XBUTTONUP: {
             const int button = GET_XBUTTON_WPARAM(wParam) == XBUTTON1 ? GLFW_MOUSE_BUTTON_4 : GLFW_MOUSE_BUTTON_5;
-            _glfwInputMouseClick(window, button, uMsg == WM_XBUTTONDOWN ? GLFW_PRESS : GLFW_RELEASE, getKeyMods());
+            _glfwInputMouseClick(window, button, uMsg == WM_XBUTTONDOWN ? GLFW_PRESS : GLFW_RELEASE, reportedMods(getKeyMods()));
             return TRUE;
         }
 
@@ -446,14 +548,14 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_MOUSEWHEEL: {
             GLFWScrollEvent ev = {.offset_type = GLFW_SCROLL_OFFEST_V120};
             ev.y_offset = ev.unscaled.y = (double) GET_WHEEL_DELTA_WPARAM(wParam);
-            ev.keyboard_modifiers = getKeyMods();
+            ev.keyboard_modifiers = reportedMods(getKeyMods());
             _glfwInputScroll(window, &ev);
             return 0;
         }
         case WM_MOUSEHWHEEL: {
             GLFWScrollEvent ev = {.offset_type = GLFW_SCROLL_OFFEST_V120};
             ev.x_offset = ev.unscaled.x = -(double) GET_WHEEL_DELTA_WPARAM(wParam);
-            ev.keyboard_modifiers = getKeyMods();
+            ev.keyboard_modifiers = reportedMods(getKeyMods());
             _glfwInputScroll(window, &ev);
             return 0;
         }
@@ -497,7 +599,7 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                 ev.key = key;
                 ev.native_key = (int) wParam;
                 ev.action = up ? GLFW_RELEASE : (HIWORD(lParam) & KF_REPEAT ? GLFW_REPEAT : GLFW_PRESS);
-                ev.mods = mods;
+                ev.mods = reportedMods(mods);
                 _glfwInputKeyboard(window, &ev);
             }
             if (uMsg == WM_SYSKEYDOWN || uMsg == WM_SYSKEYUP) break; // allow system keys
@@ -507,10 +609,11 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_SYSDEADCHAR:
             // Alt with a dead key: no character follows, so the key goes out alone
             if (window->win32.pendingCharKey) {
-                GLFWkeyevent ev = {.key = window->win32.pendingCharKey, .action = GLFW_PRESS, .mods = getKeyMods()};
+                const int mods = getKeyMods();
+                GLFWkeyevent ev = {.key = window->win32.pendingCharKey, .action = GLFW_PRESS, .mods = reportedMods(mods)};
                 window->win32.pendingCharKey = 0;
                 // The dead key's own character, as the one shift made
-                if ((ev.mods & GLFW_MOD_SHIFT) && (uint32_t) wParam != ev.key) ev.shifted_key = (uint32_t) wParam;
+                if ((mods & GLFW_MOD_SHIFT) && (uint32_t) wParam != ev.key) ev.shifted_key = (uint32_t) wParam;
                 _glfwInputKeyboard(window, &ev);
             }
             return 0;
@@ -518,6 +621,39 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             // AltGr with a dead key composes with the next key, like any dead key
             window->win32.pendingCharKey = 0;
             break;
+
+        // kitty draws the text being composed at its cursor, as on Linux and
+        // macOS, so the input method's own composition window stays hidden
+        case WM_IME_SETCONTEXT:
+            lParam &= ~ISC_SHOWUICOMPOSITIONWINDOW;
+            break;
+        case WM_IME_STARTCOMPOSITION:
+            placeImeWindowsAtCursor(window);
+            return 0;
+        case WM_IME_COMPOSITION: {
+            HIMC imc = ImmGetContext(hWnd);
+            if (!imc) break;
+            // Korean finishes one syllable and starts the next in one message,
+            // so the finished text goes first
+            if (lParam & GCS_RESULTSTR) {
+                char *text = imeText(imc, GCS_RESULTSTR, NULL);
+                sendImeEvent(window, GLFW_IME_COMMIT_TEXT, text, -1);
+                free(text);
+            }
+            if (lParam & GCS_COMPSTR) {
+                int cursor = -1;
+                char *text = imeText(imc, GCS_COMPSTR, (lParam & GCS_CURSORPOS) ? &cursor : NULL);
+                sendImeEvent(window, GLFW_IME_PREEDIT_CHANGED, text, cursor);
+                free(text);
+            } else if (!(lParam & GCS_RESULTSTR)) sendImeEvent(window, GLFW_IME_PREEDIT_CHANGED, "", -1);
+            ImmReleaseContext(hWnd, imc);
+            // Answered here, Windows sends no WM_CHAR for the finished text,
+            // which kitty has already
+            return 0;
+        }
+        case WM_IME_ENDCOMPOSITION:
+            sendImeEvent(window, GLFW_IME_PREEDIT_CHANGED, "", -1);
+            return 0;
 
         case WM_CHAR: case WM_SYSCHAR: {
             const uint32_t pairedKey = window->win32.pendingCharKey;
@@ -528,7 +664,7 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             // for its character still goes out, as the key alone.
             if ((WCHAR) wParam < 0x20) {
                 if (pairedKey) {
-                    GLFWkeyevent ev = {.key = pairedKey, .action = GLFW_PRESS, .mods = mods};
+                    GLFWkeyevent ev = {.key = pairedKey, .action = GLFW_PRESS, .mods = reportedMods(mods)};
                     _glfwInputKeyboard(window, &ev);
                 }
                 return 0;
@@ -569,7 +705,7 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                         if ((mods & GLFW_MOD_CONTROL) && (mods & GLFW_MOD_ALT) && (GetKeyState(VK_RMENU) & 0x8000))
                             mods &= ~(GLFW_MOD_CONTROL | GLFW_MOD_ALT);
                     }
-                    ev.mods = mods;
+                    ev.mods = reportedMods(mods);
                     _glfwInputKeyboard(window, &ev);
                 }
             }
@@ -585,6 +721,19 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
                          SWP_NOACTIVATE | SWP_NOZORDER);
             return 0;
         }
+
+        // The helper window is message only, which broadcasts never reach, so
+        // the theme change is heard here, in every kitty window at once
+        case WM_SETTINGCHANGE:
+            if (lParam && wcscmp((LPCWSTR) lParam, L"ImmersiveColorSet") == 0)
+                _glfwWin32SystemColorThemeMayHaveChanged();
+            break;
+
+        case WM_QUERYENDSESSION:
+            return TRUE;
+        case WM_ENDSESSION:
+            if (wParam) sessionEnding(hWnd, lParam);
+            return 0;
     }
     return DefWindowProcW(hWnd, uMsg, wParam, lParam);
 }
@@ -1297,7 +1446,10 @@ void _glfwPlatformSetWindowOpacity(_GLFWwindow* window, float opacity) {
         SetLayeredWindowAttributes(window->win32.handle, 0, (BYTE)(255 * opacity), LWA_ALPHA);
     } else SetWindowLongW(window->win32.handle, GWL_EXSTYLE, ex & ~WS_EX_LAYERED);
 }
-void _glfwPlatformUpdateIMEState(_GLFWwindow* w, const GLFWIMEUpdateEvent* ev) { (void) w; (void) ev; }
+// Windows keeps an input method per window and follows focus by itself
+void _glfwPlatformUpdateIMEState(_GLFWwindow* w, const GLFWIMEUpdateEvent* ev) {
+    if (ev->type == GLFW_IME_UPDATE_CURSOR_POSITION) placeImeWindows(w, ev);
+}
 
 int _glfwPlatformSetWindowBlur(_GLFWwindow* window, int value) {
     window->win32.blur = value;

@@ -41,7 +41,7 @@ from .progress import ProgressState
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
 from .types import WindowGeometry, run_once
 from .typing_compat import EdgeLiteral, PowerlineStyle
-from .utils import color_as_int, log_error, sgr_sanitizer_pat
+from .utils import color_as_int, log_error, program_name, sgr_sanitizer_pat
 
 if is_macos:
     from .fast_data_types import cocoa_is_secure_input_enabled  # type: ignore
@@ -255,12 +255,12 @@ class TabAccessor:
     @property
     def active_exe(self) -> str:
         tab = get_boss().tab_for_id(self.tab_id)
-        return os.path.basename((tab.get_exe_of_active_window() if tab else '') or '')
+        return program_name((tab.get_exe_of_active_window() if tab else '') or '')
 
     @property
     def active_oldest_exe(self) -> str:
         tab = get_boss().tab_for_id(self.tab_id)
-        return os.path.basename((tab.get_exe_of_active_window(oldest=True) if tab else '') or '')
+        return program_name((tab.get_exe_of_active_window(oldest=True) if tab else '') or '')
 
     @property
     def last_focused_progress_percent(self) -> str:

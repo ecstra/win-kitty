@@ -2743,10 +2743,8 @@ class Boss:
 
         if is_macos or not get_options().restore_session_after_logout or is_panel_kitten():
             return
-        if is_windows:
-            # The monitor is a D-Bus portal, and the win32 glfw has none
-            log_error('Restoring the session after logout: not supported on Windows yet')
-            return
+        # On Windows the win32 glfw reports the end of the session through the
+        # same callback, from the message Windows sends kitty's windows
         from .fast_data_types import dbus_monitor_session_state
 
         dbus_monitor_session_state(self.on_desktop_session_state_changed)

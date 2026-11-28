@@ -385,8 +385,8 @@ void _glfwPlatformUpdateGamepadGUID(char* guid) { (void)guid; }
 
 void _glfwPlatformInputColorScheme(GLFWColorScheme appearance) { (void)appearance; }
 
-GLFWAPI GLFWColorScheme glfwGetCurrentSystemColorTheme(bool query_if_unintialized) {
-    (void) query_if_unintialized;
+static GLFWColorScheme
+read_system_color_theme(void) {
     HKEY key;
     DWORD light = 1, sz = sizeof(light);
     if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
@@ -395,6 +395,29 @@ GLFWAPI GLFWColorScheme glfwGetCurrentSystemColorTheme(bool query_if_unintialize
         RegCloseKey(key);
     }
     return light ? GLFW_COLOR_SCHEME_LIGHT : GLFW_COLOR_SCHEME_DARK;
+}
+
+// The scheme kitty was last told of, so the change every kitty window hears
+// about reaches kitty once
+static GLFWColorScheme reported_color_theme = GLFW_COLOR_SCHEME_NO_PREFERENCE;
+static bool color_theme_reported = false;
+
+GLFWAPI GLFWColorScheme glfwGetCurrentSystemColorTheme(bool query_if_unintialized) {
+    (void) query_if_unintialized;
+    reported_color_theme = read_system_color_theme();
+    color_theme_reported = true;
+    return reported_color_theme;
+}
+
+// Windows broadcasts WM_SETTINGCHANGE with "ImmersiveColorSet" when the user
+// switches between light and dark, which kitty's automatic color themes follow
+void
+_glfwWin32SystemColorThemeMayHaveChanged(void) {
+    const GLFWColorScheme now = read_system_color_theme();
+    if (color_theme_reported && now == reported_color_theme) return;
+    reported_color_theme = now;
+    color_theme_reported = true;
+    _glfwInputColorScheme(now, false);
 }
 void _glfwPlatformChangeCursorTheme(void) {}
 

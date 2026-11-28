@@ -188,3 +188,17 @@ class WindowsFeaturesTest(BaseTest):
             with self.assertRaises(SystemExit):
                 parse_args(['--help'])
         self.assertIn('--listen-on', out.getvalue())
+
+    def test_program_names_drop_the_exe(self):
+        # Tab titles show nvim, and the ssh checks know ssh.exe as ssh
+        from kittens.ssh.utils import is_kitten_cmdline
+        from kitty.utils import program_name
+
+        for path, name in (
+            (r'C:\Program Files\Neovim\bin\nvim.exe', 'nvim'),
+            ('nvim', 'nvim'),
+            (r'C:\Windows\System32\OpenSSH\ssh.EXE', 'ssh'),
+            ('archive.exe.old', 'archive.exe.old'),
+        ):
+            self.ae(program_name(path), name)
+        self.assertTrue(is_kitten_cmdline([r'C:\kitty\bin\kitten.exe', 'ssh', 'host']))

@@ -59,6 +59,42 @@ class TestSlang(BaseTest):
             with patch.object(constants, '_slangc', ()), patch.dict(os.environ, {'SLANGC': value}):
                 self.ae(constants.slangc(), expected)
 
+    def test_slangc_shipped_beside_the_launcher_comes_first(self):
+        # The installed kitty is not frozen, so upstream's bundled lookup never runs there
+        if not is_windows:
+            self.skipTest('the Windows install only')
+        from kitty import constants
+
+        with tempfile.TemporaryDirectory() as launcher_dir:
+            def lookup() -> tuple[str, ...]:
+                with (
+                    patch.object(constants, '_slangc', ()),
+                    patch.dict(constants.kitty_run_data, {'bundle_exe_dir': launcher_dir}),
+                    patch.dict(os.environ, {'SLANGC': r'C:\slang\slangc.exe'}),
+                ):
+                    return constants.slangc()
+
+            self.ae(lookup(), ('C:/slang/slangc.exe',))
+            bundled = os.path.join(launcher_dir, 'slangc.exe')
+            open(bundled, 'wb').close()
+            self.ae(lookup(), (bundled,))
+
+    def test_custom_shader_builds_in_a_folder_with_accented_letters(self):
+        # A profile folder can have such a name, and the shader cache lives under it
+        if not shutil.which(slangc()[0]):
+            self.skipTest(f'slangc ({slangc()[0]}) not found in PATH')
+        with tempfile.TemporaryDirectory() as tdir:
+            cache_dir = os.path.join(tdir, 'ünï cødé ñ')
+            os.mkdir(cache_dir)
+            clear_caches()
+            p = parse_pipeline_definition(['startgroup', 'shaders sample', 'endgroup'], 'test')
+            try:
+                vert_src, frag_src, _ = build_custom_shader_pipeline_glsl(p, cache_dir=cache_dir)
+            finally:
+                clear_caches()
+        self.assertIn('main', vert_src)
+        self.assertIn('main', frag_src)
+
     def test_animation_step_parsing(self):
         def step(val):
             return parse_pipeline_definition(['startgroup', f'animation_step {val}', 'shaders focus-highlight', 'endgroup'], 'test')['groups'][0][
