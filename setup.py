@@ -1746,6 +1746,22 @@ def go_cmd() -> list[str]:
     return []
 
 
+def windows_version_defines() -> list[str]:
+    # The four numbers a Windows version field takes, and the dotted version,
+    # for kitty/launcher/version.rc
+    nums = ','.join(map(str, (*version, 0, 0, 0, 0)[:4]))
+    return [f'-DKITTY_VERSION_NUMS={nums}', f'-DKITTY_VERSION_DOTTED={".".join(map(str, version))}']
+
+
+def build_kitten_resources(src: str) -> None:
+    # go build links any .syso in the package's folder, which is how kitten.exe
+    # gets its version details. It is made fresh each build, and git ignores it.
+    syso = os.path.join(src, 'rsrc_windows_amd64.syso')
+    rc = 'kitty/launcher/kitten.rc'
+    if newer(syso, rc, 'kitty/launcher/version.rc', 'kitty/constants.py'):
+        subprocess.check_call(['windres', *windows_version_defines(), rc, '-O', 'coff', '-o', syso])
+
+
 def build_static_kittens(
     args: Options,
     launcher_dir: str,
@@ -1801,6 +1817,8 @@ def build_static_kittens(
     if for_platform:
         dest += f'-{for_platform[0]}-{for_platform[1]}'
     src = os.path.abspath('tools/cmd')
+    if is_windows and not for_platform:
+        build_kitten_resources(src)
 
     def run_one(dest: str) -> None:
         c = cmd + ['-o', dest, src]
@@ -1959,11 +1977,11 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
         rc = 'kitty/launcher/kitty.rc'
         rc_obj = os.path.join(build_dir, 'kitty-launcher-kitty-rc.o')
         objects.append(rc_obj)
-        rc_cmd = ['windres', rc, '-O', 'coff', '-o', rc_obj]
+        rc_cmd = ['windres', *windows_version_defines(), rc, '-O', 'coff', '-o', rc_obj]
         args.compilation_database.add_command(
             f'Compiling {emphasis(rc)} ...',
             rc_cmd,
-            partial(newer, rc_obj, rc, 'kitty/launcher/kitty.ico'),
+            partial(newer, rc_obj, rc, 'kitty/launcher/kitty.ico', 'kitty/launcher/version.rc', 'kitty/constants.py'),
             key=CompileKey(rc, os.path.basename(rc_obj)),
             keyfile=rc,
         )
@@ -2512,6 +2530,8 @@ def package(args: Options, bundle_type: str, do_build_all: bool = True) -> None:
 
 def clean_launcher_dir(launcher_dir: str) -> None:
     for x in glob.glob(os.path.join(launcher_dir, 'kitt*')):
+        if x.endswith(('.rc', '.ico')):
+            continue  # the Windows launcher's icon and resource scripts are sources
         if os.path.isdir(x):
             shutil.rmtree(x)
         else:

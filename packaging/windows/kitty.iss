@@ -13,11 +13,20 @@
 #ifndef AppVersion
   #define AppVersion "0.48.0"
 #endif
+; Windows' version fields take numbers alone, so a suffix such as -win.1 stays
+; in the text version only
+#define AppVersionNumbers Copy(AppVersion, 1, Pos("-", AppVersion + "-") - 1)
 
 [Setup]
 AppId={{A303A4CC-F4EE-40BE-B881-1C25CDB1AC19}
 AppName=kitty
 AppVersion={#AppVersion}
+; The details code signing asks of every signed file, as the programs carry
+VersionInfoProductName=win-kitty
+VersionInfoProductVersion={#AppVersionNumbers}
+VersionInfoProductTextVersion={#AppVersion}
+VersionInfoVersion={#AppVersionNumbers}
+VersionInfoDescription=win-kitty setup
 AppPublisher=Kovid Goyal (Windows port by ecstra)
 AppPublisherURL=https://sw.kovidgoyal.net/kitty/
 DefaultDirName={autopf}\kitty
@@ -42,14 +51,19 @@ WizardSmallImageFile=
 
 [Tasks]
 Name: "addtopath"; Description: "Add kitty to your PATH (so 'kitty' and 'kitten' work in any terminal)"
-Name: "contextmenu"; Description: "Add 'Open in kitty' to the Explorer right-click menu"
+; checkablealone and dontinheritcheck keep the two apart, since by default a
+; parent goes unticked with its children and ticks them when ticked
+Name: "contextmenu"; Description: "Add 'Open in kitty' to the Explorer right-click menu, under Show more options on Windows 11"; Flags: checkablealone
+; Off by default, since the package only registers once Windows trusts the
+; certificate it is signed with, which this build makes itself
+Name: "contextmenu\win11"; Description: "Also put it in the Windows 11 main menu. Warning: this adds the certificate of this kitty build to the computer's trusted certificates"; Flags: unchecked dontinheritcheck; Check: CanRegisterMsix
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Name: "quickaccess"; Description: "Start the quick access terminal hidden when you sign in, so a hotkey you set for it works"; Flags: unchecked
 
 [Files]
 Source: "..\..\dist\kitty\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
-Source: "..\..\dist\kitty-menu.msix"; DestDir: "{app}\msix"; Tasks: contextmenu; Check: CanRegisterMsix
-Source: "..\..\dist\kitty-menu.cer"; DestDir: "{app}\msix"; Tasks: contextmenu; Check: CanRegisterMsix
+Source: "..\..\dist\kitty-menu.msix"; DestDir: "{app}\msix"; Tasks: contextmenu\win11; Check: CanRegisterMsix
+Source: "..\..\dist\kitty-menu.cer"; DestDir: "{app}\msix"; Tasks: contextmenu\win11; Check: CanRegisterMsix
 
 [Icons]
 ; The shortcut keeps %USERPROFILE% as it is, which Windows expands for whoever
@@ -218,10 +232,10 @@ begin
   { Remove any existing registration first, so re-installs of the same version
     still pick up a changed package. }
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-       '-NoProfile -ExecutionPolicy Bypass -Command "Get-AppxPackage Ecstra.Kitty.ContextMenu | Remove-AppxPackage"',
+       '-NoProfile -Command "Get-AppxPackage Ecstra.Kitty.ContextMenu | Remove-AppxPackage"',
        '', SW_HIDE, ewWaitUntilTerminated, R);
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-       ExpandConstant('-NoProfile -ExecutionPolicy Bypass -Command "Add-AppxPackage -Path ''{app}\msix\kitty-menu.msix'' -ExternalLocation ''{app}''"'),
+       ExpandConstant('-NoProfile -Command "Add-AppxPackage -Path ''{app}\msix\kitty-menu.msix'' -ExternalLocation ''{app}''"'),
        '', SW_HIDE, ewWaitUntilTerminated, R);
 end;
 
@@ -235,22 +249,29 @@ var
   R: Integer;
 begin
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-       '-NoProfile -ExecutionPolicy Bypass -Command "Get-AppxPackage -AllUsers Ecstra.Kitty.ContextMenu | Remove-AppxPackage -AllUsers"',
+       '-NoProfile -Command "Get-AppxPackage -AllUsers Ecstra.Kitty.ContextMenu | Remove-AppxPackage -AllUsers"',
        '', SW_HIDE, ewWaitUntilTerminated, R);
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-       ExpandConstant('-NoProfile -ExecutionPolicy Bypass -Command "$c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 ''{app}\msix\kitty-menu.cer''; foreach ($n in ''Root'', ''TrustedPeople'') {{ $s = New-Object System.Security.Cryptography.X509Certificates.X509Store($n, ''LocalMachine''); $s.Open(''ReadWrite''); $s.Remove($c); $s.Close() }"'),
+       ExpandConstant('-NoProfile -Command "$c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 ''{app}\msix\kitty-menu.cer''; foreach ($n in ''Root'', ''TrustedPeople'') {{ $s = New-Object System.Security.Cryptography.X509Certificates.X509Store($n, ''LocalMachine''); $s.Open(''ReadWrite''); $s.Remove($c); $s.Close() }"'),
        '', SW_HIDE, ewWaitUntilTerminated, R);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  { An earlier install's Windows 11 menu goes before the files are copied,
+    while its kitty-menu.cer is still the one it trusted, since a newer build
+    may carry another certificate, which would leave the old one trusted }
+  if (CurStep = ssInstall) and FileExists(ExpandConstant('{app}\msix\kitty-menu.msix')) then begin
+    UnregisterMsix();
+    DelTree(ExpandConstant('{app}\msix'), True, True, True);
+  end;
   if CurStep = ssPostInstall then begin
     if WizardIsTaskSelected('addtopath') then begin
       EnvAddPath(EnvRoot(), EnvKey(), BinDir());
       { Older installs put the DLL-laden launcher directory on PATH: remove it. }
       EnvRemovePath(EnvRoot(), EnvKey(), ExpandConstant('{app}') + '\kitty\launcher');
     end;
-    if WizardIsTaskSelected('contextmenu') and CanRegisterMsix() then
+    if WizardIsTaskSelected('contextmenu\win11') and CanRegisterMsix() then
       RegisterMsix();
   end;
 end;

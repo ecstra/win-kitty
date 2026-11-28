@@ -18,9 +18,10 @@
 /kitty.app/
 /glad/out/
 /kitty/launcher/kitt*
-# The Windows port keeps two launcher sources in that directory, and the
+# The Windows port keeps three launcher sources in that directory, and the
 # pattern above, which is there for the built launcher, was swallowing them.
 !/kitty/launcher/kitty.rc
+!/kitty/launcher/kitten.rc
 !/kitty/launcher/kitty.ico
 /*.dSYM/
 __pycache__/
@@ -47,3 +48,6 @@ packaging/windows/cert/
 # caught by it.
 /cmd
 /cmd.exe
+
+# kitten.exe's version details, which the build makes from kitty/launcher/kitten.rc
+/tools/cmd/*.syso

@@ -119,6 +119,8 @@ Go reads a junction as neither a folder nor a symlink, so a move could merge dro
 
 Classic registry verbs under HKLM are enough on Windows 10, and Windows 11 shows them only under "Show more options". Its main menu reads packaged commands, so the entry there comes from a sparse MSIX carrying an IExplorerCommand implementation, signed with a certificate the build creates once and the installer trusts. This is heavier than a registry key and there is no lighter option that puts an entry in the menu users actually see.
 
+Trusting that certificate is something malware does too, and a change to the system security software looks hard at, so the main menu entry is an option the user ticks, off by default, with a warning that it adds a certificate to the computer's trusted certificates. The classic entry under Show more options needs none of this and stays on for everyone. Once the package is signed with a certificate Windows already trusts, the option needs no certificate of its own.
+
 ## Keeping WS_CAPTION and hiding the frame
 
 Custom frame apps on Windows keep WS_CAPTION so the window still snaps, maximizes with an animation, and shows a taskbar menu, then hide the frame by handling WM_NCCALCSIZE. Dropping WS_CAPTION was tried. It did not stop DWM from painting a caption in the glass transparency mode, so it gained nothing and put the normal window behaviour at risk.

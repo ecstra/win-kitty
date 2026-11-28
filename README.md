@@ -141,6 +141,7 @@ Outside a UCRT64 shell, run `export GOROOT=/ucrt64/lib/go` first, or Go cannot f
 * [docs/windows-changelog.md](docs/windows-changelog.md): what changed in each release.
 * [docs/windows-internals.md](docs/windows-internals.md): how each Windows piece works.
 * [docs/decisions.md](docs/decisions.md): why things were done the way they were.
+* [Code signing policy](docs/code-signing-policy.md): how releases are built and signed, and who approves them.
 
 ## Credits
 

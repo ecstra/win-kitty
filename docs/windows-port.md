@@ -29,7 +29,7 @@ An upgrade keeps the choice the earlier install made. The installer follows Wind
 The installer offers four optional tasks.
 
 - Add kitty to your PATH: puts `<install>\bin` on your PATH, or the machine's for everyone, so `kitty` and `kitten` work in any terminal.
-- Add "Open in kitty" to the Explorer right click menu: appears under "Show more options", and with an install for everyone also in the main Windows 11 menu of the account the installer ran as. The main menu needs a package whose certificate is trusted for the whole machine, which takes administrator rights, see [windows-internals.md](windows-internals.md).
+- Add "Open in kitty" to the Explorer right click menu: appears under "Show more options". An install for everyone on Windows 11 offers one more option, off unless you tick it, that also puts it in the main Windows 11 menu of the account the installer ran as. That option adds the certificate of this kitty build to the computer's trusted certificates, which the installer warns of, see [windows-internals.md](windows-internals.md).
 - Create a desktop shortcut: off by default.
 - Start the quick access terminal hidden when you sign in: off by default. The quick access terminal holds the hotkey you set for it only while it runs, so this makes the hotkey work from the start.
 

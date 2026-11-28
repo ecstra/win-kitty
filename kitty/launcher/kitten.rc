@@ -1,0 +1,5 @@
+/* The version details of kitten.exe, which the build turns into a .syso that
+ * go build links into kitten */
+#define KITTY_FILE_DESCRIPTION "kitten, the kitty command line tool"
+#define KITTY_ORIGINAL_FILENAME "kitten.exe"
+#include "version.rc"

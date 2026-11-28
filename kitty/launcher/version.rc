@@ -1,0 +1,38 @@
+/* The version details Explorer shows in a program's properties, and which code
+ * signing asks of every signed file. The including file defines
+ * KITTY_FILE_DESCRIPTION and KITTY_ORIGINAL_FILENAME, and the build passes
+ * KITTY_VERSION_NUMS, such as 0,51,1,0, and KITTY_VERSION_DOTTED, such as
+ * 0.51.1, which is turned into a string here, since a quoted -D value does not
+ * survive the way windres runs the preprocessor. */
+#include <winver.h>
+
+#define KITTY_STR_(x) #x
+#define KITTY_STR(x) KITTY_STR_(x)
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION KITTY_VERSION_NUMS
+PRODUCTVERSION KITTY_VERSION_NUMS
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "ProductName", "win-kitty"
+            VALUE "FileDescription", KITTY_FILE_DESCRIPTION
+            VALUE "FileVersion", KITTY_STR(KITTY_VERSION_DOTTED)
+            VALUE "ProductVersion", KITTY_STR(KITTY_VERSION_DOTTED)
+            VALUE "InternalName", KITTY_ORIGINAL_FILENAME
+            VALUE "OriginalFilename", KITTY_ORIGINAL_FILENAME
+            VALUE "LegalCopyright", "Kovid Goyal and contributors, GPLv3"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

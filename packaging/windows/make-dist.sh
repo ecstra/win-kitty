@@ -66,12 +66,18 @@ done
 mkdir -p "$DIST/pylib/lib/python$PYVER/site-packages"
 find "$DIST/pylib" -type d -name __pycache__ -prune -exec rm -rf {} +
 
+VERSION=$("$PY" -c "import re; print(re.search(r'version: Version = Version\((\d+), (\d+), (\d+)\)', open('kitty/constants.py', encoding='utf-8').read()).expand(r'\1.\2.\3'))")
+
 echo "==> building PATH shims"
 # The bin directory is what goes on PATH: tiny static shims that forward to
 # the real binaries, so the DLL-laden launcher directory never pollutes PATH.
-mkdir -p "$DIST/bin"
-PATH="$MINGW/bin:$PATH" "$MINGW/bin/gcc" -municode -static -Os -o "$DIST/bin/kitty.exe" "$ROOT/packaging/windows/shim.c"
-PATH="$MINGW/bin:$PATH" "$MINGW/bin/gcc" -municode -static -Os -DSHIM_KITTEN -o "$DIST/bin/kitten.exe" "$ROOT/packaging/windows/shim.c"
+# Each carries the version details code signing asks of a signed file.
+mkdir -p "$DIST/bin" "$ROOT/build"
+SHIM_VERSION=(-DKITTY_VERSION_NUMS="${VERSION//./,},0" -DKITTY_VERSION_DOTTED="$VERSION" --include-dir "$ROOT/kitty/launcher")
+PATH="$MINGW/bin:$PATH" "$MINGW/bin/windres" "${SHIM_VERSION[@]}" "$ROOT/packaging/windows/shim.rc" -O coff -o "$ROOT/build/shim-kitty-rc.o"
+PATH="$MINGW/bin:$PATH" "$MINGW/bin/windres" "${SHIM_VERSION[@]}" -DSHIM_KITTEN "$ROOT/packaging/windows/shim.rc" -O coff -o "$ROOT/build/shim-kitten-rc.o"
+PATH="$MINGW/bin:$PATH" "$MINGW/bin/gcc" -municode -static -Os -o "$DIST/bin/kitty.exe" "$ROOT/packaging/windows/shim.c" "$ROOT/build/shim-kitty-rc.o"
+PATH="$MINGW/bin:$PATH" "$MINGW/bin/gcc" -municode -static -Os -DSHIM_KITTEN -o "$DIST/bin/kitten.exe" "$ROOT/packaging/windows/shim.c" "$ROOT/build/shim-kitten-rc.o"
 
 echo "==> collecting DLL closure"
 LAUNCHER="$DIST/kitty/launcher"
@@ -151,6 +157,5 @@ else
     echo "    slangc OK"
 fi
 
-VERSION=$("$PY" -c "import re; print(re.search(r'version: Version = Version\((\d+), (\d+), (\d+)\)', open('kitty/constants.py', encoding='utf-8').read()).expand(r'\1.\2.\3'))")
 echo "$VERSION" > "$ROOT/dist/VERSION"
 echo "==> done: $DIST (version $VERSION)"
