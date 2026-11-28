@@ -219,6 +219,8 @@ static void placeAtDropPoint(int width, int height, int* x, int* y);  // fwd
 #define WM_APP_RESIZE_TICK (WM_APP + 1)
 // Starts a drag kitty asked for, see _glfwPlatformStartDrag
 #define WM_APP_START_DRAG (WM_APP + 2)
+// What Windows tells a panel's app bar, see placeLayerWindow
+#define WM_APP_APPBAR (WM_APP + 3)
 #ifndef TIME_PERIODIC
 #define TIME_PERIODIC 0x0001
 #endif
@@ -391,6 +393,10 @@ sessionEnding(HWND hWnd, LPARAM lParam) {
 // ---------------------------------------------------------------------------
 
 static void fitToMonitor(_GLFWwindow* window); // fwd
+static HMONITOR layerMonitorFor(const GLFWLayerShellConfig* c);
+static void applyLayerStyles(_GLFWwindow* window);
+static void placeLayerWindow(_GLFWwindow* window, bool holdStrip);
+static void releaseAppBar(_GLFWwindow* window);
 
 static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     // A drag runs from the helper window, which no kitty window closing during
@@ -460,6 +466,44 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_WINDOWPOSCHANGED:
             positionCaptionButtons(window);
             break;  // let DefWindowProc run too
+
+        // A panel in the panel or background layer stays under other windows,
+        // even once clicked, as Wayland's bottom and background layers do
+        case WM_WINDOWPOSCHANGING: {
+            WINDOWPOS* wp = (WINDOWPOS*) lParam;
+            const GLFWLayerShellType t = window->win32.layer.config.type;
+            if (window->win32.layer.active && !window->win32.layer.inDesktop && !(wp->flags & SWP_NOZORDER) &&
+                    (t == GLFW_LAYER_SHELL_PANEL || t == GLFW_LAYER_SHELL_BACKGROUND))
+                wp->hwndInsertAfter = HWND_BOTTOM;
+            break;
+        }
+
+        case WM_MOUSEACTIVATE:
+            if (window->win32.layer.active && window->win32.layer.config.focus_policy == GLFW_FOCUS_NOT_ALLOWED) return MA_NOACTIVATE;
+            break;
+
+        case WM_APP_APPBAR:
+            if (!window->win32.layer.active) return 0;
+            if (wParam == ABN_POSCHANGED && IsWindowVisible(hWnd)) placeLayerWindow(window, true);
+            else if (wParam == ABN_FULLSCREENAPP && window->win32.layer.config.type == GLFW_LAYER_SHELL_TOP) {
+                // The top layer goes under a full screen program and comes back
+                // over the rest once it leaves, as on Wayland
+                SetWindowPos(hWnd, lParam ? HWND_BOTTOM : HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+            return 0;
+
+        case WM_DISPLAYCHANGE:
+            if (window->win32.layer.active) placeLayerWindow(window, IsWindowVisible(hWnd));
+            break;
+
+        case WM_DESTROY:
+            // The desktop window a background panel sits in goes when Explorer
+            // restarts and takes the panel with it, so kitty closes it
+            if (window->win32.layer.inDesktop && window->win32.handle == hWnd) {
+                window->win32.layer.inDesktop = false;
+                _glfwInputWindowCloseRequest(window);
+            }
+            break;
 
         case WM_CLOSE:
             _glfwInputWindowCloseRequest(window);
@@ -783,6 +827,11 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             const float xscale = HIWORD(wParam) / 96.0f;
             const float yscale = LOWORD(wParam) / 96.0f;
             _glfwInputWindowContentScale(window, xscale, yscale);
+            // A panel keeps its size in cells, at the new scale
+            if (window->win32.layer.active) {
+                placeLayerWindow(window, IsWindowVisible(hWnd));
+                return 0;
+            }
             // A window kitty moves to its place before showing it keeps the size
             // it was made at, which kitty works out at that place's scale or
             // saved for that place. Scaled on the way from the main screen to
@@ -799,6 +848,11 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_SETTINGCHANGE:
             if (lParam && wcscmp((LPCWSTR) lParam, L"ImmersiveColorSet") == 0)
                 _glfwWin32SystemColorThemeMayHaveChanged();
+            // A panel placed in the work area follows the taskbar. One that
+            // holds a strip hears of it from its app bar instead, and changes
+            // the work area itself, which would loop back here.
+            if (wParam == SPI_SETWORKAREA && window->win32.layer.active && !window->win32.layer.appbar && IsWindowVisible(hWnd))
+                placeLayerWindow(window, false);
             break;
 
         case WM_QUERYENDSESSION:
@@ -850,7 +904,7 @@ void _glfwUnregisterWindowClassWin32(void) {
 
 static DWORD windowStyle(const _GLFWwindow* window) {
     DWORD style = WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
-    if (window->monitor) style |= WS_POPUP;
+    if (window->monitor || window->win32.layer.active) style |= WS_POPUP;
     else if (window->decorated) {
         style |= WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         if (window->resizable) style |= WS_MAXIMIZEBOX | WS_THICKFRAME;
@@ -1141,9 +1195,11 @@ static void styleTitlebar(_GLFWwindow* window) {
     if (!hwnd || !_glfw.win32.dwmapi.SetWindowAttribute) return;
     BOOL dark = TRUE;
     _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
-    DWORD round = 2 /* DWMWCP_ROUND */;
+    // A panel is square and borderless, as panels are on other platforms
+    const bool panel = window->win32.layer.active;
+    DWORD round = panel ? 1 /* DWMWCP_DONOTROUND */ : 2 /* DWMWCP_ROUND */;
     _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &round, sizeof(round));
-    COLORREF border = 0x00000000 /* thin black edge, like a normal window */;
+    COLORREF border = panel ? 0xFFFFFFFE /* DWMWA_COLOR_NONE */ : 0x00000000 /* thin black edge, like a normal window */;
     _glfw.win32.dwmapi.SetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, &border, sizeof(border));
     // Repaint the custom caption buttons so their glyph colour tracks a caption
     // colour change (e.g. a live theme preview restyles via set_os_window_chrome),
@@ -1224,7 +1280,13 @@ static void updateWindowComposition(_GLFWwindow* window) {
 int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconfig,
                               const _GLFWctxconfig* ctxconfig, const _GLFWfbconfig* fbconfig,
                               const GLFWLayerShellConfig* lsc) {
-    (void) lsc;
+    if (lsc) {
+        window->win32.layer.active = true;
+        window->win32.layer.config = *lsc;
+        window->win32.layer.monitor = layerMonitorFor(lsc);
+        window->resizable = false;
+        window->decorated = false;
+    }
     window->win32.transparent = fbconfig->transparent;
     window->win32.scaleToMonitor = wndconfig->scaleToMonitor;
     window->win32.opacity = 1.f;
@@ -1260,6 +1322,10 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
     }
     SetPropW(window->win32.handle, L"GLFW", window);
     _glfwWin32RegisterDropTarget(window);
+    if (window->win32.layer.active) {
+        applyLayerStyles(window);
+        placeLayerWindow(window, false);
+    }
 
     if (ctxconfig->client != GLFW_NO_API) {
         if (!_glfwCreateContextWGL(window, ctxconfig, fbconfig)) return false;
@@ -1311,6 +1377,7 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window) {
         window->win32.captionButtons = NULL;
     }
     if (window->win32.handle) {
+        releaseAppBar(window);
         _glfwWin32RevokeDropTarget(window);
         RemovePropW(window->win32.handle, L"GLFW");
         DestroyWindow(window->win32.handle);
@@ -1471,8 +1538,27 @@ void _glfwPlatformSetWindowSizeIncrements(_GLFWwindow* window, int widthincr, in
 void _glfwPlatformIconifyWindow(_GLFWwindow* window) { ShowWindow(window->win32.handle, SW_MINIMIZE); }
 void _glfwPlatformRestoreWindow(_GLFWwindow* window) { ShowWindow(window->win32.handle, SW_RESTORE); }
 void _glfwPlatformMaximizeWindow(_GLFWwindow* window) { ShowWindow(window->win32.handle, SW_MAXIMIZE); }
-void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen) { (void) move_to_active_screen; ShowWindow(window->win32.handle, SW_SHOWNA); }
-void _glfwPlatformHideWindow(_GLFWwindow* window) { ShowWindow(window->win32.handle, SW_HIDE); }
+void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen) {
+    if (!window->win32.layer.active) { ShowWindow(window->win32.handle, SW_SHOWNA); return; }
+    const GLFWLayerShellConfig* c = &window->win32.layer.config;
+    if (move_to_active_screen) {
+        POINT cursor;
+        if (GetCursorPos(&cursor)) window->win32.layer.monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
+    }
+    placeLayerWindow(window, true);
+    // Only the top and overlay layers take the keyboard when they appear, as
+    // with an exclusive focus policy on Wayland
+    const bool takesFocus = c->focus_policy == GLFW_FOCUS_EXCLUSIVE && (c->type == GLFW_LAYER_SHELL_TOP || c->type == GLFW_LAYER_SHELL_OVERLAY);
+    ShowWindow(window->win32.handle, takesFocus ? SW_SHOW : SW_SHOWNA);
+    if (takesFocus) {
+        SetForegroundWindow(window->win32.handle);
+        SetFocus(window->win32.handle);
+    }
+}
+void _glfwPlatformHideWindow(_GLFWwindow* window) {
+    ShowWindow(window->win32.handle, SW_HIDE);
+    releaseAppBar(window);
+}
 void _glfwPlatformFocusWindow(_GLFWwindow* window) { SetForegroundWindow(window->win32.handle); SetFocus(window->win32.handle); }
 void _glfwPlatformSetWindowAttention(_GLFWwindow* window, bool requested) {
     // Deliberately a no-op on Windows, for requests and cancels alike, since no
@@ -1538,9 +1624,199 @@ void _glfwPlatformGetKeyboardRepeatDelay(monotonic_t* delay, monotonic_t* interv
     if (interval) *interval = ms_to_monotonic_t(33);
 }
 
-// Layer shell is Wayland-only.
-bool _glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig* value) { (void) window; (void) value; return false; }
-const GLFWLayerShellConfig* _glfwPlatformGetLayerShellConfig(_GLFWwindow* window) { (void) window; return NULL; }
+// ---------------------------------------------------------------------------
+// Panels, kitty's layer shell windows. A panel on a screen edge holds its strip
+// of the screen as an app bar, the one supported way to keep maximised windows
+// off part of a screen. The top and overlay layers are topmost, the panel layer
+// stays at the bottom as Wayland's bottom layer does, and the background layer
+// sits behind the desktop icons where Windows lets it.
+// ---------------------------------------------------------------------------
+
+static HMONITOR layerMonitorFor(const GLFWLayerShellConfig* c) {
+    if (c->output_name[0]) {
+        for (int i = 0; i < _glfw.monitorCount; i++) {
+            if (strcmp(_glfw.monitors[i]->name, c->output_name) == 0) return _glfw.monitors[i]->win32.handle;
+        }
+    }
+    return MonitorFromPoint((POINT){0, 0}, MONITOR_DEFAULTTOPRIMARY);
+}
+
+static bool layerOnEdge(GLFWEdge edge) {
+    return edge == GLFW_EDGE_TOP || edge == GLFW_EDGE_BOTTOM || edge == GLFW_EDGE_LEFT || edge == GLFW_EDGE_RIGHT;
+}
+
+typedef struct LayerPlace {
+    RECT window, strip;  // in screen pixels, strip empty when the panel holds none
+    UINT stripEdge;      // ABE_TOP and friends
+} LayerPlace;
+
+// Where a panel goes on a screen and the strip it holds, as kitty places panels
+// on X11 and Wayland. Margins, a size in pixels and an exclusive zone are in
+// logical pixels, as on Wayland and macOS.
+static LayerPlace layerPlace(_GLFWwindow* window, const MONITORINFO* mi, float scale) {
+    const GLFWLayerShellConfig* c = &window->win32.layer.config;
+    const int ml = (int) lround(c->requested_left_margin * scale), mr = (int) lround(c->requested_right_margin * scale);
+    const int mt = (int) lround(c->requested_top_margin * scale), mb = (int) lround(c->requested_bottom_margin * scale);
+    LayerPlace p = {0};
+    if (c->type == GLFW_LAYER_SHELL_BACKGROUND) {
+        const RECT m = mi->rcMonitor;
+        p.window = (RECT){m.left + ml, m.top + mt, m.right - mr, m.bottom - mb};
+        return p;
+    }
+    unsigned cw = 0, ch = 0;
+    double ls = 0, ts = 0, rs = 0, bs = 0;
+    c->size_callback((GLFWwindow*) window, scale, scale, &cw, &ch, &ls, &ts, &rs, &bs);
+    const int w = (int) (1. + ls + rs + (c->x_size_in_pixels ? c->x_size_in_pixels * scale : (double) cw * c->x_size_in_cells));
+    const int h = (int) (1. + ts + bs + (c->y_size_in_pixels ? c->y_size_in_pixels * scale : (double) ch * c->y_size_in_cells));
+    const bool horizontal = c->edge == GLFW_EDGE_TOP || c->edge == GLFW_EDGE_BOTTOM;
+    int zone = 0;
+    if (layerOnEdge(c->edge)) zone = c->override_exclusive_zone ? (int) lround(MAX(0, c->requested_exclusive_zone) * scale) : (horizontal ? h : w);
+    // The work area leaves out the taskbar and other app bars. A panel that
+    // holds a strip of its own is placed against them by Windows instead.
+    RECT b = zone > 0 ? mi->rcMonitor : mi->rcWork;
+    if (zone > 0) {
+        APPBARDATA abd = {sizeof(abd)};
+        abd.hWnd = window->win32.handle;
+        p.strip = b;
+        switch (c->edge) {
+            case GLFW_EDGE_TOP: p.stripEdge = ABE_TOP; p.strip.bottom = p.strip.top + mt + zone; break;
+            case GLFW_EDGE_BOTTOM: p.stripEdge = ABE_BOTTOM; p.strip.top = p.strip.bottom - mb - zone; break;
+            case GLFW_EDGE_LEFT: p.stripEdge = ABE_LEFT; p.strip.right = p.strip.left + ml + zone; break;
+            default: p.stripEdge = ABE_RIGHT; p.strip.left = p.strip.right - mr - zone; break;
+        }
+        if (window->win32.layer.appbar) {
+            // Windows moves the strip clear of the taskbar and the other app
+            // bars on that edge, and the strip keeps its depth
+            abd.uEdge = p.stripEdge;
+            abd.rc = p.strip;
+            SHAppBarMessage(ABM_QUERYPOS, &abd);
+            p.strip = abd.rc;
+            switch (c->edge) {
+                case GLFW_EDGE_TOP: p.strip.bottom = p.strip.top + mt + zone; break;
+                case GLFW_EDGE_BOTTOM: p.strip.top = p.strip.bottom - mb - zone; break;
+                case GLFW_EDGE_LEFT: p.strip.right = p.strip.left + ml + zone; break;
+                default: p.strip.left = p.strip.right - mr - zone; break;
+            }
+        }
+        b = p.strip;
+    }
+    switch (c->edge) {
+        case GLFW_EDGE_TOP: p.window = (RECT){b.left + ml, b.top + mt, b.right - mr, b.top + mt + h}; break;
+        case GLFW_EDGE_BOTTOM: p.window = (RECT){b.left + ml, b.bottom - mb - h, b.right - mr, b.bottom - mb}; break;
+        case GLFW_EDGE_LEFT: p.window = (RECT){b.left + ml, b.top + mt, b.left + ml + w, b.bottom - mb}; break;
+        case GLFW_EDGE_RIGHT: p.window = (RECT){b.right - mr - w, b.top + mt, b.right - mr, b.bottom - mb}; break;
+        case GLFW_EDGE_NONE: p.window = (RECT){b.left + ml, b.top + mt, b.left + ml + w, b.top + mt + h}; break;
+        case GLFW_EDGE_CENTER_SIZED: {
+            const int x = b.left + (b.right - b.left - w) / 2, y = b.top + (b.bottom - b.top - h) / 2;
+            p.window = (RECT){x, y, x + w, y + h};
+            break;
+        }
+        default: p.window = (RECT){b.left + ml, b.top + mt, b.right - mr, b.bottom - mb}; break;
+    }
+    return p;
+}
+
+static void releaseAppBar(_GLFWwindow* window) {
+    if (!window->win32.layer.appbar) return;
+    APPBARDATA abd = {sizeof(abd)};
+    abd.hWnd = window->win32.handle;
+    SHAppBarMessage(ABM_REMOVE, &abd);
+    window->win32.layer.appbar = false;
+}
+
+static BOOL CALLBACK findDesktopWorkerW(HWND top, LPARAM out) {
+    if (FindWindowExW(top, NULL, L"SHELLDLL_DefView", NULL)) {
+        *(HWND*) out = FindWindowExW(NULL, top, L"WorkerW", NULL);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// The window between the desktop icons and the wallpaper, which live wallpaper
+// programs draw into. Windows has no API for it, Progman makes it on an
+// undocumented message, and its place moved in Windows 11 24H2, so a panel
+// falls back to the bottom of the stack when it is not found.
+static HWND desktopWorkerW(void) {
+    HWND progman = FindWindowW(L"Progman", NULL);
+    if (!progman) return NULL;
+    DWORD_PTR result;
+    SendMessageTimeoutW(progman, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, &result);
+    SendMessageTimeoutW(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &result);
+    HWND worker = FindWindowExW(progman, NULL, L"WorkerW", NULL);
+    if (!worker) EnumWindows(findDesktopWorkerW, (LPARAM) &worker);
+    return worker;
+}
+
+// The extended styles a panel's config asks for
+static void applyLayerStyles(_GLFWwindow* window) {
+    const GLFWLayerShellConfig* c = &window->win32.layer.config;
+    HWND hwnd = window->win32.handle;
+    LONG ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    ex = (ex & ~(WS_EX_APPWINDOW | WS_EX_NOACTIVATE)) | WS_EX_TOOLWINDOW;
+    if (c->focus_policy == GLFW_FOCUS_NOT_ALLOWED) ex |= WS_EX_NOACTIVATE;
+    SetWindowLongW(hwnd, GWL_EXSTYLE, ex);
+    if (c->type == GLFW_LAYER_SHELL_BACKGROUND && !window->win32.layer.inDesktop) {
+        HWND worker = desktopWorkerW();
+        if (worker && SetParent(hwnd, worker)) window->win32.layer.inDesktop = true;
+    } else if (c->type != GLFW_LAYER_SHELL_BACKGROUND && window->win32.layer.inDesktop) {
+        SetParent(hwnd, NULL);
+        window->win32.layer.inDesktop = false;
+    }
+}
+
+// Puts a panel in its place, holding its strip of the screen while it shows
+static void placeLayerWindow(_GLFWwindow* window, bool holdStrip) {
+    HWND hwnd = window->win32.handle;
+    const GLFWLayerShellConfig* c = &window->win32.layer.config;
+    MONITORINFO mi = {sizeof(mi)};
+    if (!window->win32.layer.monitor || !GetMonitorInfoW(window->win32.layer.monitor, &mi)) {
+        // Its screen was unplugged
+        window->win32.layer.monitor = layerMonitorFor(c);
+        if (!GetMonitorInfoW(window->win32.layer.monitor, &mi)) return;
+    }
+    const float scale = _glfwWin32MonitorDpi(window->win32.layer.monitor) / 96.f;
+    LayerPlace p = layerPlace(window, &mi, scale);
+    if (holdStrip && !IsRectEmpty(&p.strip)) {
+        APPBARDATA abd = {sizeof(abd)};
+        abd.hWnd = hwnd;
+        abd.uCallbackMessage = WM_APP_APPBAR;
+        if (!window->win32.layer.appbar && SHAppBarMessage(ABM_NEW, &abd)) {
+            window->win32.layer.appbar = true;
+            p = layerPlace(window, &mi, scale);
+        }
+        if (window->win32.layer.appbar) {
+            abd.uEdge = p.stripEdge;
+            abd.rc = p.strip;
+            SHAppBarMessage(ABM_SETPOS, &abd);
+        }
+    } else releaseAppBar(window);
+    RECT r = p.window;
+    HWND after = HWND_TOP;
+    UINT flags = SWP_NOACTIVATE;
+    if (window->win32.layer.inDesktop) {
+        MapWindowPoints(HWND_DESKTOP, GetAncestor(hwnd, GA_PARENT), (POINT*) &r, 2);
+        flags |= SWP_NOZORDER;
+    } else if (c->type == GLFW_LAYER_SHELL_TOP || c->type == GLFW_LAYER_SHELL_OVERLAY) after = HWND_TOPMOST;
+    else after = HWND_BOTTOM;
+    if (after == HWND_BOTTOM) SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(hwnd, after, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
+}
+
+bool _glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig* value) {
+    if (!window->win32.layer.active) return false;
+    if (value) {
+        const bool monitorChanged = strcmp(value->output_name, window->win32.layer.config.output_name) != 0;
+        window->win32.layer.config = *value;
+        if (monitorChanged) window->win32.layer.monitor = layerMonitorFor(value);
+    }
+    applyLayerStyles(window);
+    placeLayerWindow(window, IsWindowVisible(window->win32.handle));
+    return true;
+}
+
+const GLFWLayerShellConfig* _glfwPlatformGetLayerShellConfig(_GLFWwindow* window) {
+    return window->win32.layer.active ? &window->win32.layer.config : NULL;
+}
 
 static void fitToMonitor(_GLFWwindow* window) { (void) window; }
 
@@ -2652,4 +2928,4 @@ int _glfwPlatformChangeDragImage(const GLFWimage* thumbnail) {
 }
 
 // Public API defined per platform. Layer shell is a Wayland concept.
-GLFWAPI bool glfwIsLayerShellSupported(void) { return false; }
+GLFWAPI bool glfwIsLayerShellSupported(void) { return true; }

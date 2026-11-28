@@ -34,6 +34,8 @@ static UINT dpiForMonitor(HMONITOR handle) {
     return dpi ? dpi : 96;
 }
 
+UINT _glfwWin32MonitorDpi(HMONITOR handle) { return dpiForMonitor(handle); }
+
 static BOOL CALLBACK monitorCallback(HMONITOR handle, HDC dc, LPRECT rect, LPARAM data) {
     (void) dc; (void) rect; (void) data;
     MONITORINFOEXW mi = { .cbSize = sizeof(mi) };

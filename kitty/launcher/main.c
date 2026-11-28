@@ -436,7 +436,10 @@ run_kitten_and_exit(const char *exe, int argc, char *argv[]) {
     wchar_t *wexe = wide_from(CP_UTF8, exe), *cmdline = quoted_command_line(argc, argv);  // read_exe_path writes UTF-8
     STARTUPINFOW si = {.cb = sizeof(si)};
     PROCESS_INFORMATION pi;
-    if (!wexe || !cmdline || !CreateProcessW(wexe, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+    // Started with no console to share, as from a shortcut or at sign in,
+    // kitten would open a console window of its own, so it gets a hidden one
+    const DWORD flags = GetConsoleWindow() ? 0 : CREATE_NO_WINDOW;
+    if (!wexe || !cmdline || !CreateProcessW(wexe, cmdline, NULL, NULL, TRUE, flags, NULL, NULL, &si, &pi)) {
         fprintf(stderr, "Failed to execute kitten (%s) with Windows error: %lu\n", exe, GetLastError());
         exit(1);
     }
@@ -665,6 +668,12 @@ delegate_to_kitten_if_possible(int argc, char **argv, char *exe_dir) {
     if (offset && argc > offset + 1) {
         const char *kitten = argv[offset + 1];
         if (is_wrapped_kitten(kitten)) exec_kitten(argc - offset, argv + offset, exe_dir);
+#ifdef _WIN32
+        // The quick access terminal is a Go kitten. Windows starts it at sign in
+        // through kitty.exe, which has no console window to flash, so this
+        // passes it on to kitten as kitty passes the wrapped kittens.
+        if (strcmp(kitten, "quick-access-terminal") == 0) exec_kitten(argc - offset, argv + offset, exe_dir);
+#endif
         if (strcmp(kitten, "panel") == 0) {
             offset++;
             CLISpec t = {.original_argv = argv + offset, .original_argc = argc - offset};

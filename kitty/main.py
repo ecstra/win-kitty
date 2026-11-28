@@ -378,6 +378,8 @@ def _run_app(opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (),
             )
         boss = Boss(opts, args, cached_values, global_shortcuts, talk_fd)
         boss.start(window_id, startup_sessions)
+        if is_windows and run_app.panel_hotkey:
+            boss.register_panel_hotkey(run_app.panel_hotkey)
         if restored is not None:
             try:
                 finish_restore(restored.path)
@@ -407,6 +409,7 @@ class AppRunner:
         self.cached_values_name = 'main'
         self.first_window_callback = lambda window_handle: None
         self.layer_shell_config: LayerShellConfig | None = None
+        self.panel_hotkey = ''
         self.initial_window_size_func = initial_window_size_func
 
     def __call__(self, opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (), talk_fd: int = -1) -> None:

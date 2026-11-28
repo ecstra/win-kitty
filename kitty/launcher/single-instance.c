@@ -575,6 +575,9 @@ talk_to_instance(int s, struct sockaddr_un *server_addr, int argc, char *argv[],
     // environment, cwd and session data.
     if (!peer_is_same_user(s)) do_exit(1);
 #ifdef _WIN32
+    // Windows lets only the program the user is using bring a window to the
+    // front, so this start passes that on to the kitty that opens or shows one
+    AllowSetForegroundWindow(ASFW_ANY);
     // A Winsock socket is no C runtime descriptor, so it takes send, not write
     for (size_t sent = 0; sent < output.used;) {
         const int n = send(s, output.data + sent, (int)(output.used - sent), 0);

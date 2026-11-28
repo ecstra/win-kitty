@@ -59,6 +59,21 @@ def parse_panel_args(args: list[str], track_seen_options: dict[str, Any] | None 
     )
 
 
+def hotkey_from_spec(spec: str | None) -> tuple[int, int] | None:
+    '''The key and modifiers of the panel's global hotkey, None for no hotkey'''
+    if not spec or spec == 'none':
+        return None
+    from kitty.options.utils import parse_shortcut
+
+    try:
+        sk = parse_shortcut(spec)
+    except Exception as e:
+        raise ValueError(f'{spec} is not a valid hotkey: {e}') from e
+    if not sk.key or sk.is_native:
+        raise ValueError(f'{spec} is not a valid hotkey')
+    return sk.key, sk.mods
+
+
 def dual_distance(spec: str, min_cell_value_if_no_pixels: int = 0) -> tuple[int, int]:
     with suppress(Exception):
         return int(spec), 0
@@ -280,6 +295,7 @@ def actual_main(sys_args: list[str]) -> None:
 
     run_app.cached_values_name = 'panel'
     run_app.layer_shell_config = layer_shell_config(args)
+    run_app.panel_hotkey = args.hotkey
     real_main(called_from_panel=True)
 
 

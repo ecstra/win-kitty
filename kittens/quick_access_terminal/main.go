@@ -27,9 +27,6 @@ func load_config(opts *Options) (ans *Config, err error) {
 }
 
 func main(cmd *cli.Command, opts *Options, args []string) (rc int, err error) {
-	if err = cli.NotImplementedOnWindows("quick-access-terminal"); err != nil {
-		return 1, err
-	}
 	conf, err := load_config(opts)
 	if err != nil {
 		return 1, err
@@ -78,6 +75,9 @@ func main(cmd *cli.Command, opts *Options, args []string) (rc int, err error) {
 		argv = append(argv, fmt.Sprintf("--output-name=%s", conf.Output_name))
 	}
 	argv = append(argv, fmt.Sprintf("--focus-policy=%s", conf.Focus_policy))
+	if runtime.GOOS == "windows" && conf.Hotkey != "" && conf.Hotkey != "none" {
+		argv = append(argv, fmt.Sprintf("--hotkey=%s", conf.Hotkey))
+	}
 	if conf.Start_as_hidden {
 		argv = append(argv, `--start-as-hidden`)
 	}

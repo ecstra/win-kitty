@@ -281,3 +281,26 @@ class WindowsFeaturesTest(BaseTest):
         ):
             self.ae(program_name(path), name)
         self.assertTrue(is_kitten_cmdline([r'C:\kitty\bin\kitten.exe', 'ssh', 'host']))
+
+    def test_the_quick_access_hotkey_parses(self):
+        from kittens.panel.main import hotkey_from_spec
+        from kitty.fast_data_types import GLFW_FKEY_F12, GLFW_MOD_ALT, GLFW_MOD_CONTROL, GLFW_MOD_SUPER
+
+        self.ae(hotkey_from_spec('ctrl+alt+grave'), (ord('`'), GLFW_MOD_CONTROL | GLFW_MOD_ALT))
+        self.ae(hotkey_from_spec('super+f12'), (GLFW_FKEY_F12, GLFW_MOD_SUPER))
+        self.ae(hotkey_from_spec('ctrl+alt+q'), (ord('q'), GLFW_MOD_CONTROL | GLFW_MOD_ALT))
+        for off in ('', 'none'):
+            self.assertIsNone(hotkey_from_spec(off))
+        for bad in ('ctrl+', 'hyperspace+x'):
+            with self.assertRaises(ValueError):
+                hotkey_from_spec(bad)
+
+    def test_the_quick_access_terminal_shows_on_ctrl_alt_grave_by_default(self):
+        from kittens.panel.main import hotkey_from_spec, parse_panel_args
+        from kittens.quick_access_terminal.main import definition
+
+        self.ae(definition.option_map['hotkey'].defval_as_string, 'ctrl+alt+grave')
+        args, _ = parse_panel_args(['--hotkey=ctrl+alt+grave'])
+        self.ae(args.hotkey, 'ctrl+alt+grave')
+        args, _ = parse_panel_args([])
+        self.assertIsNone(hotkey_from_spec(args.hotkey))
