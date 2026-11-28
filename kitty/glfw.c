@@ -2505,6 +2505,12 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         glfwGetError(NULL); // clear any stale error
         temp_window = glfwCreateWindow(640, 480, "temp", NULL, common_context, NULL);
         if (temp_window == NULL) glfw_failure(false);
+#ifdef _WIN32
+        // A window placed on a screen of another scale is moved there before it
+        // shows and keeps its size on the way, so its size in cells is worked
+        // out at that screen's scale
+        if (x != INT_MIN && y != INT_MIN && is_visible_on_a_monitor(x, y, 640, 480)) glfwSetWindowPos(temp_window, x, y);
+#endif
         get_window_content_scale(temp_window, &xscale, &yscale, &xdpi, &ydpi);
     }
     FONTS_DATA_HANDLE fonts_data = load_fonts_data(OPT(font_size), xdpi, ydpi);

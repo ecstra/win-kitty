@@ -153,14 +153,16 @@ typedef struct {
 
 /* The private working set is the memory Task Manager shows, and leaves out the
  * DLL pages processes share, which a working set counts once per process.
- * Windows builds older than 22H2 do not have it and get the working set. */
+ * Windows builds older than 22H2 do not have it and get the working set,
+ * whether they refuse the larger structure or fill only the fields they know,
+ * since a running process always has some private memory. */
 static PyObject*
 memory_of_process(PyObject *self UNUSED, PyObject *pid_) {
     HANDLE h = open_process(pid_);
     if (!h) return NULL;
     MemoryCountersEx2 m = {.cb = sizeof(m)};
     SIZE_T ans;
-    if (GetProcessMemoryInfo(h, (PROCESS_MEMORY_COUNTERS*)&m, sizeof(m))) ans = m.PrivateWorkingSetSize;
+    if (GetProcessMemoryInfo(h, (PROCESS_MEMORY_COUNTERS*)&m, sizeof(m)) && m.PrivateWorkingSetSize) ans = m.PrivateWorkingSetSize;
     else {
         PROCESS_MEMORY_COUNTERS c = {.cb = sizeof(c)};
         if (!GetProcessMemoryInfo(h, &c, sizeof(c))) { CloseHandle(h); return PyErr_SetFromWindowsErr(0); }

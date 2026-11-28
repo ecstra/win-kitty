@@ -2677,7 +2677,9 @@ class Window:
     @property
     def cwd_for_serialization(self) -> str:
         cwd = self.get_cwd_of_child(oldest=False) or self.get_cwd_of_child(oldest=True) or self.child.cwd
-        if self.screen.last_reported_cwd and self.at_prompt and not self.child_is_remote:
+        # See cwd_of_child: on Windows the reported cwd is a POSIX path that no
+        # Windows program can start in, and the process's own folder is right
+        if self.screen.last_reported_cwd and not is_windows and self.at_prompt and not self.child_is_remote:
             cwd = path_from_osc7_url(self.screen.last_reported_cwd) or cwd
         return cwd
 

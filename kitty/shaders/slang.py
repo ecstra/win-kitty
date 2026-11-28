@@ -2155,14 +2155,13 @@ def build_custom_shader_pipeline_glsl(
             assert v.stderr is not None and f.stderr is not None
             v.stdin.write(src), v.stdin.close()
             f.stdin.write(src), f.stdin.close()
-            try:
-                if (rc := v.wait()) != 0:
-                    raise SlangFailed(f'{slot}.vert.glsl', subprocess.CompletedProcess(vcmd, rc, stderr=v.stderr.read()))
-                if (rc := f.wait()) != 0:
-                    raise SlangFailed(f'{slot}.frag.glsl', subprocess.CompletedProcess(fcmd, rc, stderr=f.stderr.read()))
-            finally:
-                v.stderr.close()
-                f.stderr.close()
+            # The errors are read while each runs, since slangc stops once its
+            # pipe is full, a few KB on Windows, and would never exit
+            verr, ferr = v.communicate()[1], f.communicate()[1]
+            if v.returncode != 0:
+                raise SlangFailed(f'{slot}.vert.glsl', subprocess.CompletedProcess(vcmd, v.returncode, stderr=verr))
+            if f.returncode != 0:
+                raise SlangFailed(f'{slot}.frag.glsl', subprocess.CompletedProcess(fcmd, f.returncode, stderr=ferr))
             fixup_opengl_files((fragment, vertex))
         with open(vertex) as vf, open(fragment) as ff:
             m = glsl_metadata_for_shader(metadata)

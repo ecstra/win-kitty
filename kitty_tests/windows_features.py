@@ -189,6 +189,22 @@ class WindowsFeaturesTest(BaseTest):
                 parse_args(['--help'])
         self.assertIn('--listen-on', out.getvalue())
 
+    def test_saved_sessions_keep_the_windows_folder_of_an_msys2_shell(self):
+        # An MSYS2 shell reports its folder at the prompt as a POSIX path, which
+        # no Windows program can start in
+        from types import SimpleNamespace
+
+        from kitty.window import Window
+
+        window = SimpleNamespace(
+            get_cwd_of_child=lambda oldest=False: r'C:\Users\me\proj',
+            screen=SimpleNamespace(last_reported_cwd=f'file://{socket.gethostname()}/home/me/proj'.encode()),
+            at_prompt=True,
+            child_is_remote=False,
+            child=SimpleNamespace(cwd='C:\\'),
+        )
+        self.ae(Window.cwd_for_serialization.fget(window), r'C:\Users\me\proj')
+
     def test_program_names_drop_the_exe(self):
         # Tab titles show nvim, and the ssh checks know ssh.exe as ssh
         from kittens.ssh.utils import is_kitten_cmdline
