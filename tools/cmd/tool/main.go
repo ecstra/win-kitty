@@ -179,14 +179,12 @@ func KittyToolEntryPoints(root *cli.Command) {
 		},
 	})
 	benchmark.EntryPoint(root)
-	// Flag kittens not yet implemented on the native Windows port in the command
-	// list, so it is clear from `kitten` which ones will not run there. They also
-	// exit with a clear message at runtime (cli.NotImplementedOnWindows).
+	// Flag the kitten that has nothing to work with on Windows in the command
+	// list, so it is clear from `kitten` that it will not run there. It also
+	// exits with a clear message at runtime (cli.LinuxOnly).
 	if runtime.GOOS == "windows" {
-		for _, name := range []string{"dnd", "panel", "quick-access-terminal", "desktop-ui"} {
-			if c := root.FindSubCommand(name); c != nil {
-				c.ShortDescription += " (not supported on Windows)"
-			}
+		if c := root.FindSubCommand("desktop-ui"); c != nil {
+			c.ShortDescription += " (Linux only)"
 		}
 	}
 }

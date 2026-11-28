@@ -26,11 +26,12 @@ Run `dist/kitty-setup.exe`. It first asks whether to install for you only or for
 
 An upgrade keeps the choice the earlier install made. The installer follows Windows' light or dark mode.
 
-The installer offers three optional tasks.
+The installer offers four optional tasks.
 
 - Add kitty to your PATH: puts `<install>\bin` on your PATH, or the machine's for everyone, so `kitty` and `kitten` work in any terminal.
 - Add "Open in kitty" to the Explorer right click menu: appears under "Show more options", and with an install for everyone also in the main Windows 11 menu of the account the installer ran as. The main menu needs a package whose certificate is trusted for the whole machine, which takes administrator rights, see [windows-internals.md](windows-internals.md).
 - Create a desktop shortcut: off by default.
+- Start the quick access terminal hidden when you sign in: off by default. The quick access terminal holds its hotkey only while it runs, so this makes Ctrl+Alt+` work from the start.
 
 A Start menu entry is always created. To install without any prompts, run it with the silent flags, and `/CURRENTUSER` or `/ALLUSERS` to pick the install.
 
@@ -60,6 +61,8 @@ Close any running kitty first. The source tree keeps its own development build a
 - Transparency. With `background_blur` on you get the real Windows 11 acrylic material, matched to what Windows Terminal shows, and it stays put when the window loses focus.
 - A custom title bar that matches the terminal background, with rounded corners and minimize, maximize, and close buttons.
 - Kittens, run from inside kitty. icat, hints, unicode_input, themes, ask, diff, choose-files, and the confirmation prompts all work.
+- Panels, `kitten panel` and `launch --type=os-panel`. A panel on a screen edge holds its strip of the screen, so maximised windows leave it free, and gives it back when it closes or hides. The top and overlay layers stay above other windows, the default bottom layer stays under them, and the background layer sits behind the desktop icons like a live wallpaper. Where Windows does not allow that, the background panel falls back to a window kept at the very bottom, over the icons. Panels keep out of the taskbar and Alt+Tab.
+- The quick access terminal, `kitten quick-access-terminal`, a kitty that drops down from the top of the screen. Running it again shows or hides it, and so does Ctrl+Alt+`, a hotkey kitty registers itself while the quick access terminal runs. Set another key, or `none`, with `hotkey` in quick-access-terminal.conf.
 - Desktop notifications, shown as real Windows toasts.
 - Config reloading, including a theme applied from the themes kitten showing up without a restart.
 - Windows specific defaults, so an empty kitty.conf already looks right. See below.
@@ -68,8 +71,7 @@ Close any running kitty first. The source tree keeps its own development build a
 
 Known missing, and confirmed so.
 
-- Four kittens. dnd, panel, quick-access-terminal, and desktop-ui are marked `(not supported on Windows)` in the `kitten` command list and print a clear message if you run one anyway.
-- Programs inside kitty starting drags of their own, which is the dnd kitten's side of drag and drop.
+- A panel above the Start menu, the taskbar's pop ups and the rest of the Windows shell. Even the overlay layer stays under those, since going above them needs a signed program installed with special Windows rights.
 - Abstract Unix sockets, `listen_on unix:@name`, which Windows does not have. Use a path, such as `unix:kitty.sock`.
 
 kitty.conf options that do nothing or only part of their job on Windows yet.
@@ -92,13 +94,15 @@ kitty.conf options that do nothing or only part of their job on Windows yet.
 
 Deliberate, not missing.
 
-- Kittens refuse to start outside kitty. On Windows a kitten needs kitty's own input and output path, and in another terminal it misbehaves in ways that look like bugs, so it exits with a message. Inside kitty every ported kitten works.
+- The desktop-ui kitten, marked `(Linux only)` in the `kitten` command list. It is a backend for the desktop portals of Linux, which Windows does not have.
 
 Not tested, so treat as unknown rather than working.
 
 - The ssh kitten, the file transfer kitten, and anything else that expects a Unix host environment.
 - Sessions, watchers, and startup scripts.
 - Typing with an input method, such as Japanese, Chinese or Korean. kitty should draw the text being composed at its cursor and open the list of words to pick from beside it, but nobody with such a keyboard has tried it yet.
+- The dnd kitten, and other programs inside kitty that take drops or start drags of their own through kitty's drag and drop protocol. A drop hands them every format the drag offers under a mime type name, and a drag of theirs supplies its data once the program it is dropped on asks, files from a remote machine included, which kitty copies to this machine first.
+- Kittens such as icat, diff, themes and unicode_input in Windows Terminal and the classic console. They start there now, and follow the window's size, but nobody has used one there by hand yet.
 
 ## Remote control
 

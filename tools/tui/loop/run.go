@@ -428,6 +428,7 @@ func (self *Loop) run() (err error) {
 	self.exit_code = 0
 	self.atomic_update_active = false
 	self.timers, self.timers_temp = make([]*timer, 0, 8), make([]*timer, 0, 8)
+	self.watch_console_size()
 	no_timeout_channel := make(<-chan time.Time)
 	finalizer := ""
 

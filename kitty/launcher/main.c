@@ -437,8 +437,20 @@ run_kitten_and_exit(const char *exe, int argc, char *argv[]) {
     STARTUPINFOW si = {.cb = sizeof(si)};
     PROCESS_INFORMATION pi;
     // Started with no console to share, as from a shortcut or at sign in,
-    // kitten would open a console window of its own, so it gets a hidden one
-    const DWORD flags = GetConsoleWindow() ? 0 : CREATE_NO_WINDOW;
+    // kitten would open a console window of its own, so it gets a hidden one.
+    // A new console takes the place of the pipes or files kitty was handed,
+    // so those are passed on by name.
+    DWORD flags = 0;
+    if (!GetConsoleWindow()) {
+        flags = CREATE_NO_WINDOW;
+        HANDLE in = GetStdHandle(STD_INPUT_HANDLE), out = GetStdHandle(STD_OUTPUT_HANDLE), err = GetStdHandle(STD_ERROR_HANDLE);
+#define usable(h) ((h) && (h) != INVALID_HANDLE_VALUE)
+        if (usable(in) || usable(out) || usable(err)) {
+            si.dwFlags |= STARTF_USESTDHANDLES;
+            si.hStdInput = in; si.hStdOutput = out; si.hStdError = err;
+        }
+#undef usable
+    }
     if (!wexe || !cmdline || !CreateProcessW(wexe, cmdline, NULL, NULL, TRUE, flags, NULL, NULL, &si, &pi)) {
         fprintf(stderr, "Failed to execute kitten (%s) with Windows error: %lu\n", exe, GetLastError());
         exit(1);

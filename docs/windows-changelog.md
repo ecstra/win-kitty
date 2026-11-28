@@ -20,6 +20,10 @@ Based on kitty 0.51.1.
 - Typing with an input method, such as Japanese, Chinese or Korean. The text you are composing shows at the cursor, and the list of words opens beside it.
 - `remap_modifiers`.
 - Automatic color themes switch as soon as you change Windows between light and dark.
+- Panels, `kitten panel`. kitty can sit as a bar on a screen edge that maximised windows leave free, above other windows, or behind your desktop icons like a live wallpaper.
+- The quick access terminal, `kitten quick-access-terminal`, a kitty that drops down from the top of the screen and hides again on Ctrl+Alt+` or another key you pick. The installer can start it hidden when you sign in.
+- The dnd kitten, and drag and drop for programs inside kitty, which can take every format a drop offers and drag their own data out, files from another machine included.
+- Kittens such as icat, diff and themes start in Windows Terminal and the classic console, instead of refusing to.
 
 ### Fixed
 
@@ -62,6 +66,7 @@ Based on kitty 0.51.1.
 ### Changed
 
 - Updated from kitty 0.48.0 to 0.51.1.
+- The desktop-ui kitten is marked Linux only, since it serves Linux's desktop portals.
 - Building from source now uses the MSYS2 UCRT64 toolchain instead of MINGW64, which MSYS2 is retiring, and needs the Slang shader compiler.
 
 ## 0.48.0-win.1 (2026-07-24)

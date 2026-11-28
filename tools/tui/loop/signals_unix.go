@@ -13,6 +13,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Unix sends SIGWINCH when the terminal resizes, so there is nothing to watch
+func (self *Loop) watch_console_size() {}
+
 func kill_self(sig syscall.Signal) {
 	_ = unix.Kill(os.Getpid(), sig)
 	// Give the signal time to be delivered

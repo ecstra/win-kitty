@@ -147,17 +147,6 @@ type Loop struct {
 }
 
 func New(options ...func(self *Loop)) (*Loop, error) {
-	// Tests build loops without running a UI, so they are left alone.
-	if runtime.GOOS == "windows" && os.Getenv("KITTY_WINDOW_ID") == "" && !utils.IsTesting() {
-		// Full-screen kitten UIs need faithful VT and mouse handling, which
-		// other Windows terminals (running the kitten through their ConPTY)
-		// mangle: garbled mouse reports typed into the UI, broken raw mode and
-		// so on. Simple non-UI tools (clipboard, @) use
-		// NewForSimpleInteraction and keep working everywhere. Exit outright:
-		// not every kitten checks the error before using the loop.
-		fmt.Fprintln(os.Stderr, "This kitten needs to run inside the kitty terminal. It cannot be used from other terminals on Windows")
-		os.Exit(1)
-	}
 	l := new_loop()
 	for _, f := range options {
 		f(l)

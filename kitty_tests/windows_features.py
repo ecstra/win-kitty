@@ -295,6 +295,21 @@ class WindowsFeaturesTest(BaseTest):
             with self.assertRaises(ValueError):
                 hotkey_from_spec(bad)
 
+    def test_kittens_start_in_other_terminals(self):
+        # A console of its own, hidden, stands in for Windows Terminal's
+        from kitty.constants import kitten_exe
+
+        env = {k: v for k, v in os.environ.items() if k not in ('KITTY_WINDOW_ID', 'KITTY_PID', 'KITTY_LISTEN_ON')}
+        p = subprocess.Popen(
+            [kitten_exe(), 'unicode_input'], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            _, err = p.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            _, err = p.communicate()
+        self.assertNotIn(b'needs to run inside the kitty terminal', err)
+
     def test_the_quick_access_terminal_shows_on_ctrl_alt_grave_by_default(self):
         from kittens.panel.main import hotkey_from_spec, parse_panel_args
         from kittens.quick_access_terminal.main import definition

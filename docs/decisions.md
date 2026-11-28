@@ -54,11 +54,17 @@ The cost is that the bridge now reads the stream rather than only relaying it. I
 
 A kitten is a VT program talking to kitty, so there is nothing for a pseudoconsole to do except get in the way. Running kittens on one made conhost rewrite their escape codes, which showed as flicker, and left kitty without an EOF when the kitten exited, so its window stayed open. Plain pipes fix both.
 
-## Kittens refuse to run outside kitty on Windows
+## Kittens run in other terminals on Windows
 
-A kitten started from another terminal exits with a message instead of trying. On Windows it depends on kitty's own input and output path, and without it the failures are strange rather than obvious, such as a mouse that emits junk on movement or a full screen kitten that draws nothing. Making each of those work in a foreign console is a large amount of work for something nobody asked for, and a clear refusal is more useful than a partial success.
+Kittens started from another terminal used to exit with a message, since without kitty's own input and output path a mouse sent junk on movement and a full screen kitten did not follow the window's size. I asked for them to run there, as they do in other terminals on Linux. The console a kitten runs in hands it mouse reports as escape codes once its mouse input is on and its own selection off, and the size is checked a few times a second, since neither Windows Terminal nor the classic console sends an in-band resize and Windows has no SIGWINCH. Inside kitty nothing of that changes.
 
-It exits rather than returning an error because several kittens use the loop before checking the error they were handed, so returning one surfaced as a nil dereference inside the kitten.
+## Panels are Windows app bars
+
+A panel on a screen edge registers as an app bar, the one supported way on Windows to keep maximised windows off a strip of the screen, as an exclusive zone does on Wayland and a strut on X11. The background layer uses the WorkerW window behind the desktop icons that live wallpaper programs draw into. That is an undocumented trick, which Windows 11 24H2 already moved, so the panel falls back to a window kept at the very bottom when the trick fails, rather than not opening at all.
+
+## kitty registers the quick access terminal's hotkey itself
+
+On Linux the desktop's own shortcut settings run the quick access terminal, and on macOS a service does. On Windows a Start menu shortcut can carry a key, but only Ctrl+Alt with another key, and it starts a program rather than shows one. So the panel registers a global hotkey with RegisterHotKey, Ctrl+Alt+` unless quick-access-terminal.conf names another key. A hotkey also lets the window it shows take the foreground, which Windows otherwise refuses a program in the background. Win+` would have matched Windows Terminal's own drop-down, but Windows Terminal holds that key while it runs.
 
 ## Asking for a 1 ms timer resolution in both processes
 

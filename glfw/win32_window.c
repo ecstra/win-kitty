@@ -1909,7 +1909,9 @@ void _glfwPlatformWaitEventsTimeout(monotonic_t timeout) {
 // drop we pull the data out of the IDataObject synchronously. We surface it to
 // kitty's platform-agnostic drop API as text/uri-list (CF_HDROP file lists, as
 // file:// URIs) and text/plain;charset=utf-8 (CF_UNICODETEXT), which kitty then
-// pastes into the window (see glfw.c drop_dest_callback and window.py on_drop).
+// pastes into the window (see glfw.c drop_dest_callback and window.py on_drop),
+// and under every mime type the drag names a format after, for programs in the
+// window that take drops themselves, see collect_drop_offers.
 // kitty's own drags, of tabs and windows, are the drag source further below,
 // and a drop of one of those onto a kitty window is handed to kitty as its own.
 
@@ -1919,11 +1921,18 @@ void _glfwPlatformWaitEventsTimeout(monotonic_t timeout) {
 
 typedef struct { char *mime; char *data; size_t size, offset; } Win32DropItem;
 
+// A mime type a drag offers and the clipboard format it comes from: a format
+// named after the mime type, as kitty and other programs that know mime types
+// name theirs, or files and text, which kitty reads as a uri-list and UTF-8
+enum { DROP_FROM_NAMED, DROP_FROM_FILES, DROP_FROM_TEXT };
+typedef struct { char *mime; CLIPFORMAT cf; int from; } Win32DropOffer;
+#define WIN32_DROP_MAX 16
+
 // Only one drag is ever in flight, so a single global holds its state.
 static struct {
-    Win32DropItem items[2];   // data extracted at drop time
+    Win32DropItem items[WIN32_DROP_MAX];   // data extracted at drop time
     size_t count;
-    const char *offered[2];   // mimes the active drag offers (enter..leave)
+    Win32DropOffer offered[WIN32_DROP_MAX];  // what the active drag offers (enter..leave)
     size_t offered_count;
     _GLFWwindow *window;
 } win32_drop;
@@ -1938,13 +1947,16 @@ static struct {
     bool active;             // inside DoDragDrop
     bool escape_pressed, button_released, cancel_requested;
     bool has_files;          // a file list is offered, which other programs must never move
+    bool on_demand;          // a program supplies some of the data once a drop target asks
+    bool data_ready;         // kitty has more of the data asked for
     GLFWid window_id;
     size_t count;            // kitty's mime types, the first entries
     size_t total;            // those and the formats other programs read, whose mime is NULL
     CLIPFORMAT formats[WIN32_DRAG_MAX_FORMATS];
     char *mimes[WIN32_DRAG_MAX_FORMATS];
-    char *data[WIN32_DRAG_MAX_FORMATS];
+    char *data[WIN32_DRAG_MAX_FORMATS];  // NULL for data a program supplies on demand
     size_t sizes[WIN32_DRAG_MAX_FORMATS];
+    int derived[WIN32_DRAG_MAX_FORMATS]; // which OTHER_FORMAT a format made from data on demand is
     bool has_image;          // a picture is set, which a thread of its own shows
     POINT released_at;       // where the button came up, in screen pixels
 } win32_drag;
@@ -2064,14 +2076,68 @@ win32_get_format(IDataObject *pdo, CLIPFORMAT cf, size_t *out_len) {
     return result;
 }
 
-static size_t
-collect_drop_mimes(IDataObject *pdo, const char **mimes) {
-    size_t n = 0;
+// The bytes of a format as they are, for a mime type a program reads itself.
+// GlobalSize may round up, so a format zero filled by its writer may carry a
+// few NULs at its end.
+static char*
+win32_get_raw_format(IDataObject *pdo, CLIPFORMAT cf, size_t *out_len) {
+    FORMATETC fmt = { cf, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+    STGMEDIUM stg;
+    if (FAILED(pdo->lpVtbl->GetData(pdo, &fmt, &stg))) return NULL;
+    char *result = NULL;
+    const size_t sz = stg.tymed == TYMED_HGLOBAL ? GlobalSize(stg.hGlobal) : 0;
+    void *p = sz ? GlobalLock(stg.hGlobal) : NULL;
+    if (p) {
+        if ((result = malloc(sz))) { memcpy(result, p, sz); *out_len = sz; }
+        GlobalUnlock(stg.hGlobal);
+    }
+    ReleaseStgMedium(&stg);
+    return result;
+}
+
+static void
+free_drop_offers(void) {
+    for (size_t i = 0; i < win32_drop.offered_count; i++) free(win32_drop.offered[i].mime);
+    win32_drop.offered_count = 0;
+}
+
+static void
+add_drop_offer(const char *mime, CLIPFORMAT cf, int from) {
+    if (win32_drop.offered_count >= WIN32_DROP_MAX) return;
+    for (size_t i = 0; i < win32_drop.offered_count; i++) if (strcmp(win32_drop.offered[i].mime, mime) == 0) return;
+    char *m = _glfw_strdup(mime);
+    if (m) win32_drop.offered[win32_drop.offered_count++] = (Win32DropOffer){m, cf, from};
+}
+
+// Every mime type the drag offers, for programs that read them, the dnd kitten
+// among them: the formats named after mime types, PNG images, and the files and
+// text every Windows program offers
+static void
+collect_drop_offers(IDataObject *pdo) {
+    free_drop_offers();
+    IEnumFORMATETC *e = NULL;
+    if (SUCCEEDED(pdo->lpVtbl->EnumFormatEtc(pdo, DATADIR_GET, &e)) && e) {
+        FORMATETC f;
+        while (e->lpVtbl->Next(e, 1, &f, NULL) == S_OK) {
+            if (f.ptd) CoTaskMemFree(f.ptd);
+            if (f.cfFormat < 0xC000 || !(f.tymed & TYMED_HGLOBAL)) continue;  // only registered formats have names
+            char name[256];
+            if (!GetClipboardFormatNameA(f.cfFormat, name, sizeof(name))) continue;
+            if (strcmp(name, "PNG") == 0) add_drop_offer("image/png", f.cfFormat, DROP_FROM_NAMED);
+            else if (strchr(name, '/') && !strchr(name, ' ')) add_drop_offer(name, f.cfFormat, DROP_FROM_NAMED);
+        }
+        e->lpVtbl->Release(e);
+    }
     FORMATETC f = { CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
-    if (pdo->lpVtbl->QueryGetData(pdo, &f) == S_OK) mimes[n++] = DND_MIME_URI_LIST;
+    if (pdo->lpVtbl->QueryGetData(pdo, &f) == S_OK) add_drop_offer(DND_MIME_URI_LIST, CF_HDROP, DROP_FROM_FILES);
     f.cfFormat = CF_UNICODETEXT;
-    if (pdo->lpVtbl->QueryGetData(pdo, &f) == S_OK) mimes[n++] = DND_MIME_TEXT;
-    return n;
+    if (pdo->lpVtbl->QueryGetData(pdo, &f) == S_OK) add_drop_offer(DND_MIME_TEXT, CF_UNICODETEXT, DROP_FROM_TEXT);
+}
+
+static size_t
+offered_mimes(const char **m) {
+    for (size_t i = 0; i < win32_drop.offered_count; i++) m[i] = win32_drop.offered[i].mime;
+    return win32_drop.offered_count;
 }
 
 static void
@@ -2127,15 +2193,15 @@ static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pd
     if (!self->window) { *effect = DROPEFFECT_NONE; return S_OK; }
     win32_drop.window = self->window;
     if (win32_drag.active) {
-        win32_drop.offered_count = 0;
+        free_drop_offers();
         *effect = self_drag_effect(self_drag_event(self->window, GLFW_DROP_ENTER, pt), *effect);
         return S_OK;
     }
-    win32_drop.offered_count = collect_drop_mimes(pdo, win32_drop.offered);
+    collect_drop_offers(pdo);
     double x, y; drop_point_to_client(self->window, pt, &x, &y);
     if (win32_drop.offered_count) {
-        const char *m[2]; for (size_t i = 0; i < win32_drop.offered_count; i++) m[i] = win32_drop.offered[i];
-        _glfwInputDropEvent(self->window, GLFW_DROP_ENTER, x, y, m, win32_drop.offered_count, false);
+        const char *m[WIN32_DROP_MAX];
+        _glfwInputDropEvent(self->window, GLFW_DROP_ENTER, x, y, m, offered_mimes(m), false);
     }
     *effect = win32_drop.offered_count ? DROPEFFECT_COPY : DROPEFFECT_NONE;
     return S_OK;
@@ -2150,8 +2216,8 @@ static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POIN
     }
     double x, y; drop_point_to_client(self->window, pt, &x, &y);
     if (win32_drop.offered_count) {
-        const char *m[2]; for (size_t i = 0; i < win32_drop.offered_count; i++) m[i] = win32_drop.offered[i];
-        _glfwInputDropEvent(self->window, GLFW_DROP_MOVE, x, y, m, win32_drop.offered_count, false);
+        const char *m[WIN32_DROP_MAX];
+        _glfwInputDropEvent(self->window, GLFW_DROP_MOVE, x, y, m, offered_mimes(m), false);
     }
     *effect = win32_drop.offered_count ? DROPEFFECT_COPY : DROPEFFECT_NONE;
     return S_OK;
@@ -2159,7 +2225,7 @@ static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POIN
 static HRESULT STDMETHODCALLTYPE dt_DragLeave(IDropTarget *This) {
     Win32DropTarget *self = (Win32DropTarget*)This;
     if (self->window) _glfwInputDropEvent(self->window, GLFW_DROP_LEAVE, 0, 0, NULL, 0, win32_drag.active);
-    win32_drop.offered_count = 0;
+    free_drop_offers();
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dt_Drop(IDropTarget *This, IDataObject *pdo, DWORD keys, POINTL pt, DWORD *effect) {
@@ -2168,16 +2234,21 @@ static HRESULT STDMETHODCALLTYPE dt_Drop(IDropTarget *This, IDataObject *pdo, DW
     if (!self->window) { *effect = DROPEFFECT_NONE; return S_OK; }
     free_win32_drop_items();
     win32_drop.window = self->window;
-    win32_drop.offered_count = 0;
     if (win32_drag.active) {
+        free_drop_offers();
         *effect = self_drag_effect(self_drag_event(self->window, GLFW_DROP_DROP, pt), *effect);
         return S_OK;
     }
-    size_t u8len; char *u8;
-    if ((u8 = win32_get_format(pdo, CF_HDROP, &u8len))) add_win32_drop_item(DND_MIME_URI_LIST, u8, u8len);
-    if ((u8 = win32_get_format(pdo, CF_UNICODETEXT, &u8len))) add_win32_drop_item(DND_MIME_TEXT, u8, u8len);
+    collect_drop_offers(pdo);
+    for (size_t i = 0; i < win32_drop.offered_count; i++) {
+        const Win32DropOffer *o = win32_drop.offered + i;
+        size_t len = 0;
+        char *data = o->from == DROP_FROM_NAMED ? win32_get_raw_format(pdo, o->cf, &len) : win32_get_format(pdo, o->cf, &len);
+        add_win32_drop_item(o->mime, data, len);
+    }
+    free_drop_offers();
     if (win32_drop.count) {
-        const char *m[2]; for (size_t i = 0; i < win32_drop.count; i++) m[i] = win32_drop.items[i].mime;
+        const char *m[WIN32_DROP_MAX]; for (size_t i = 0; i < win32_drop.count; i++) m[i] = win32_drop.items[i].mime;
         double x, y; drop_point_to_client(self->window, pt, &x, &y);
         size_t accepted = _glfwInputDropEvent(self->window, GLFW_DROP_DROP, x, y, m, win32_drop.count, false);
         for (size_t i = 0; i < accepted; i++) _glfwPlatformRequestDropData(self->window, m[i]);
@@ -2209,7 +2280,7 @@ _glfwWin32RevokeDropTarget(_GLFWwindow *window) {
         ((Win32DropTarget*)dt)->window = NULL;
         dt->lpVtbl->Release(dt);
         window->win32.dropTarget = NULL;
-        if (win32_drop.window == window) { free_win32_drop_items(); win32_drop.window = NULL; win32_drop.offered_count = 0; }
+        if (win32_drop.window == window) { free_win32_drop_items(); win32_drop.window = NULL; free_drop_offers(); }
     }
 }
 
@@ -2260,21 +2331,21 @@ int _glfwPlatformRequestDropData(_GLFWwindow* window, const char* mime) {
     return EINVAL;
 }
 // ---------------------------------------------------------------------------
-// Drag and drop -- drag source (kitty's own drags of tabs and windows)
+// Drag and drop -- drag source (kitty's own drags, and those of programs in it)
 // ---------------------------------------------------------------------------
 // Each mime type travels as a clipboard format registered under its own name,
 // which only kitty reads, so text, links and files go out under the formats
 // other programs read as well. DoDragDrop runs a modal loop, so the drag starts
 // from a posted message rather than inside the call that asked for it, which
 // comes from kitty's Python, and the repaint timer the live resize uses keeps
-// kitty drawing during the loop. Drags that programs in a window start, the dnd
-// kitten's side, need the client drag protocol and are not done here.
+// kitty drawing during the loop. A program in a window, such as the dnd kitten,
+// supplies its data once a drop target asks for it.
 
 static void
 free_win32_drag(void) {
-    for (size_t i = 0; i < win32_drag.total; i++) { free(win32_drag.mimes[i]); free(win32_drag.data[i]); }
+    for (size_t i = 0; i < win32_drag.total; i++) { free(win32_drag.mimes[i]); free(win32_drag.data[i]); win32_drag.derived[i] = 0; }
     win32_drag.count = win32_drag.total = 0;
-    win32_drag.has_files = false;
+    win32_drag.has_files = win32_drag.on_demand = false;
 }
 
 typedef struct { wchar_t *p; size_t len, cap; bool failed; } WideBuf;
@@ -2332,9 +2403,10 @@ path_from_file_url(const char *url, size_t n) {
     return path;
 }
 
+// A format for other programs, its data NULL when it is made on demand
 static void
 add_drag_format(CLIPFORMAT cf, void *data, size_t sz) {
-    if (!cf || !data || win32_drag.total >= WIN32_DRAG_MAX_FORMATS) { free(data); return; }
+    if (!cf || (!data && !win32_drag.on_demand) || win32_drag.total >= WIN32_DRAG_MAX_FORMATS) { free(data); return; }
     const size_t n = win32_drag.total++;
     win32_drag.formats[n] = cf;
     win32_drag.mimes[n] = NULL;
@@ -2350,17 +2422,35 @@ wide_text_data(const WideBuf *b, size_t *sz) {
     return ans;
 }
 
+enum { OTHER_FORMAT_NONE, OTHER_FORMAT_TEXT, OTHER_FORMAT_LINK, OTHER_FORMAT_FILES, OTHER_FORMAT_COUNT };
+typedef struct { void *data[OTHER_FORMAT_COUNT]; size_t sizes[OTHER_FORMAT_COUNT]; } OtherFormats;
+
+static CLIPFORMAT
+other_format_clipformat(int which) {
+    switch (which) {
+        case OTHER_FORMAT_TEXT: return CF_UNICODETEXT;
+        case OTHER_FORMAT_LINK: return (CLIPFORMAT)RegisterClipboardFormatW(L"UniformResourceLocatorW");
+        case OTHER_FORMAT_FILES: return CF_HDROP;
+    }
+    return 0;
+}
+
+// The indices of the text and the uri-list among kitty's mime types, or -1
+static void
+text_and_uri_list(char *const *mimes, size_t count, int *text, int *uris) {
+    *text = *uris = -1;
+    for (size_t i = 0; i < count; i++) {
+        const char *m = mimes[i];
+        if (strcmp(m, "text/plain;charset=utf-8") == 0 || (*text < 0 && strcmp(m, "text/plain") == 0)) *text = (int)i;
+        else if (strcmp(m, "text/uri-list") == 0) *uris = (int)i;
+    }
+}
+
 // Text as CF_UNICODETEXT, the links of a text/uri-list as a link and as text,
 // and the files among them as CF_HDROP, which Explorer copies and editors open
-static void
-add_formats_for_other_programs(void) {
-    const char *text = NULL, *uris = NULL;
-    size_t text_sz = 0, uris_sz = 0;
-    for (size_t i = 0; i < win32_drag.count; i++) {
-        const char *m = win32_drag.mimes[i];
-        if (strcmp(m, "text/plain;charset=utf-8") == 0 || (!text && strcmp(m, "text/plain") == 0)) { text = win32_drag.data[i]; text_sz = win32_drag.sizes[i]; }
-        else if (strcmp(m, "text/uri-list") == 0) { uris = win32_drag.data[i]; uris_sz = win32_drag.sizes[i]; }
-    }
+static OtherFormats
+other_formats_from(const char *text, size_t text_sz, const char *uris, size_t uris_sz) {
+    OtherFormats ans = {0};
     WideBuf as_text = {0}, files = {0}, link = {0};
     size_t num_files = 0;
     if (text) wide_append_utf8(&as_text, text, text_sz);
@@ -2384,23 +2474,50 @@ add_formats_for_other_programs(void) {
         }
         p = eol ? eol + 1 : end;
     }
-    size_t sz;
-    if (as_text.len && !as_text.failed) add_drag_format(CF_UNICODETEXT, wide_text_data(&as_text, &sz), sz);
-    if (link.len && !link.failed) add_drag_format((CLIPFORMAT)RegisterClipboardFormatW(L"UniformResourceLocatorW"), wide_text_data(&link, &sz), sz);
+    if (as_text.len && !as_text.failed) ans.data[OTHER_FORMAT_TEXT] = wide_text_data(&as_text, &ans.sizes[OTHER_FORMAT_TEXT]);
+    if (link.len && !link.failed) ans.data[OTHER_FORMAT_LINK] = wide_text_data(&link, &ans.sizes[OTHER_FORMAT_LINK]);
     if (num_files && !files.failed) {
         // DROPFILES, then the paths, each ending in a NUL, and a NUL after the last
-        sz = sizeof(DROPFILES) + (files.len + 1) * sizeof(wchar_t);
+        const size_t sz = sizeof(DROPFILES) + (files.len + 1) * sizeof(wchar_t);
         DROPFILES *df = calloc(1, sz);
         if (df) {
             df->pFiles = sizeof(DROPFILES);
             df->fWide = TRUE;
             memcpy((char*)df + sizeof(DROPFILES), files.p, files.len * sizeof(wchar_t));
-            const size_t before = win32_drag.total;
-            add_drag_format(CF_HDROP, df, sz);
-            win32_drag.has_files = win32_drag.total > before;
+            ans.data[OTHER_FORMAT_FILES] = df;
+            ans.sizes[OTHER_FORMAT_FILES] = sz;
         }
     }
     free(as_text.p); free(files.p); free(link.p);
+    return ans;
+}
+
+static void
+add_formats_for_other_programs(void) {
+    int text, uris;
+    text_and_uri_list(win32_drag.mimes, win32_drag.count, &text, &uris);
+    if ((text >= 0 && !win32_drag.data[text]) || (uris >= 0 && !win32_drag.data[uris])) {
+        // A program supplies the text or the links once a drop target asks, so
+        // these are made then, and a uri-list may well hold files
+        if (text >= 0 || uris >= 0) add_drag_format(CF_UNICODETEXT, NULL, 0);
+        if (uris >= 0) {
+            add_drag_format(other_format_clipformat(OTHER_FORMAT_LINK), NULL, 0);
+            add_drag_format(CF_HDROP, NULL, 0);
+            win32_drag.has_files = true;
+        }
+        for (size_t i = win32_drag.count; i < win32_drag.total; i++)
+            win32_drag.derived[i] = win32_drag.formats[i] == CF_UNICODETEXT ? OTHER_FORMAT_TEXT : win32_drag.formats[i] == CF_HDROP ? OTHER_FORMAT_FILES : OTHER_FORMAT_LINK;
+        return;
+    }
+    OtherFormats o = other_formats_from(
+        text >= 0 ? win32_drag.data[text] : NULL, text >= 0 ? win32_drag.sizes[text] : 0,
+        uris >= 0 ? win32_drag.data[uris] : NULL, uris >= 0 ? win32_drag.sizes[uris] : 0);
+    for (int which = OTHER_FORMAT_TEXT; which < OTHER_FORMAT_COUNT; which++) {
+        if (!o.data[which]) continue;
+        const size_t before = win32_drag.total;
+        add_drag_format(other_format_clipformat(which), o.data[which], o.sizes[which]);
+        if (which == OTHER_FORMAT_FILES) win32_drag.has_files = win32_drag.total > before;
+    }
 }
 
 // --- IDataObject COM object, offering the drag's formats ---
@@ -2423,8 +2540,11 @@ typedef struct {
     BOOL async_mode, in_async_op;
     size_t mime_count, count;  // kitty's mime types, then the formats other programs read
     CLIPFORMAT formats[WIN32_DRAG_MAX_FORMATS];
+    char *mimes[WIN32_DRAG_MAX_FORMATS];
     char *data[WIN32_DRAG_MAX_FORMATS];
     size_t sizes[WIN32_DRAG_MAX_FORMATS];
+    int derived[WIN32_DRAG_MAX_FORMATS];
+    bool fetched[WIN32_DRAG_MAX_FORMATS];  // asked for once, whatever came of it
     size_t stored_count;
     FORMATETC stored_formats[WIN32_DRAG_MAX_STORED];
     STGMEDIUM stored_media[WIN32_DRAG_MAX_STORED];
@@ -2434,14 +2554,87 @@ static bool
 take_drag_formats(Win32DragData *self) {
     for (size_t i = 0; i < win32_drag.total; i++) {
         const size_t sz = win32_drag.sizes[i];
+        self->formats[i] = win32_drag.formats[i];
+        self->derived[i] = win32_drag.derived[i];
+        self->count = i + 1;
+        if (win32_drag.mimes[i] && !(self->mimes[i] = _glfw_strdup(win32_drag.mimes[i]))) return false;
+        if (!win32_drag.data[i]) continue;  // supplied on demand
         if (!(self->data[i] = malloc(sz ? sz : 1))) return false;
         if (sz) memcpy(self->data[i], win32_drag.data[i], sz);
-        self->formats[i] = win32_drag.formats[i];
         self->sizes[i] = sz;
-        self->count = i + 1;
     }
     self->mime_count = win32_drag.count;
     return true;
+}
+
+// Data a program in a kitty window supplies, asked for when a drop target
+// reads it. kitty streams it in pieces through its loop, which the drag's
+// repaint timer runs, so this waits on messages until each piece is in, as the
+// X11 backend waits to answer a selection request.
+static bool
+fetch_drag_data(Win32DragData *self, size_t idx) {
+    if (self->fetched[idx]) return self->data[idx] != NULL;
+    self->fetched[idx] = true;
+    _GLFWwindow *window = _glfwWindowForId(win32_drag.window_id);
+    if (!window || !self->mimes[idx]) return false;
+    const char *mime = self->mimes[idx];
+    char *buf = NULL;
+    size_t len = 0;
+    int err = 0;
+    // A remote program's files are copied to this machine first, so the wait is
+    // for a lack of progress, not for the whole of it
+    const monotonic_t patience = s_to_monotonic_t(60);
+    monotonic_t deadline = monotonic() + patience;
+    while (true) {
+        win32_drag.data_ready = false;
+        GLFWDragEvent ev = {.type = GLFW_DRAG_DATA_REQUEST, .mime_type = mime};
+        _glfwInputDragSourceRequest(window, &ev);
+        err = ev.err_num;
+        if (ev.data && ev.data_sz) {
+            char *p = realloc(buf, len + ev.data_sz);
+            if (p) { memcpy(p + len, ev.data, ev.data_sz); buf = p; len += ev.data_sz; }
+            // Handing the piece back lets kitty free it
+            GLFWDragEvent done = {.type = GLFW_DRAG_DATA_REQUEST, .mime_type = mime, .data = ev.data, .data_sz = ev.data_sz};
+            _glfwInputDragSourceRequest(window, &done);
+            if (!p) { err = ENOMEM; break; }
+            deadline = monotonic() + patience;
+            continue;
+        }
+        if (err != EAGAIN) break;
+        while (!win32_drag.data_ready && monotonic() < deadline) {
+            MsgWaitForMultipleObjects(0, NULL, FALSE, 50, QS_ALLINPUT);
+            MSG msg;
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+        }
+        if (!win32_drag.data_ready) { err = ETIMEDOUT; break; }
+        deadline = monotonic() + patience;
+    }
+    if (err) { free(buf); return false; }
+    self->data[idx] = buf ? buf : malloc(1);
+    self->sizes[idx] = len;
+    return self->data[idx] != NULL;
+}
+
+// A format other programs read, made from data a program supplies on demand
+static bool
+make_other_format(Win32DragData *self, size_t idx) {
+    int text, uris;
+    text_and_uri_list(self->mimes, self->mime_count, &text, &uris);
+    if (text >= 0) fetch_drag_data(self, (size_t)text);
+    if (uris >= 0) fetch_drag_data(self, (size_t)uris);
+    OtherFormats o = other_formats_from(
+        text >= 0 ? self->data[text] : NULL, text >= 0 ? self->sizes[text] : 0,
+        uris >= 0 ? self->data[uris] : NULL, uris >= 0 ? self->sizes[uris] : 0);
+    for (size_t i = self->mime_count; i < self->count; i++) {
+        const int which = self->derived[i];
+        if (!which || self->data[i] || !o.data[which]) continue;
+        self->data[i] = o.data[which];
+        self->sizes[i] = o.sizes[which];
+        o.data[which] = NULL;
+    }
+    for (int which = 0; which < OTHER_FORMAT_COUNT; which++) free(o.data[which]);
+    self->fetched[idx] = true;
+    return self->data[idx] != NULL;
 }
 
 static int
@@ -2508,7 +2701,7 @@ static ULONG STDMETHODCALLTYPE dd_Release(IDataObject *This) {
     LONG r = InterlockedDecrement(&self->ref);
     if (r == 0) {
         for (size_t i = 0; i < self->stored_count; i++) ReleaseStgMedium(self->stored_media + i);
-        for (size_t i = 0; i < self->count; i++) free(self->data[i]);
+        for (size_t i = 0; i < self->count; i++) { free(self->data[i]); free(self->mimes[i]); }
         free(self);
     }
     return r;
@@ -2520,6 +2713,10 @@ static HRESULT STDMETHODCALLTYPE dd_GetData(IDataObject *This, FORMATETC *f, STG
     if (stored >= 0) return copy_stored_medium(f->cfFormat, self->stored_media + stored, m) ? S_OK : E_OUTOFMEMORY;
     int idx = drag_format_index(self, f);
     if (idx < 0) return DV_E_FORMATETC;
+    if (!self->data[idx]) {
+        const bool ok = (size_t)idx < self->mime_count ? fetch_drag_data(self, (size_t)idx) : make_other_format(self, (size_t)idx);
+        if (!ok) return DV_E_FORMATETC;
+    }
     HGLOBAL h = drag_data_for(self, (size_t)idx);
     if (!h) return E_OUTOFMEMORY;
     m->tymed = TYMED_HGLOBAL; m->hGlobal = h; m->pUnkForRelease = NULL;
@@ -2823,7 +3020,9 @@ runPendingDrag(void) {
     Win32DropSource *source = calloc(1, sizeof *source);
     if (data) {
         data->iface.lpVtbl = &win32_drag_data_vtbl; data->async_iface.lpVtbl = &win32_drag_async_vtbl;
-        data->ref = 1; data->async_mode = TRUE;
+        // Data a program supplies has to be read during the drop, while kitty
+        // still holds the drag, so such a drag lets no drop target read later
+        data->ref = 1; data->async_mode = !win32_drag.on_demand;
     }
     if (source) { source->iface.lpVtbl = &win32_drop_source_vtbl; source->ref = 1; }
     if (window && data && source && win32_drag.count && !win32_drag.cancel_requested && take_drag_formats(data)) {
@@ -2874,22 +3073,22 @@ int _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
     free_win32_drag();
     for (size_t i = 0; i < _glfw.drag.item_count && win32_drag.count < WIN32_DRAG_MAX_MIMES; i++) {
         const GLFWDragSourceItem *item = _glfw.drag.items + i;
-        // Data kitty hands over only when asked belongs to the drags programs
-        // in a window start, the dnd kitten's side, which is not done here
-        if (!item->optional_data) continue;
         const UINT cf = RegisterClipboardFormatA(item->mime_type);
         if (!cf) continue;
         const size_t n = win32_drag.count;
         win32_drag.formats[n] = (CLIPFORMAT)cf;
         win32_drag.mimes[n] = _glfw_strdup(item->mime_type);
         win32_drag.sizes[n] = item->data_size;
-        win32_drag.data[n] = malloc(item->data_size ? item->data_size : 1);
-        if (!win32_drag.mimes[n] || !win32_drag.data[n]) {
+        // A program in a kitty window, the dnd kitten among them, supplies its
+        // data once a drop target asks, see fetch_drag_data
+        win32_drag.data[n] = item->optional_data ? malloc(item->data_size ? item->data_size : 1) : NULL;
+        if (!win32_drag.mimes[n] || (item->optional_data && !win32_drag.data[n])) {
             free(win32_drag.mimes[n]); free(win32_drag.data[n]);
             free_win32_drag();
             return ENOMEM;
         }
-        if (item->data_size) memcpy(win32_drag.data[n], item->optional_data, item->data_size);
+        if (item->optional_data && item->data_size) memcpy(win32_drag.data[n], item->optional_data, item->data_size);
+        if (!item->optional_data) win32_drag.on_demand = true;
         win32_drag.total = ++win32_drag.count;
     }
     if (!win32_drag.count) return EINVAL;
@@ -2918,8 +3117,12 @@ void _glfwPlatformFreeDragSourceData(void) {
     if (win32_drag.pending) win32_drag.cancel_requested = true;
 }
 
-// No drag here asks for its data on demand, see _glfwPlatformStartDrag
-int _glfwPlatformDragDataReady(const char* mime_type, const char* data, size_t sz, int type) { (void) mime_type; (void) data; (void) sz; (void) type; return 0; }
+// More of the data a program supplies is in, for fetch_drag_data waiting on it
+int _glfwPlatformDragDataReady(const char* mime_type, const char* data, size_t sz, int type) {
+    (void) mime_type; (void) data; (void) sz; (void) type;
+    win32_drag.data_ready = true;
+    return 0;
+}
 
 int _glfwPlatformChangeDragImage(const GLFWimage* thumbnail) {
     if (!win32_drag.pending && !win32_drag.active) return 0;
