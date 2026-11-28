@@ -2530,6 +2530,8 @@ def package(args: Options, bundle_type: str, do_build_all: bool = True) -> None:
 
 def clean_launcher_dir(launcher_dir: str) -> None:
     for x in glob.glob(os.path.join(launcher_dir, 'kitt*')):
+        if x.endswith(('.rc', '.ico')):
+            continue  # the Windows launcher's icon and resource scripts are sources
         if os.path.isdir(x):
             shutil.rmtree(x)
         else:

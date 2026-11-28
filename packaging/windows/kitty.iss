@@ -13,6 +13,9 @@
 #ifndef AppVersion
   #define AppVersion "0.48.0"
 #endif
+; Windows' version fields take numbers alone, so a suffix such as -win.1 stays
+; in the text version only
+#define AppVersionNumbers Copy(AppVersion, 1, Pos("-", AppVersion + "-") - 1)
 
 [Setup]
 AppId={{A303A4CC-F4EE-40BE-B881-1C25CDB1AC19}
@@ -20,8 +23,9 @@ AppName=kitty
 AppVersion={#AppVersion}
 ; The details code signing asks of every signed file, as the programs carry
 VersionInfoProductName=win-kitty
-VersionInfoProductVersion={#AppVersion}
-VersionInfoVersion={#AppVersion}
+VersionInfoProductVersion={#AppVersionNumbers}
+VersionInfoProductTextVersion={#AppVersion}
+VersionInfoVersion={#AppVersionNumbers}
 VersionInfoDescription=win-kitty setup
 AppPublisher=Kovid Goyal (Windows port by ecstra)
 AppPublisherURL=https://sw.kovidgoyal.net/kitty/
@@ -47,10 +51,12 @@ WizardSmallImageFile=
 
 [Tasks]
 Name: "addtopath"; Description: "Add kitty to your PATH (so 'kitty' and 'kitten' work in any terminal)"
-Name: "contextmenu"; Description: "Add 'Open in kitty' to the Explorer right-click menu, under Show more options on Windows 11"
+; checkablealone and dontinheritcheck keep the two apart, since by default a
+; parent goes unticked with its children and ticks them when ticked
+Name: "contextmenu"; Description: "Add 'Open in kitty' to the Explorer right-click menu, under Show more options on Windows 11"; Flags: checkablealone
 ; Off by default, since the package only registers once Windows trusts the
 ; certificate it is signed with, which this build makes itself
-Name: "contextmenu\win11"; Description: "Also put it in the Windows 11 main menu. Warning: this adds the certificate of this kitty build to the computer's trusted certificates"; Flags: unchecked; Check: CanRegisterMsix
+Name: "contextmenu\win11"; Description: "Also put it in the Windows 11 main menu. Warning: this adds the certificate of this kitty build to the computer's trusted certificates"; Flags: unchecked dontinheritcheck; Check: CanRegisterMsix
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Name: "quickaccess"; Description: "Start the quick access terminal hidden when you sign in, so a hotkey you set for it works"; Flags: unchecked
 
@@ -252,6 +258,13 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  { An earlier install's Windows 11 menu goes before the files are copied,
+    while its kitty-menu.cer is still the one it trusted, since a newer build
+    may carry another certificate, which would leave the old one trusted }
+  if (CurStep = ssInstall) and FileExists(ExpandConstant('{app}\msix\kitty-menu.msix')) then begin
+    UnregisterMsix();
+    DelTree(ExpandConstant('{app}\msix'), True, True, True);
+  end;
   if CurStep = ssPostInstall then begin
     if WizardIsTaskSelected('addtopath') then begin
       EnvAddPath(EnvRoot(), EnvKey(), BinDir());
@@ -259,13 +272,7 @@ begin
       EnvRemovePath(EnvRoot(), EnvKey(), ExpandConstant('{app}') + '\kitty\launcher');
     end;
     if WizardIsTaskSelected('contextmenu\win11') and CanRegisterMsix() then
-      RegisterMsix()
-    else if FileExists(ExpandConstant('{app}\msix\kitty-menu.msix')) then begin
-      { An earlier install registered the Windows 11 menu, which this one
-        leaves off, so its package and its certificate go }
-      UnregisterMsix();
-      DelTree(ExpandConstant('{app}\msix'), True, True, True);
-    end;
+      RegisterMsix();
   end;
 end;
 
