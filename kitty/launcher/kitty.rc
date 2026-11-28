@@ -1,2 +1,7 @@
 /* Windows application icon for kitty.exe (taskbar, alt-tab, Explorer). */
 1 ICON "kitty.ico"
+
+/* kitty-console.exe links the same resources */
+#define KITTY_FILE_DESCRIPTION "kitty terminal"
+#define KITTY_ORIGINAL_FILENAME "kitty.exe"
+#include "version.rc"

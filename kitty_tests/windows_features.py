@@ -282,6 +282,36 @@ class WindowsFeaturesTest(BaseTest):
             self.ae(program_name(path), name)
         self.assertTrue(is_kitten_cmdline([r'C:\kitty\bin\kitten.exe', 'ssh', 'host']))
 
+    def test_programs_carry_their_product_and_version(self):
+        # Code signing asks every signed file to name its product and version,
+        # read here as Explorer's file properties read them
+        from kitty.constants import kitten_exe, str_version
+
+        version = ctypes.WinDLL('version')
+        version.GetFileVersionInfoSizeW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
+        version.GetFileVersionInfoW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]
+        version.VerQueryValueW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_uint)]
+
+        def details(path: str) -> dict[str, str]:
+            size = version.GetFileVersionInfoSizeW(path, None)
+            self.assertTrue(size, f'{path} carries no version details')
+            buf = ctypes.create_string_buffer(size)
+            self.assertTrue(version.GetFileVersionInfoW(path, 0, size, buf))
+            ans = {}
+            for key in ('ProductName', 'FileDescription', 'FileVersion', 'ProductVersion'):
+                p, n = ctypes.c_void_p(), ctypes.c_uint()
+                if version.VerQueryValueW(buf, f'\\StringFileInfo\\040904B0\\{key}', ctypes.byref(p), ctypes.byref(n)):
+                    ans[key] = ctypes.wstring_at(p, n.value).rstrip('\0')
+            return ans
+
+        launcher = os.path.dirname(kitty_exe())
+        for exe in (kitty_exe(), os.path.join(launcher, 'kitty-console.exe'), kitten_exe()):
+            d = details(exe)
+            self.ae(d.get('ProductName'), 'win-kitty', exe)
+            self.assertTrue(d.get('FileDescription'), exe)
+            self.ae(d.get('FileVersion'), str_version, exe)
+            self.ae(d.get('ProductVersion'), str_version, exe)
+
     def test_kittens_on_this_machine_count_as_local(self):
         # A kitten proves it runs on kitty's machine by an id made from
         # Windows' MachineGuid, see tools/utils/machine_id/windows.go

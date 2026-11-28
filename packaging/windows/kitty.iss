@@ -18,6 +18,11 @@
 AppId={{A303A4CC-F4EE-40BE-B881-1C25CDB1AC19}
 AppName=kitty
 AppVersion={#AppVersion}
+; The details code signing asks of every signed file, as the programs carry
+VersionInfoProductName=win-kitty
+VersionInfoProductVersion={#AppVersion}
+VersionInfoVersion={#AppVersion}
+VersionInfoDescription=win-kitty setup
 AppPublisher=Kovid Goyal (Windows port by ecstra)
 AppPublisherURL=https://sw.kovidgoyal.net/kitty/
 DefaultDirName={autopf}\kitty

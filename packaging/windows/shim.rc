@@ -1,0 +1,10 @@
+/* The version details of the PATH shims, built by make-dist.sh with
+ * kitty/launcher on the include path */
+#ifdef SHIM_KITTEN
+#define KITTY_FILE_DESCRIPTION "kitten, the kitty command line tool"
+#define KITTY_ORIGINAL_FILENAME "kitten.exe"
+#else
+#define KITTY_FILE_DESCRIPTION "kitty terminal"
+#define KITTY_ORIGINAL_FILENAME "kitty.exe"
+#endif
+#include "version.rc"
