@@ -1937,6 +1937,7 @@ static struct {
     _GLFWwindow *window;
     POINTL last_pt;            // where the last move kitty heard of was
     DWORD last_keys, last_allowed;
+    monotonic_t last_move_at;  // and when
 } win32_drop;
 
 // A drag kitty started, of a tab or a window. Its mime types and data are
@@ -2226,6 +2227,7 @@ static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pd
     collect_drop_offers(pdo);
     set_drop_source_actions(self->window, *effect);
     win32_drop.last_pt = pt; win32_drop.last_keys = keys; win32_drop.last_allowed = *effect;
+    win32_drop.last_move_at = monotonic();
     double x, y; drop_point_to_client(self->window, pt, &x, &y);
     size_t accepted = 0;
     if (win32_drop.offered_count) {
@@ -2247,12 +2249,22 @@ static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POIN
     size_t accepted = 0;
     if (win32_drop.offered_count) {
         const char *m[WIN32_DROP_MAX];
-        // Windows asks about 15 times a second even while the mouse is still.
-        // A program in the window hears of a move only when there is one, and
-        // otherwise kitty answers from what the program said last, which
-        // took it the next ask to show, as X11 shows a status update at once.
-        const bool moved = pt.x != win32_drop.last_pt.x || pt.y != win32_drop.last_pt.y || keys != win32_drop.last_keys || *effect != win32_drop.last_allowed;
-        win32_drop.last_pt = pt; win32_drop.last_keys = keys; win32_drop.last_allowed = *effect;
+        // Windows asks about 15 times a second while the mouse is still, and
+        // as often as the mouse reports while it moves, a thousand times a
+        // second for some. A program in the window took longer to answer each
+        // move than that, and its answers fell seconds behind the pointer. So
+        // it hears of a move at most once a frame, the last one too once the
+        // mouse stops, and a change of keys at once, much as X11 sends the
+        // next position only once the last one was answered. In between,
+        // kitty answers from what the program said last.
+        const bool keys_changed = keys != win32_drop.last_keys || *effect != win32_drop.last_allowed;
+        const bool pt_changed = pt.x != win32_drop.last_pt.x || pt.y != win32_drop.last_pt.y;
+        const monotonic_t now = monotonic();
+        const bool moved = keys_changed || (pt_changed && now - win32_drop.last_move_at >= ms_to_monotonic_t(16));
+        if (moved) {
+            win32_drop.last_pt = pt; win32_drop.last_keys = keys; win32_drop.last_allowed = *effect;
+            win32_drop.last_move_at = now;
+        }
         accepted = _glfwInputDropEvent(self->window, moved ? GLFW_DROP_MOVE : GLFW_DROP_STATUS_UPDATE, x, y, m, offered_mimes(m), false);
     }
     *effect = chosen_drop_effect(self->window, accepted, *effect);
