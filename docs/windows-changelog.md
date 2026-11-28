@@ -21,8 +21,8 @@ Based on kitty 0.51.1.
 - `remap_modifiers`.
 - Automatic color themes switch as soon as you change Windows between light and dark.
 - Panels, `kitten panel`. kitty can sit as a bar on a screen edge that maximised windows leave free, above other windows, or behind your desktop icons like a live wallpaper.
-- The quick access terminal, `kitten quick-access-terminal`, a kitty that drops down from the top of the screen and hides again when you run it again, or on a hotkey you set with `hotkey` in quick-access-terminal.conf. The installer can start it hidden when you sign in.
-- The dnd kitten, and drag and drop for programs inside kitty, which can take every format a drop offers and drag their own data out, files from another machine included.
+- The quick access terminal, `kitten quick-access-terminal`, a kitty that drops down from the top of the screen and hides again when you run it again, or on a hotkey you set with `hotkey` in quick-access-terminal.conf, which the next run picks up when you change it. The installer can start it hidden when you sign in.
+- The dnd kitten, and drag and drop for programs inside kitty, which can take every format a drop offers, copy or move files and folders from this machine, and drag their own data out to other programs and other kitty windows.
 
 ### Fixed
 
@@ -61,6 +61,7 @@ Based on kitty 0.51.1.
 - `kitty --single-instance` starts, and a second start opens its window in the kitty already running, its folder, arguments and environment whole when they hold letters outside ASCII. With `--wait-for-single-instance-window-close` it returns once that window closes.
 - Images named by a path with accented letters, such as `café.png`, load.
 - Uninstalling kitty installed for everyone removes the certificate its Explorer menu added, and the menu entry of every account. The shortcuts of such an install start in the home folder of whoever opens them, and Open in kitty on a drive opens its root.
+- A hidden kitty window closes when another program asks it to, even with `confirm_os_window_close` set, instead of waiting on a question in a window no one can see.
 
 ### Changed
 
