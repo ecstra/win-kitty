@@ -2140,6 +2140,31 @@ offered_mimes(const char **m) {
     return win32_drop.offered_count;
 }
 
+// What the dragging program allows, which kitty hands a program in the window
+// that takes drops. Without it kitty told the dnd kitten nothing was allowed,
+// and the kitten took no drop at all.
+static void
+set_drop_source_actions(_GLFWwindow *window, DWORD effects) {
+    int actions = 0;
+    if (effects & DROPEFFECT_COPY) actions |= GLFW_DRAG_OPERATION_COPY;
+    if (effects & DROPEFFECT_MOVE) actions |= GLFW_DRAG_OPERATION_MOVE;
+    // A drag that only links, as from a browser, can still be read as a copy
+    if (!actions && (effects & DROPEFFECT_LINK)) actions = GLFW_DRAG_OPERATION_COPY;
+    window->drop_operation.source_actions = actions;
+}
+
+// The pointer kitty's choice shows: a move only where the program in the window
+// takes the drop as a move alone, since kitty's own paste allows both and
+// moves nothing
+static DWORD
+chosen_drop_effect(_GLFWwindow *window, size_t accepted, DWORD allowed) {
+    if (!accepted) return DROPEFFECT_NONE;
+    const int ops = window->drop_operation.allowed;
+    if (ops == GLFW_DRAG_OPERATION_MOVE && (allowed & DROPEFFECT_MOVE)) return DROPEFFECT_MOVE;
+    if (allowed & DROPEFFECT_COPY) return DROPEFFECT_COPY;
+    return allowed & (DROPEFFECT_MOVE | DROPEFFECT_LINK) ? (allowed & DROPEFFECT_LINK ? DROPEFFECT_LINK : DROPEFFECT_MOVE) : DROPEFFECT_NONE;
+}
+
 static void
 drop_point_to_client(_GLFWwindow *window, POINTL pt, double *x, double *y) {
     POINT p = { pt.x, pt.y };
@@ -2198,12 +2223,14 @@ static HRESULT STDMETHODCALLTYPE dt_DragEnter(IDropTarget *This, IDataObject *pd
         return S_OK;
     }
     collect_drop_offers(pdo);
+    set_drop_source_actions(self->window, *effect);
     double x, y; drop_point_to_client(self->window, pt, &x, &y);
+    size_t accepted = 0;
     if (win32_drop.offered_count) {
         const char *m[WIN32_DROP_MAX];
-        _glfwInputDropEvent(self->window, GLFW_DROP_ENTER, x, y, m, offered_mimes(m), false);
+        accepted = _glfwInputDropEvent(self->window, GLFW_DROP_ENTER, x, y, m, offered_mimes(m), false);
     }
-    *effect = win32_drop.offered_count ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+    *effect = chosen_drop_effect(self->window, accepted, *effect);
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POINTL pt, DWORD *effect) {
@@ -2214,12 +2241,14 @@ static HRESULT STDMETHODCALLTYPE dt_DragOver(IDropTarget *This, DWORD keys, POIN
         *effect = self_drag_effect(self_drag_event(self->window, GLFW_DROP_MOVE, pt), *effect);
         return S_OK;
     }
+    set_drop_source_actions(self->window, *effect);
     double x, y; drop_point_to_client(self->window, pt, &x, &y);
+    size_t accepted = 0;
     if (win32_drop.offered_count) {
         const char *m[WIN32_DROP_MAX];
-        _glfwInputDropEvent(self->window, GLFW_DROP_MOVE, x, y, m, offered_mimes(m), false);
+        accepted = _glfwInputDropEvent(self->window, GLFW_DROP_MOVE, x, y, m, offered_mimes(m), false);
     }
-    *effect = win32_drop.offered_count ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+    *effect = chosen_drop_effect(self->window, accepted, *effect);
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dt_DragLeave(IDropTarget *This) {
@@ -2247,11 +2276,15 @@ static HRESULT STDMETHODCALLTYPE dt_Drop(IDropTarget *This, IDataObject *pdo, DW
         add_win32_drop_item(o->mime, data, len);
     }
     free_drop_offers();
+    set_drop_source_actions(self->window, *effect);
     if (win32_drop.count) {
         const char *m[WIN32_DROP_MAX]; for (size_t i = 0; i < win32_drop.count; i++) m[i] = win32_drop.items[i].mime;
         double x, y; drop_point_to_client(self->window, pt, &x, &y);
         size_t accepted = _glfwInputDropEvent(self->window, GLFW_DROP_DROP, x, y, m, win32_drop.count, false);
         for (size_t i = 0; i < accepted; i++) _glfwPlatformRequestDropData(self->window, m[i]);
+        // Always a copy, so the dragging program removes nothing: the dnd
+        // kitten removes the sources of a move itself, once it has them, and
+        // kitty's own paste never moves anything
         *effect = DROPEFFECT_COPY;
     } else *effect = DROPEFFECT_NONE;
     return S_OK;

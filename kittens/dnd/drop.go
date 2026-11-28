@@ -591,7 +591,7 @@ func parse_uri_list(src string) (ans []parsed_uri, err error) {
 			if err != nil {
 				return nil, err
 			}
-			ans = append(ans, parsed_uri{kind: parsed_uri_file, path: filepath.Clean(p.Path)})
+			ans = append(ans, parsed_uri{kind: parsed_uri_file, path: path_from_file_url(p.Path)})
 		} else if strings.HasPrefix(line, "data:") {
 			m, d, derr := parse_data_uri(line)
 			if derr != nil {

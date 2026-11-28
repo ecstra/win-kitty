@@ -94,6 +94,7 @@ kitty.conf options that do nothing or only part of their job on Windows yet.
 
 Deliberate, not missing.
 
+- Kittens refuse to start outside kitty. On Windows a kitten needs kitty's own input and output path, and in another terminal it misbehaves in ways that look like bugs, so it exits with a message. Inside kitty every ported kitten works.
 - The desktop-ui kitten, marked `(Linux only)` in the `kitten` command list. It is a backend for the desktop portals of Linux, which Windows does not have.
 
 Not tested, so treat as unknown rather than working.
@@ -102,8 +103,6 @@ Not tested, so treat as unknown rather than working.
 - Sessions, watchers, and startup scripts.
 - Typing with an input method, such as Japanese, Chinese or Korean. kitty should draw the text being composed at its cursor and open the list of words to pick from beside it, but nobody with such a keyboard has tried it yet.
 - The dnd kitten, and other programs inside kitty that take drops or start drags of their own through kitty's drag and drop protocol. A drop hands them every format the drag offers under a mime type name, and a drag of theirs supplies its data once the program it is dropped on asks, files from a remote machine included, which kitty copies to this machine first.
-- Kittens such as icat, diff, themes and unicode_input in Windows Terminal and the classic console. They start there now, and follow the window's size, but nobody has used one there by hand yet.
-
 ## Remote control
 
 `kitty @` works on Windows over a Unix socket or a TCP address. Put this in kitty.conf:

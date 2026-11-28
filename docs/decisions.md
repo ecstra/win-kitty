@@ -54,9 +54,11 @@ The cost is that the bridge now reads the stream rather than only relaying it. I
 
 A kitten is a VT program talking to kitty, so there is nothing for a pseudoconsole to do except get in the way. Running kittens on one made conhost rewrite their escape codes, which showed as flicker, and left kitty without an EOF when the kitten exited, so its window stayed open. Plain pipes fix both.
 
-## Kittens run in other terminals on Windows
+## Kittens refuse to run outside kitty on Windows
 
-Kittens started from another terminal used to exit with a message, since without kitty's own input and output path a mouse sent junk on movement and a full screen kitten did not follow the window's size. I asked for them to run there, as they do in other terminals on Linux. The console a kitten runs in hands it mouse reports as escape codes once its mouse input is on and its own selection off, and the size is checked a few times a second, since neither Windows Terminal nor the classic console sends an in-band resize and Windows has no SIGWINCH. Inside kitty nothing of that changes.
+A kitten started from another terminal exits with a message instead of trying. On Windows it depends on kitty's own input and output path, and without it the failures are strange rather than obvious, such as a mouse that emits junk on movement or a full screen kitten that draws nothing. Making each of those work in a foreign console is a large amount of work, and a clear refusal is more useful than a partial success. Running them in Windows Terminal was tried in November 2026, and I chose to keep the refusal.
+
+It exits rather than returning an error because several kittens use the loop before checking the error they were handed, so returning one surfaced as a nil dereference inside the kitten.
 
 ## Panels are Windows app bars
 

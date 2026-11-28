@@ -8,33 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 )
 
 // Windows has no Unix signals. Ctrl+C arrives as a byte through the pipe and is
 // handled in handle_key_event, and resize arrives as an in-band CSI escape, so
 // the only OS signals worth watching are interrupt and terminate.
-
-// Other terminals on Windows send no in-band resize and Windows sends no
-// SIGWINCH, so outside kitty the console's size is checked a few times a second
-// and a change handled as SIGWINCH is on Unix
-func (self *Loop) watch_console_size() {
-	if os.Getenv("KITTY_WINDOW_ID") != "" || self.controlling_term == nil {
-		return
-	}
-	last, _ := self.controlling_term.GetSize()
-	_, _ = self.AddTimer(250*time.Millisecond, true, func(IdType) error {
-		if self.seen_inband_resize || self.controlling_term == nil {
-			return nil
-		}
-		now, err := self.controlling_term.GetSize()
-		if err != nil || (last != nil && now.Row == last.Row && now.Col == last.Col && now.Xpixel == last.Xpixel && now.Ypixel == last.Ypixel) {
-			return nil
-		}
-		last = now
-		return self.on_SIGWINCH()
-	})
-}
 
 func kill_self(sig syscall.Signal) {
 	// Windows cannot re-raise an arbitrary signal, so there is nothing to do.

@@ -74,12 +74,6 @@ func (self *Term) enable_raw_mode() {
 			self.in_console = true
 			self.in_orig_mode = m
 			nm := (m &^ (windows.ENABLE_ECHO_INPUT | windows.ENABLE_LINE_INPUT | windows.ENABLE_PROCESSED_INPUT)) | windows.ENABLE_VIRTUAL_TERMINAL_INPUT
-			if os.Getenv("KITTY_WINDOW_ID") == "" {
-				// In another terminal's console the mouse reaches a kitten as
-				// escape codes only with mouse input on and the console's own
-				// selection off. Inside kitty the codes come through as they are.
-				nm = (nm &^ windows.ENABLE_QUICK_EDIT_MODE) | windows.ENABLE_EXTENDED_FLAGS | windows.ENABLE_MOUSE_INPUT
-			}
 			windows.SetConsoleMode(h, nm)
 		}
 	}

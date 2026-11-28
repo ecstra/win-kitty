@@ -23,7 +23,6 @@ Based on kitty 0.51.1.
 - Panels, `kitten panel`. kitty can sit as a bar on a screen edge that maximised windows leave free, above other windows, or behind your desktop icons like a live wallpaper.
 - The quick access terminal, `kitten quick-access-terminal`, a kitty that drops down from the top of the screen and hides again on Ctrl+Alt+` or another key you pick. The installer can start it hidden when you sign in.
 - The dnd kitten, and drag and drop for programs inside kitty, which can take every format a drop offers and drag their own data out, files from another machine included.
-- Kittens such as icat, diff and themes start in Windows Terminal and the classic console, instead of refusing to.
 
 ### Fixed
 

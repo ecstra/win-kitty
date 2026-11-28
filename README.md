@@ -47,6 +47,7 @@ I built it so I could use kitty as my daily terminal on Windows, and it does tha
 
 ## What is missing
 
+* Kittens outside kitty. Run them from a kitty window.
 * Emoji typed at an MSYS2 zsh prompt show up in pieces like `<d83d>`. That is zsh on Cygwin and it happens in Windows Terminal too. Emoji in output are fine.
 
 The full list, with what is still untested, is in [docs/windows-port.md](docs/windows-port.md).
