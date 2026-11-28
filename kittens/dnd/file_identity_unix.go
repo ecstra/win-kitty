@@ -23,7 +23,7 @@ func file_identity(info os.FileInfo) (dev, ino uint64, err error) {
 }
 
 // Whether an entry already in the destination may lead to a folder elsewhere
-func is_link(mode os.FileMode) bool { return mode&os.ModeSymlink != 0 }
+func is_link(dir *os.File, name string, mode os.FileMode) bool { return mode&os.ModeSymlink != 0 }
 
 // The device and inode are in the info from the start
 func with_identity(info os.FileInfo) os.FileInfo { return info }

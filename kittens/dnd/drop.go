@@ -378,7 +378,7 @@ func find_overwrites(src_dir *os.File, dest_dir *os.File, move_sources []os.File
 				if err != nil {
 					return err
 				}
-				dest_is_dir, is_symlink := d.IsDir(), is_link(d.Mode())
+				dest_is_dir, is_symlink := d.IsDir(), is_link(dd, x.Name(), d.Mode())
 				if is_symlink {
 					if dest_is_dir, err = is_dir_at(dd, x.Name()); err != nil {
 						return err

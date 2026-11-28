@@ -3,10 +3,13 @@
 package dnd
 
 import (
+	"encoding/binary"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 // An editor saving over a file swaps a new one in by rename, which a move must
@@ -98,6 +101,60 @@ func TestAFolderWithAJunctionInsideIsCopiedWithoutIt(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(staging, "proj", "link")); err == nil {
 		t.Fatal("the junction was copied as a link")
+	}
+}
+
+// A symlink as WSL and Cygwin make them, which Windows cannot follow, the way
+// Cygwin writes one: the tag, then the format version and the target
+func make_wsl_symlink(t *testing.T, path, target string) {
+	t.Helper()
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := windows.CreateFile(p, windows.GENERIC_WRITE, 0, nil, windows.CREATE_NEW, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(h)
+	data := append([]byte{2, 0, 0, 0}, target...)
+	buf := make([]byte, 8+len(data))
+	binary.LittleEndian.PutUint32(buf, 0xA000001D) // IO_REPARSE_TAG_LX_SYMLINK
+	binary.LittleEndian.PutUint16(buf[4:], uint16(len(data)))
+	copy(buf[8:], data)
+	var returned uint32
+	if err := windows.DeviceIoControl(h, windows.FSCTL_SET_REPARSE_POINT, &buf[0], uint32(len(buf)), nil, 0, &returned, nil); err != nil {
+		t.Fatalf("could not make a WSL symlink: %s", err)
+	}
+}
+
+// A WSL or Cygwin symlink already in the destination leads nowhere Windows can
+// follow, so a dropped file of the same name replaces it as any file
+func TestAWSLSymlinkInTheDestinationIsAnOrdinaryOverwrite(t *testing.T) {
+	root := t.TempDir()
+	staged, out := filepath.Join(root, "staged"), filepath.Join(root, "out")
+	for _, d := range []string{staged, out} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(staged, "notes.txt"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	make_wsl_symlink(t, filepath.Join(out, "notes.txt"), "elsewhere.txt")
+	src_dir, err := os.Open(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src_dir.Close()
+	dest_dir, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dest_dir.Close()
+	got, err := find_overwrites(src_dir, dest_dir, nil)
+	if err != nil || len(got) != 1 || got[0] != "notes.txt" {
+		t.Fatalf("the WSL symlink is not an ordinary overwrite: %v %v", got, err)
 	}
 }
 
